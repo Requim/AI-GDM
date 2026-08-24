@@ -19,6 +19,10 @@ func TestLoadDefaults(t *testing.T) {
 	if len(got.Weather.Points) != 2 || got.Weather.FallbackMaxAge != 6*time.Hour {
 		t.Fatalf("Weather = %+v", got.Weather)
 	}
+	if got.LHASA.BaseURL != defaultLHASABaseURL || got.LHASA.DataDir != defaultLHASADataDir ||
+		got.LHASA.StaleAfter != 12*time.Hour || got.LHASA.GDALBinary != defaultGDALBinary {
+		t.Fatalf("LHASA = %+v", got.LHASA)
+	}
 }
 
 func TestLoadRejectsInvalidTimeout(t *testing.T) {
@@ -50,6 +54,33 @@ func TestLoadRefreshConfig(t *testing.T) {
 	}
 	if !got.Refresh.Enabled || got.Refresh.Interval != 30*time.Minute || len(got.Weather.Points) != 2 {
 		t.Fatalf("Load() = %+v", got)
+	}
+}
+
+func TestLoadLHASAConfig(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("LHASA_BASE_URL", "https://example.test/lhasa")
+	t.Setenv("LHASA_DATA_DIR", "/srv/lhasa")
+	t.Setenv("LHASA_STALE_AFTER", "8h")
+	t.Setenv("GDAL_BINARY", "/usr/bin/gdal")
+	t.Setenv("GDAL_TEMP_DIR", "/tmp/gdal")
+
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LHASA.BaseURL != "https://example.test/lhasa" || got.LHASA.DataDir != "/srv/lhasa" ||
+		got.LHASA.StaleAfter != 8*time.Hour || got.LHASA.GDALBinary != "/usr/bin/gdal" ||
+		got.LHASA.TemporaryDir != "/tmp/gdal" {
+		t.Fatalf("LHASA = %+v", got.LHASA)
+	}
+}
+
+func TestLoadRejectsInvalidLHASAStaleAfter(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("LHASA_STALE_AFTER", "0s")
+	if _, err := Load(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("Load() error = %v", err)
 	}
 }
 
@@ -102,6 +133,8 @@ func clearConfigEnv(t *testing.T) {
 		"OPEN_METEO_BASE_URL", "OPEN_METEO_API_KEY", "OPEN_METEO_POINTS",
 		"OPEN_METEO_PAST_HOURS", "OPEN_METEO_FORECAST_HOURS",
 		"OPEN_METEO_FALLBACK_MAX_AGE", "OPEN_METEO_MAX_POINTS_PER_REQUEST",
+		"LHASA_BASE_URL", "LHASA_DATA_DIR", "LHASA_STALE_AFTER",
+		"GDAL_BINARY", "GDAL_TEMP_DIR",
 	} {
 		t.Setenv(name, "")
 	}

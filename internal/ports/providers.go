@@ -25,6 +25,10 @@ type ArtifactFetcher interface {
 
 // RasterProcessor 把风险栅格转换为领域快照和风险区。
 type RasterProcessor interface {
+	// ModelName 返回处理结果使用的稳定模型名称。
+	ModelName() string
+	// Version 返回处理算法和固定参数的稳定版本。
+	Version() string
 	// Process 执行固定参数的裁剪、分级和矢量化。
 	Process(ctx context.Context, artifact provenance.Artifact) (hazard.Snapshot, []hazard.RiskZone, error)
 }

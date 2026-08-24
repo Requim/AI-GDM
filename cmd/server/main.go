@@ -41,7 +41,7 @@ func run() error {
 		return fmt.Errorf("初始化外部资源: %w", err)
 	}
 	defer dependencies.Close()
-	refresh, err := newRefreshRunner(cfg, dependencies, logger)
+	refresh, err := newRefreshService(cfg, dependencies, logger)
 	if err != nil {
 		return fmt.Errorf("初始化数据刷新: %w", err)
 	}

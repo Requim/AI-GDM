@@ -25,6 +25,10 @@ const (
 	defaultWeatherBaseURL  = "https://api.open-meteo.com/v1/forecast"
 	defaultWeatherPoints   = "104.066500,30.572300;102.712300,25.040600"
 	defaultFallbackMaxAge  = 6 * time.Hour
+	defaultLHASABaseURL    = "https://maps.nccs.nasa.gov/download/landslides"
+	defaultLHASADataDir    = "data/raw/lhasa"
+	defaultLHASAStaleAfter = 12 * time.Hour
+	defaultGDALBinary      = "gdal"
 	defaultPastHours       = 72
 	defaultForecastHours   = 24
 	defaultMaxPoints       = 25
@@ -44,6 +48,7 @@ type Config struct {
 	RedisDB         int
 	Refresh         RefreshConfig
 	Weather         WeatherConfig
+	LHASA           LHASAConfig
 }
 
 // RefreshConfig 控制后台数据采集任务的生命周期。
@@ -64,6 +69,15 @@ type WeatherConfig struct {
 	MaxPointsPerRequest int
 }
 
+// LHASAConfig 保存 NASA 风险制品和 GDAL 处理配置。
+type LHASAConfig struct {
+	BaseURL      string
+	DataDir      string
+	StaleAfter   time.Duration
+	GDALBinary   string
+	TemporaryDir string
+}
+
 // Load 从环境变量读取并校验配置。
 func Load() (Config, error) {
 	base, err := loadBase()
@@ -78,11 +92,27 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	base.Refresh, base.Weather = refresh, weather
+	lhasa, err := loadLHASA()
+	if err != nil {
+		return Config{}, err
+	}
+	base.Refresh, base.Weather, base.LHASA = refresh, weather, lhasa
 	if err = validateRefresh(base); err != nil {
 		return Config{}, err
 	}
 	return base, nil
+}
+
+func loadLHASA() (LHASAConfig, error) {
+	staleAfter, err := durationEnv("LHASA_STALE_AFTER", defaultLHASAStaleAfter)
+	if err != nil {
+		return LHASAConfig{}, err
+	}
+	return LHASAConfig{
+		BaseURL: stringEnv("LHASA_BASE_URL", defaultLHASABaseURL),
+		DataDir: stringEnv("LHASA_DATA_DIR", defaultLHASADataDir), StaleAfter: staleAfter,
+		GDALBinary: stringEnv("GDAL_BINARY", defaultGDALBinary), TemporaryDir: os.Getenv("GDAL_TEMP_DIR"),
+	}, nil
 }
 
 func loadBase() (Config, error) {

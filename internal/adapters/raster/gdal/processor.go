@@ -27,6 +27,12 @@ type Processor struct {
 
 var _ ports.RasterProcessor = (*Processor)(nil)
 
+// ModelName 返回处理结果使用的模型名称。
+func (p *Processor) ModelName() string { return ModelName }
+
+// Version 返回当前 GDAL 处理算法和固定参数版本。
+func (p *Processor) Version() string { return TransformVersion }
+
 // New 创建 GDAL 栅格处理适配器。
 func New(config Config) (*Processor, error) {
 	config = applyDefaults(config)
@@ -157,7 +163,7 @@ func (p *Processor) snapshot(artifact provenance.Artifact) hazard.Snapshot {
 		status = hazard.SnapshotStale
 	}
 	return hazard.Snapshot{
-		ID: p.snapshotID(artifact), HazardType: hazard.TypeLandslide, ModelName: "NASA LHASA",
+		ID: p.snapshotID(artifact), HazardType: hazard.TypeLandslide, ModelName: p.ModelName(),
 		ModelVersion: source.DatasetVersion, RunAt: source.ObservedAt, ValidFrom: source.ValidFrom, ValidTo: source.ValidTo,
 		RasterReference:      artifact.Reference + "#sha256=" + source.SHA256,
 		ProbabilitySemantics: "约 30 弧秒网格的日尺度滑坡发生概率模型估计；等级为 AI-GDM 派生且采用严格大于阈值",

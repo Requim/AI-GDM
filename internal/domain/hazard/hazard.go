@@ -65,6 +65,15 @@ type Snapshot struct {
 	Limitations          []string              `json:"limitations"`
 }
 
+// AnalysisSelector 限定可用于回退的同一灾害分析族。
+type AnalysisSelector struct {
+	HazardType       Type
+	ModelName        string
+	TransformVersion string
+	Provider         string
+	Dataset          string
+}
+
 // RiskZone 表示由模型概率阈值生成的辅助研判区域。
 type RiskZone struct {
 	ID              string           `json:"id"`

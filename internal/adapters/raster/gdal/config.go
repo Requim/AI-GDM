@@ -12,6 +12,7 @@ import (
 const (
 	DefaultBinary       = "gdal"
 	DefaultVersion      = "3.13.3"
+	ModelName           = "NASA LHASA"
 	TransformVersion    = "lhasa-gdal-1-gdal-3.13.3"
 	defaultMaxGeoJSON   = 128 << 20
 	defaultMaxZoneCount = 100000

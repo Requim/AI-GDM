@@ -46,6 +46,19 @@ type RiskZoneReader interface {
 	ZonesBySnapshot(ctx context.Context, snapshotID string) ([]hazard.RiskZone, error)
 }
 
+// HazardAnalysisWriter 原子保存完整灾害分析。
+type HazardAnalysisWriter interface {
+	// SaveAnalysis 在同一事务保存快照和全部风险区。
+	SaveAnalysis(ctx context.Context, snapshot hazard.Snapshot, zones []hazard.RiskZone) error
+}
+
+// HazardAnalysisReader 读取同一处理版本最后成功的完整灾害分析。
+type HazardAnalysisReader interface {
+	// LatestAnalysis 返回指定灾种、模型和处理版本的最新完整分析。
+	LatestAnalysis(ctx context.Context, selector hazard.AnalysisSelector) (
+		hazard.Snapshot, []hazard.RiskZone, error)
+}
+
 // WeatherSnapshotWriter 持久化完整监测点天气批次。
 type WeatherSnapshotWriter interface {
 	// SaveBatch 在同一事务中保存全部监测点，任一点失败则整批回滚。
