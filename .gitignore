@@ -11,6 +11,7 @@ dist/
 coverage/
 *.cover
 *.out
+*.exe
 *.log
 data/raw/
 data/cache/

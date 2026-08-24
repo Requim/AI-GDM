@@ -1,0 +1,35 @@
+name: 持续集成
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.7
+          cache: true
+
+      - name: 检查格式
+        run: test -z "$(gofmt -l $(find . -name '*.go' -type f))"
+
+      - name: 构建
+        run: mkdir -p /tmp/ai-gdm-build && go build -o /tmp/ai-gdm-build/ ./...
+
+      - name: 测试
+        run: go test ./...
+
+      - name: 静态检查
+        run: go vet ./...
