@@ -1,11 +1,18 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
-func TestBanner(t *testing.T) {
-	t.Parallel()
+func TestRunRejectsInvalidConfiguration(t *testing.T) {
+	t.Setenv("APP_SHUTDOWN_TIMEOUT", "invalid")
 
-	if got := banner("test"); got != "AI-GDM test" {
-		t.Fatalf("banner() = %q", got)
+	started := time.Now()
+	if err := run(); err == nil {
+		t.Fatal("run() 未拒绝无效配置")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("run() 未在启动服务前返回配置错误")
 	}
 }

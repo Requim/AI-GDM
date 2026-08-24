@@ -1,13 +1,44 @@
 package main
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/Requim/AI-GDM/internal/platform/config"
+	"github.com/Requim/AI-GDM/internal/platform/httpserver"
+	"github.com/Requim/AI-GDM/internal/platform/logging"
+)
 
 var version = "dev"
 
-func banner(value string) string {
-	return fmt.Sprintf("AI-GDM %s", value)
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
-func main() {
-	fmt.Println(banner(version))
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	logger, err := logging.New(os.Stdout, cfg.LogLevel)
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	logger.Info("AI-GDM 启动", "version", version, "environment", cfg.Environment, "addr", cfg.HTTPAddr)
+	server := httpserver.New(cfg.HTTPAddr, cfg.ShutdownTimeout, logger)
+	if err := server.Run(ctx); err != nil {
+		return fmt.Errorf("HTTP 服务退出: %w", err)
+	}
+	logger.Info("AI-GDM 已停止", slog.String("version", version))
+	return nil
 }
