@@ -45,7 +45,7 @@ func (d *Downloader) Fetch(ctx context.Context, artifact provenance.Artifact) (p
 	}
 	artifact.Provenance.FetchedAt = d.now()
 	artifact.Provenance.ProviderRequestID = requestID(response)
-	if mediaType := response.Header.Get("Content-Type"); mediaType != "" {
+	if mediaType := response.Header.Get("Content-Type"); mediaType != "" && mediaType != "application/octet-stream" {
 		artifact.MediaType = mediaType
 	}
 	stored, err := d.store.Save(ctx, artifact, response.Body)
