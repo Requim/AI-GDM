@@ -1,0 +1,34 @@
+# 本地工具与编辑器
+.tools/
+.idea/
+.vscode/
+*.swp
+*.tmp
+
+# 构建、测试与运行产物
+bin/
+dist/
+coverage/
+*.cover
+*.out
+*.log
+data/raw/
+data/cache/
+runtime/
+
+# 配置与密钥
+.env
+.env.*
+!/.env.example
+!/.env.evaluation.example
+*.pem
+*.key
+*.p12
+
+# CodeGraph 本地索引
+.codegraph/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+Desktop.ini
