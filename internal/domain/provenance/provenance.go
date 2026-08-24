@@ -89,3 +89,14 @@ type Artifact struct {
 	SizeBytes  int64      `json:"sizeBytes"`
 	Provenance Provenance `json:"provenance"`
 }
+
+// Validate 校验待下载或已落盘制品的最小字段。
+func (a Artifact) Validate() error {
+	if a.Reference == "" || a.MediaType == "" {
+		return fmt.Errorf("%w: 制品引用或媒体类型为空", domain.ErrInvalidInput)
+	}
+	if a.SizeBytes < 0 {
+		return fmt.Errorf("%w: 制品大小不能为负数", domain.ErrInvalidInput)
+	}
+	return a.Provenance.Validate()
+}
