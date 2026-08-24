@@ -18,6 +18,14 @@ func TestProvenanceValidate(t *testing.T) {
 	}
 }
 
+func TestProvenanceIsStaleUsesValidityWindow(t *testing.T) {
+	validTo := time.Date(2026, 8, 24, 7, 0, 0, 0, time.UTC)
+	value := Provenance{ValidTo: validTo}
+	if value.IsStale(validTo) || !value.IsStale(validTo.Add(time.Nanosecond)) {
+		t.Fatal("IsStale() 未按有效期边界判断")
+	}
+}
+
 func TestProvenanceRejectsInvalidWindow(t *testing.T) {
 	now := time.Now().UTC()
 	value := Provenance{

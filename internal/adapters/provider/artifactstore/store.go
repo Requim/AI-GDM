@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"hash"
 	"io"
@@ -62,6 +63,9 @@ func (s *Store) Save(ctx context.Context, artifact provenance.Artifact, source i
 	artifact.LocalPath = finalPath
 	artifact.SizeBytes = size
 	artifact.Provenance.SHA256 = checksum
+	if err = writeMetadata(finalPath+".metadata.json", artifact); err != nil {
+		return provenance.Artifact{}, err
+	}
 	return artifact, nil
 }
 
@@ -75,10 +79,38 @@ func (s *Store) write(ctx context.Context, destination *os.File, source io.Reade
 	if size > s.maxBytes {
 		return 0, "", fmt.Errorf("%w: 制品超过 %d 字节", domain.ErrInvalidInput, s.maxBytes)
 	}
+	if size == 0 {
+		return 0, "", fmt.Errorf("%w: 制品内容为空", domain.ErrInvalidInput)
+	}
 	if err = destination.Sync(); err != nil {
 		return 0, "", fmt.Errorf("同步外部制品: %w", err)
 	}
 	return size, digestHex(digest), nil
+}
+
+func writeMetadata(finalPath string, artifact provenance.Artifact) error {
+	payload, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		return fmt.Errorf("编码制品来源元数据: %w", err)
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(finalPath), ".metadata-*")
+	if err != nil {
+		return fmt.Errorf("创建来源元数据临时文件: %w", err)
+	}
+	name := temporary.Name()
+	defer func() { _ = os.Remove(name) }()
+	if _, err = temporary.Write(append(payload, '\n')); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("写入制品来源元数据: %w", err)
+	}
+	if err = temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("同步制品来源元数据: %w", err)
+	}
+	if err = temporary.Close(); err != nil {
+		return fmt.Errorf("关闭制品来源元数据: %w", err)
+	}
+	return commitFile(name, finalPath)
 }
 
 func commitFile(temporary, finalPath string) error {

@@ -1,9 +1,13 @@
 package artifactstore
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"mime"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Requim/AI-GDM/internal/adapters/provider/httpclient"
@@ -45,10 +49,14 @@ func (d *Downloader) Fetch(ctx context.Context, artifact provenance.Artifact) (p
 	}
 	artifact.Provenance.FetchedAt = d.now()
 	artifact.Provenance.ProviderRequestID = requestID(response)
-	if mediaType := response.Header.Get("Content-Type"); mediaType != "" && mediaType != "application/octet-stream" {
-		artifact.MediaType = mediaType
+	if err = applyMediaType(&artifact, response.Header.Get("Content-Type")); err != nil {
+		return provenance.Artifact{}, err
 	}
-	stored, err := d.store.Save(ctx, artifact, response.Body)
+	reader := bufio.NewReader(response.Body)
+	if err = validateSignature(artifact.MediaType, reader); err != nil {
+		return provenance.Artifact{}, err
+	}
+	stored, err := d.store.Save(ctx, artifact, reader)
 	if err != nil {
 		return provenance.Artifact{}, fmt.Errorf("保存下载制品: %w", err)
 	}
@@ -56,10 +64,66 @@ func (d *Downloader) Fetch(ctx context.Context, artifact provenance.Artifact) (p
 }
 
 func (d *Downloader) validateLength(length int64) error {
+	if length == 0 {
+		return fmt.Errorf("%w: 制品响应为空", domain.ErrInvalidInput)
+	}
 	if length > d.maxBytes {
 		return fmt.Errorf("%w: 制品声明大小 %d 超过上限", domain.ErrInvalidInput, length)
 	}
 	return nil
+}
+
+func applyMediaType(artifact *provenance.Artifact, header string) error {
+	if strings.TrimSpace(header) == "" {
+		return nil
+	}
+	actual, _, err := mime.ParseMediaType(header)
+	if err != nil {
+		return fmt.Errorf("%w: 制品媒体类型无效", domain.ErrInvalidInput)
+	}
+	expected, _, err := mime.ParseMediaType(artifact.MediaType)
+	if err != nil {
+		return fmt.Errorf("%w: 预期媒体类型无效", domain.ErrInvalidInput)
+	}
+	if !compatibleMediaType(expected, actual) {
+		return fmt.Errorf("%w: 预期 %s，供应商返回 %s", domain.ErrInvalidInput, expected, actual)
+	}
+	if actual != "application/octet-stream" {
+		artifact.MediaType = actual
+	}
+	return nil
+}
+
+func compatibleMediaType(expected, actual string) bool {
+	if expected == "application/octet-stream" || actual == "application/octet-stream" || expected == actual {
+		return true
+	}
+	if expected != "image/tiff" {
+		return false
+	}
+	return actual == "image/tif" || actual == "application/geotiff" || actual == "application/x-geotiff"
+}
+
+func validateSignature(mediaType string, reader *bufio.Reader) error {
+	actual, _, err := mime.ParseMediaType(mediaType)
+	if err != nil || !isTIFFMediaType(actual) {
+		return err
+	}
+	prefix, err := reader.Peek(4)
+	if err != nil {
+		return fmt.Errorf("%w: TIFF 文件头不完整", domain.ErrInvalidInput)
+	}
+	littleEndian := []byte{'I', 'I', 42, 0}
+	bigEndian := []byte{'M', 'M', 0, 42}
+	if !bytes.Equal(prefix, littleEndian) && !bytes.Equal(prefix, bigEndian) {
+		return fmt.Errorf("%w: 制品不是有效 TIFF 文件头", domain.ErrInvalidInput)
+	}
+	return nil
+}
+
+func isTIFFMediaType(value string) bool {
+	return value == "image/tiff" || value == "image/tif" ||
+		value == "application/geotiff" || value == "application/x-geotiff"
 }
 
 func requestID(response *http.Response) string {

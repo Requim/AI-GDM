@@ -2,6 +2,7 @@ package artifactstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -25,6 +26,25 @@ func TestStoreSave(t *testing.T) {
 	}
 	if string(content) != "risk-data" || stored.SizeBytes != 9 || len(stored.Provenance.SHA256) != 64 {
 		t.Fatalf("Save() = %+v content=%q", stored, content)
+	}
+	metadata, err := os.ReadFile(stored.LocalPath + ".metadata.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored provenance.Artifact
+	if err = json.Unmarshal(metadata, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.Provenance.SHA256 != stored.Provenance.SHA256 || restored.LocalPath != stored.LocalPath {
+		t.Fatalf("metadata = %+v", restored)
+	}
+}
+
+func TestStoreRejectsEmptyArtifact(t *testing.T) {
+	store := New(t.TempDir(), 1024)
+	_, err := store.Save(context.Background(), fixtureArtifact(time.Now().UTC()), strings.NewReader(""))
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("Save() error = %v", err)
 	}
 }
 

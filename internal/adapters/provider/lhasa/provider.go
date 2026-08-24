@@ -76,7 +76,10 @@ func (p *Provider) DiscoverLatest(ctx context.Context) (provenance.Artifact, err
 	if len(candidates) == 0 {
 		return provenance.Artifact{}, fmt.Errorf("%w: LHASA 目录没有时间戳 GeoTIFF", domain.ErrProviderUnavailable)
 	}
-	latest := candidates[len(candidates)-1]
+	latest, found := latestUsable(candidates, p.now())
+	if !found {
+		return provenance.Artifact{}, fmt.Errorf("%w: LHASA 目录只有未来时间戳文件", domain.ErrProviderUnavailable)
+	}
 	return p.artifact(latest, response.FetchedAt), nil
 }
 
@@ -127,6 +130,9 @@ func parseCandidate(base *url.URL, href string) (candidate, bool) {
 	if resolved.Scheme != base.Scheme || !strings.EqualFold(resolved.Host, base.Host) {
 		return candidate{}, false
 	}
+	if resolved.RawQuery != "" || resolved.Fragment != "" || path.Dir(path.Clean(resolved.Path)) != path.Clean(base.Path) {
+		return candidate{}, false
+	}
 	name := path.Base(resolved.Path)
 	matches := tifPattern.FindStringSubmatch(name)
 	if len(matches) != 2 {
@@ -152,6 +158,16 @@ func deduplicate(values []candidate) []candidate {
 	return result
 }
 
+func latestUsable(values []candidate, now time.Time) (candidate, bool) {
+	latestAllowed := now.Add(time.Hour)
+	for index := len(values) - 1; index >= 0; index-- {
+		if !values[index].observedAt.After(latestAllowed) {
+			return values[index], true
+		}
+	}
+	return candidate{}, false
+}
+
 func (p *Provider) artifact(value candidate, fetchedAt time.Time) provenance.Artifact {
 	now := p.now()
 	qualityFlags := []string{}
@@ -164,6 +180,7 @@ func (p *Provider) artifact(value candidate, fetchedAt time.Time) provenance.Art
 			Provider: "NASA", Dataset: datasetName, DatasetVersion: datasetVersion,
 			SourceURI: value.url, Citation: "NASA LHASA 2.1.1",
 			DataKind: provenance.DataKindNowcast, ObservedAt: value.observedAt, FetchedAt: fetchedAt,
+			ValidFrom: value.observedAt, ValidTo: value.observedAt.Add(p.staleAfter),
 			SpatialResolution: "30 arc-second (~1 km)", TemporalResolution: "通常每日约4次，best-effort",
 			CRS: "EPSG:4326", Stale: now.Sub(value.observedAt) > p.staleAfter,
 			QualityFlags: qualityFlags, Limitations: []string{

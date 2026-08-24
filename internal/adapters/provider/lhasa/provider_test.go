@@ -47,15 +47,64 @@ func TestDiscoverLatestReportsMissingFiles(t *testing.T) {
 	}
 }
 
+func TestDiscoverLatestIgnoresFarFutureFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<a href="20260824T0600.tif">current</a><a href="20990101T0000.tif">future</a>`))
+	}))
+	defer server.Close()
+	provider := New(httpclient.New(httpclient.Options{AllowHTTP: true}), Config{BaseURL: server.URL})
+	provider.now = func() time.Time { return time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC) }
+	artifact, err := provider.DiscoverLatest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Provenance.ObservedAt.Hour() != 6 {
+		t.Fatalf("ObservedAt = %s", artifact.Provenance.ObservedAt)
+	}
+}
+
+func TestDiscoverLatestRejectsOnlyFutureFiles(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<a href="20990101T0000.tif">future</a>`))
+	}))
+	defer server.Close()
+	provider := New(httpclient.New(httpclient.Options{AllowHTTP: true}), Config{BaseURL: server.URL})
+	provider.now = func() time.Time { return time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC) }
+	_, err := provider.DiscoverLatest(context.Background())
+	if !errors.Is(err, domain.ErrProviderUnavailable) {
+		t.Fatalf("DiscoverLatest() error = %v", err)
+	}
+}
+
 func TestParseDirectoryDeduplicates(t *testing.T) {
 	content := []byte(`<a href="20260824T0000.tif">a</a>
         <a href="20260824T0000.tif">b</a>
-        <a href="https://attacker.test/20260824T1200.tif">external</a>`)
+		<a href="https://attacker.test/20260824T1200.tif">external</a>
+		<a href="../other/20260824T1200.tif">other-directory</a>
+		<a href="20260824T1200.tif?download=1">query</a>`)
 	values, err := parseDirectory(content, "https://example.test/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(values) != 1 {
 		t.Fatalf("parseDirectory() count = %d", len(values))
+	}
+}
+
+func TestDiscoverLatestRecordsValidityWindow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<a href="20260824T0600.tif">current</a>`))
+	}))
+	defer server.Close()
+	provider := New(httpclient.New(httpclient.Options{AllowHTTP: true}), Config{
+		BaseURL: server.URL, StaleAfter: time.Hour,
+	})
+	provider.now = func() time.Time { return time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC) }
+	artifact, err := provider.DiscoverLatest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !artifact.Provenance.Stale || artifact.Provenance.ValidTo.Hour() != 7 {
+		t.Fatalf("Provenance = %+v", artifact.Provenance)
 	}
 }

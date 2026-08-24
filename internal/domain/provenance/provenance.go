@@ -60,6 +60,14 @@ func (p Provenance) Validate() error {
 	return nil
 }
 
+// IsStale 按查询时刻重新判断数据是否超过有效期。
+func (p Provenance) IsStale(now time.Time) bool {
+	if !p.ValidTo.IsZero() {
+		return now.After(p.ValidTo)
+	}
+	return p.Stale
+}
+
 // Valid 判断数据分类是否受支持。
 func (k DataKind) Valid() bool {
 	switch k {
