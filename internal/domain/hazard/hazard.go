@@ -75,6 +75,7 @@ type RiskZone struct {
 	Maximum         float64          `json:"probabilityMaximum"`
 	Level           RiskLevel        `json:"riskLevel"`
 	AreaSquareM     float64          `json:"areaSquareMeters"`
+	AreaCalculated  bool             `json:"areaCalculated"`
 	AdminCodes      []string         `json:"adminCodes,omitempty"`
 	InputReferences []string         `json:"inputReferences"`
 	Limitations     []string         `json:"limitations"`
