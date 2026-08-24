@@ -11,6 +11,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/platform/config"
 	"github.com/Requim/AI-GDM/internal/platform/httpserver"
 	"github.com/Requim/AI-GDM/internal/platform/logging"
+	"github.com/Requim/AI-GDM/internal/platform/resources"
 )
 
 var version = "dev"
@@ -35,6 +36,11 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	logger.Info("AI-GDM 启动", "version", version, "environment", cfg.Environment, "addr", cfg.HTTPAddr)
+	dependencies, err := resources.Open(ctx, cfg, logger)
+	if err != nil {
+		return fmt.Errorf("初始化外部资源: %w", err)
+	}
+	defer dependencies.Close()
 	server := httpserver.New(cfg.HTTPAddr, cfg.ShutdownTimeout, logger)
 	if err := server.Run(ctx); err != nil {
 		return fmt.Errorf("HTTP 服务退出: %w", err)

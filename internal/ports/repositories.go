@@ -2,11 +2,22 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/domain/loss"
 	"github.com/Requim/AI-GDM/internal/domain/survival"
 )
+
+// Cache 保存可安全重建的临时 JSON 数据。
+type Cache interface {
+	// Get 将缓存值解码到 destination，未命中时返回 false。
+	Get(ctx context.Context, key string, destination any) (bool, error)
+	// Set 写入带过期时间的缓存值。
+	Set(ctx context.Context, key string, value any, ttl time.Duration) error
+	// Delete 删除缓存值。
+	Delete(ctx context.Context, key string) error
+}
 
 // HazardSnapshotWriter 持久化灾害快照元数据。
 type HazardSnapshotWriter interface {
