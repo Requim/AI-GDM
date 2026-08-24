@@ -54,10 +54,34 @@ func (p Provenance) Validate() error {
 	if !p.DataKind.Valid() {
 		return fmt.Errorf("%w: 未知数据分类 %q", domain.ErrInvalidInput, p.DataKind)
 	}
+	if name := nonUTCProvenanceTime(p); name != "" {
+		return fmt.Errorf("%w: 数据来源 %s 必须使用 UTC", domain.ErrInvalidInput, name)
+	}
 	if !p.ValidFrom.IsZero() && !p.ValidTo.IsZero() && p.ValidTo.Before(p.ValidFrom) {
 		return fmt.Errorf("%w: 数据有效期结束时间早于开始时间", domain.ErrInvalidInput)
 	}
 	return nil
+}
+
+func nonUTCProvenanceTime(value Provenance) string {
+	times := []struct {
+		name  string
+		value time.Time
+	}{
+		{name: "observedAt", value: value.ObservedAt}, {name: "publishedAt", value: value.PublishedAt},
+		{name: "fetchedAt", value: value.FetchedAt}, {name: "validFrom", value: value.ValidFrom},
+		{name: "validTo", value: value.ValidTo},
+	}
+	for _, item := range times {
+		if item.value.IsZero() {
+			continue
+		}
+		_, offset := item.value.Zone()
+		if offset != 0 {
+			return item.name
+		}
+	}
+	return ""
 }
 
 // IsStale 按查询时刻重新判断数据是否超过有效期。

@@ -6,6 +6,7 @@ import (
 
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/domain/loss"
+	"github.com/Requim/AI-GDM/internal/domain/spatial"
 	"github.com/Requim/AI-GDM/internal/domain/survival"
 )
 
@@ -43,6 +44,18 @@ type RiskZoneWriter interface {
 type RiskZoneReader interface {
 	// ZonesBySnapshot 返回某快照的全部风险区。
 	ZonesBySnapshot(ctx context.Context, snapshotID string) ([]hazard.RiskZone, error)
+}
+
+// WeatherSnapshotWriter 持久化完整监测点天气批次。
+type WeatherSnapshotWriter interface {
+	// SaveBatch 在同一事务中保存全部监测点，任一点失败则整批回滚。
+	SaveBatch(ctx context.Context, snapshots []hazard.WeatherSnapshot) error
+}
+
+// WeatherSnapshotReader 读取同一监测点集最后成功的天气批次。
+type WeatherSnapshotReader interface {
+	// Latest 返回同点集最近完整批次，并保持 points 的输入顺序。
+	Latest(ctx context.Context, points []spatial.Point) ([]hazard.WeatherSnapshot, error)
 }
 
 // LossBaselineReader 读取损失估算所需的基线数据。

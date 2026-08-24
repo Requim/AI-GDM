@@ -36,3 +36,14 @@ func TestProvenanceRejectsInvalidWindow(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 }
+
+func TestProvenanceRejectsNonUTCTime(t *testing.T) {
+	value := Provenance{
+		Provider: "provider", Dataset: "dataset", SourceURI: "https://example.test/data",
+		DataKind:  DataKindForecast,
+		FetchedAt: time.Date(2026, 8, 24, 16, 0, 0, 0, time.FixedZone("CST", 8*60*60)),
+	}
+	if err := value.Validate(); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}

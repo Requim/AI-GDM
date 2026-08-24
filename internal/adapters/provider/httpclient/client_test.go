@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +67,44 @@ func TestRedactURL(t *testing.T) {
 	if got != want {
 		t.Fatalf("RedactURL() = %q", got)
 	}
+}
+
+func TestClientRedactsSensitiveTransportError(t *testing.T) {
+	sentinel := errors.New("dial unavailable")
+	transport := roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, sentinel
+	})
+	client := New(Options{
+		HTTPClient: &http.Client{Transport: transport}, MaxAttempts: 1,
+	})
+	request := Request{
+		Method:             http.MethodGet,
+		URL:                "https://example.test/weather?apikey=secret%2Fvalue&query=rain",
+		SensitiveQueryKeys: []string{"apikey"},
+	}
+	_, err := client.Do(context.Background(), request)
+	if err == nil || strings.Contains(err.Error(), "secret") || !strings.Contains(err.Error(), "REDACTED") {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if !errors.Is(err, domain.ErrProviderUnavailable) || !errors.Is(err, sentinel) {
+		t.Fatalf("Do() 未保留错误链: %v", err)
+	}
+	var urlError *url.Error
+	if !errors.As(err, &urlError) {
+		t.Fatalf("Do() 未保留 url.Error: %v", err)
+	}
+	if strings.Contains(urlError.Error(), "secret") || strings.Contains(urlError.URL, "secret") {
+		t.Fatalf("url.Error 仍包含敏感值: %v", urlError)
+	}
+	if !strings.Contains(urlError.Error(), "REDACTED") {
+		t.Fatalf("url.Error 未显示脱敏标记: %v", urlError)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 type memoryCache struct {

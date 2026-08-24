@@ -41,9 +41,13 @@ func run() error {
 		return fmt.Errorf("初始化外部资源: %w", err)
 	}
 	defer dependencies.Close()
+	refresh, err := newRefreshRunner(cfg, dependencies, logger)
+	if err != nil {
+		return fmt.Errorf("初始化数据刷新: %w", err)
+	}
 	server := httpserver.New(cfg.HTTPAddr, cfg.ShutdownTimeout, logger)
-	if err := server.Run(ctx); err != nil {
-		return fmt.Errorf("HTTP 服务退出: %w", err)
+	if err = runServices(ctx, server, refresh); err != nil {
+		return err
 	}
 	logger.Info("AI-GDM 已停止", slog.String("version", version))
 	return nil

@@ -3,6 +3,7 @@ package httpclient
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -188,7 +189,7 @@ func (c *Client) attempt(ctx context.Context, request Request) (*http.Response, 
 	httpRequest.Header.Set("User-Agent", c.userAgent)
 	response, err := c.httpClient.Do(httpRequest)
 	if err != nil {
-		return nil, true, &ProviderError{Cause: err, Retryable: true}
+		return nil, true, &ProviderError{Cause: redactRequestError(err, request), Retryable: true}
 	}
 	if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
 		return response, false, nil
@@ -269,7 +270,7 @@ func (e *ProviderError) Error() string {
 
 // Unwrap 将供应商失败统一映射为领域不可用错误。
 func (e *ProviderError) Unwrap() error {
-	return domain.ErrProviderUnavailable
+	return errors.Join(domain.ErrProviderUnavailable, e.Cause)
 }
 
 func retryableStatus(code int) bool {
@@ -313,10 +314,7 @@ func RedactURL(rawURL string, extraKeys ...string) string {
 	if err != nil {
 		return "<invalid-url>"
 	}
-	sensitive := map[string]struct{}{}
-	for _, key := range append(defaultSensitiveKeys(), extraKeys...) {
-		sensitive[strings.ToLower(key)] = struct{}{}
-	}
+	sensitive := sensitiveKeySet(extraKeys)
 	query := parsed.Query()
 	for key := range query {
 		if _, ok := sensitive[strings.ToLower(key)]; ok {
@@ -325,6 +323,70 @@ func RedactURL(rawURL string, extraKeys ...string) string {
 	}
 	parsed.RawQuery = query.Encode()
 	return parsed.String()
+}
+
+type redactedCauseError struct {
+	message string
+	cause   error
+}
+
+func (e *redactedCauseError) Error() string { return e.message }
+
+func (e *redactedCauseError) Is(target error) bool { return errors.Is(e.cause, target) }
+
+func redactRequestError(err error, request Request) error {
+	var urlError *url.Error
+	if errors.As(err, &urlError) {
+		return sanitizedURLError(urlError, request)
+	}
+	return &redactedCauseError{message: redactErrorMessage(err.Error(), request), cause: err}
+}
+
+func sanitizedURLError(value *url.Error, request Request) error {
+	message := "外部请求失败"
+	if value.Err != nil {
+		message = redactErrorMessage(value.Err.Error(), request)
+	}
+	return &url.Error{
+		Op: value.Op, URL: RedactURL(value.URL, request.SensitiveQueryKeys...),
+		Err: &redactedCauseError{message: message, cause: value.Err},
+	}
+}
+
+func redactErrorMessage(message string, request Request) string {
+	message = strings.ReplaceAll(message, request.URL,
+		RedactURL(request.URL, request.SensitiveQueryKeys...))
+	parsed, parseErr := url.Parse(request.URL)
+	if parseErr != nil {
+		return message
+	}
+	sensitive := sensitiveKeySet(request.SensitiveQueryKeys)
+	for key, values := range parsed.Query() {
+		if _, ok := sensitive[strings.ToLower(key)]; !ok {
+			continue
+		}
+		for _, value := range values {
+			message = redactSensitiveValue(message, value)
+		}
+	}
+	return message
+}
+
+func sensitiveKeySet(extraKeys []string) map[string]struct{} {
+	keys := append(defaultSensitiveKeys(), extraKeys...)
+	result := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		result[strings.ToLower(key)] = struct{}{}
+	}
+	return result
+}
+
+func redactSensitiveValue(message, value string) string {
+	if value == "" {
+		return message
+	}
+	message = strings.ReplaceAll(message, value, "REDACTED")
+	return strings.ReplaceAll(message, url.QueryEscape(value), "REDACTED")
 }
 
 func defaultSensitiveKeys() []string {
