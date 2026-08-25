@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	hazardapp "github.com/Requim/AI-GDM/internal/application/hazard"
 	"github.com/Requim/AI-GDM/internal/platform/config"
 	"github.com/Requim/AI-GDM/internal/platform/httpserver"
 	"github.com/Requim/AI-GDM/internal/platform/logging"
@@ -41,11 +42,22 @@ func run() error {
 		return fmt.Errorf("初始化外部资源: %w", err)
 	}
 	defer dependencies.Close()
-	refresh, err := newRefreshService(cfg, dependencies, logger)
+	hazards, err := newHazardRuntime(cfg, dependencies, logger)
+	if err != nil {
+		return fmt.Errorf("初始化风险预警: %w", err)
+	}
+	var landslideRefresher *hazardapp.HazardProvider
+	if hazards != nil {
+		landslideRefresher = hazards.landslide
+	}
+	refresh, err := newRefreshService(cfg, dependencies, logger, landslideRefresher)
 	if err != nil {
 		return fmt.Errorf("初始化数据刷新: %w", err)
 	}
 	server := httpserver.New(cfg.HTTPAddr, cfg.ShutdownTimeout, logger)
+	if err = mountHazardAPI(server, hazards, logger); err != nil {
+		return err
+	}
 	if err = runServices(ctx, server, refresh); err != nil {
 		return err
 	}

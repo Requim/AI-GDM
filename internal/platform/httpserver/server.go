@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -15,6 +17,7 @@ import (
 // Server 管理 HTTP 路由和进程生命周期。
 type Server struct {
 	httpServer      *http.Server
+	router          *chi.Mux
 	logger          *slog.Logger
 	readiness       *Readiness
 	shutdownTimeout time.Duration
@@ -30,10 +33,23 @@ func New(addr string, timeout time.Duration, logger *slog.Logger) *Server {
 			Handler:           router,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
+		router:          router,
 		logger:          logger,
 		readiness:       readiness,
 		shutdownTimeout: timeout,
 	}
+}
+
+// Mount 在服务启动前挂载一个独立 HTTP 适配器。
+func (s *Server) Mount(pattern string, handler http.Handler) error {
+	if s == nil || s.router == nil || handler == nil {
+		return fmt.Errorf("HTTP 路由或处理器不能为空")
+	}
+	if pattern == "" || !strings.HasPrefix(pattern, "/") || strings.ContainsAny(pattern, "?#") {
+		return fmt.Errorf("HTTP 挂载路径 %q 无效", pattern)
+	}
+	s.router.Mount(pattern, handler)
+	return nil
 }
 
 // Handler 返回服务路由，供集成测试和后续模块挂载使用。
@@ -67,7 +83,7 @@ func (s *Server) shutdown() error {
 	return s.httpServer.Shutdown(ctx)
 }
 
-func routes(logger *slog.Logger, readiness *Readiness) http.Handler {
+func routes(logger *slog.Logger, readiness *Readiness) *chi.Mux {
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
 	router.Use(middleware.Recoverer)

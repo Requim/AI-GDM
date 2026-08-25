@@ -54,7 +54,7 @@ func TestRefreshGroupRejectsInvalidServices(t *testing.T) {
 }
 
 func TestNewRefreshServiceDisabled(t *testing.T) {
-	service, err := newRefreshService(config.Config{}, nil, nil)
+	service, err := newRefreshService(config.Config{}, nil, nil, nil)
 	if err != nil || service != nil {
 		t.Fatalf("newRefreshService() = %v, error=%v", service, err)
 	}
@@ -65,27 +65,27 @@ func TestLHASARefreshTaskAcceptsFallbackAndReturnsFailures(t *testing.T) {
 	fallback := hazard.Snapshot{ID: "fallback", Source: provenance.Provenance{
 		QualityFlags: []string{weatherFallbackFlag},
 	}}
-	collector := &lhasaCollectorStub{snapshot: fallback}
-	if err := lhasaRefreshTask(collector, logger).Run(context.Background()); err != nil {
+	refresher := &lhasaRefresherStub{snapshot: fallback}
+	if err := lhasaRefreshTask(refresher, logger).Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if collector.calls != 1 {
-		t.Fatalf("Collect() calls = %d", collector.calls)
+	if refresher.calls != 1 {
+		t.Fatalf("Refresh() calls = %d", refresher.calls)
 	}
 	sentinel := errors.New("lhasa unavailable")
-	collector.err = sentinel
-	if err := lhasaRefreshTask(collector, logger).Run(context.Background()); !errors.Is(err, sentinel) {
+	refresher.err = sentinel
+	if err := lhasaRefreshTask(refresher, logger).Run(context.Background()); !errors.Is(err, sentinel) {
 		t.Fatalf("Run() error = %v", err)
 	}
 }
 
-type lhasaCollectorStub struct {
+type lhasaRefresherStub struct {
 	snapshot hazard.Snapshot
 	err      error
 	calls    int
 }
 
-func (s *lhasaCollectorStub) Collect(context.Context) (hazard.Snapshot, []hazard.RiskZone, error) {
+func (s *lhasaRefresherStub) Refresh(context.Context) (hazard.Snapshot, []hazard.RiskZone, error) {
 	s.calls++
 	return s.snapshot, nil, s.err
 }

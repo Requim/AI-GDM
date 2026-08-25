@@ -10,11 +10,8 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/Requim/AI-GDM/internal/adapters/provider/artifactstore"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/httpclient"
-	"github.com/Requim/AI-GDM/internal/adapters/provider/lhasa"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/openmeteo"
-	"github.com/Requim/AI-GDM/internal/adapters/raster/gdal"
 	"github.com/Requim/AI-GDM/internal/adapters/storage/postgres"
 	"github.com/Requim/AI-GDM/internal/adapters/storage/rediscache"
 	"github.com/Requim/AI-GDM/internal/application/collection"
@@ -37,7 +34,7 @@ const (
 )
 
 func newRefreshService(cfg config.Config, dependencies *resources.Resources,
-	logger *slog.Logger,
+	logger *slog.Logger, landslide ports.HazardRefresher,
 ) (runnableService, error) {
 	if !cfg.Refresh.Enabled {
 		return nil, nil
@@ -49,7 +46,7 @@ func newRefreshService(cfg config.Config, dependencies *resources.Resources,
 	if err != nil {
 		return nil, err
 	}
-	lhasaRunner, err := newLHASARunner(cfg, dependencies, logger)
+	lhasaRunner, err := newLHASARunner(cfg, landslide, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -83,54 +80,14 @@ func newWeatherRunner(cfg config.Config, dependencies *resources.Resources,
 	return scheduler.New(cfg.Refresh.Interval, cfg.Refresh.Timeout, logger, task)
 }
 
-func newLHASARunner(cfg config.Config, dependencies *resources.Resources,
+func newLHASARunner(cfg config.Config, refresher ports.HazardRefresher,
 	logger *slog.Logger,
 ) (*scheduler.Runner, error) {
-	limiter := rate.NewLimiter(rate.Every(lhasaProviderRequestRate), 1)
-	discoveryClient := httpclient.New(httpclient.Options{
-		HTTPClient: &http.Client{Timeout: lhasaDiscoveryTimeout}, Cache: refreshCache(dependencies),
-		Limiter: limiter, Logger: logger, MaxAttempts: lhasaMaxAttempts,
-	})
-	downloadClient := httpclient.New(httpclient.Options{
-		HTTPClient: &http.Client{Timeout: lhasaDownloadTimeout}, Limiter: limiter,
-		Logger: logger, MaxAttempts: lhasaMaxAttempts,
-	})
-	provider, err := lhasa.New(discoveryClient,
-		lhasa.Config{
-			ServiceURL: cfg.LHASA.ServiceURL, StaleAfter: cfg.LHASA.StaleAfter,
-			MaxPartBytes: maxLHASAPartBytes, MaxBytes: maxLHASAArtifactBytes,
-		})
-	if err != nil {
-		return nil, fmt.Errorf("创建 Earthdata LHASA 发现适配器: %w", err)
-	}
-	store := artifactstore.New(cfg.LHASA.DataDir, maxLHASAArtifactBytes)
-	mosaicker, err := gdal.NewMosaicker(gdal.MosaicConfig{Binary: cfg.LHASA.GDALBinary})
-	if err != nil {
-		return nil, fmt.Errorf("创建 LHASA 栅格拼接器: %w", err)
-	}
-	downloader, err := lhasa.NewTiledFetcher(downloadClient, provider, mosaicker, store,
-		lhasa.FetcherConfig{
-			TemporaryDir: cfg.LHASA.TemporaryDir,
-			MaxPartBytes: maxLHASAPartBytes, MaxBytes: maxLHASAArtifactBytes, Logger: logger,
-		})
-	if err != nil {
-		return nil, fmt.Errorf("创建 Earthdata LHASA 分片获取器: %w", err)
-	}
-	processor, err := gdal.New(gdal.Config{
-		Binary: cfg.LHASA.GDALBinary, ArtifactRoot: cfg.LHASA.DataDir,
-		TemporaryDir: cfg.LHASA.TemporaryDir,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("创建 LHASA 栅格处理器: %w", err)
-	}
-	repository := postgres.NewHazardRepository(dependencies.Database)
-	collector, err := collection.NewLHASACollector(provider, downloader, processor,
-		repository, repository, utcClock{}, cfg.LHASA.StaleAfter)
-	if err != nil {
-		return nil, fmt.Errorf("创建 LHASA 采集用例: %w", err)
+	if refresher == nil {
+		return nil, fmt.Errorf("%w: LHASA 刷新器为空", config.ErrInvalidConfig)
 	}
 	return scheduler.New(cfg.Refresh.Interval, cfg.Refresh.Timeout, logger,
-		lhasaRefreshTask(collector, logger))
+		lhasaRefreshTask(refresher, logger))
 }
 
 func refreshCache(dependencies *resources.Resources) ports.Cache {
@@ -166,13 +123,9 @@ func weatherUsesFallback(snapshots []hazard.WeatherSnapshot) bool {
 	return false
 }
 
-type lhasaCollector interface {
-	Collect(context.Context) (hazard.Snapshot, []hazard.RiskZone, error)
-}
-
-func lhasaRefreshTask(collector lhasaCollector, logger *slog.Logger) scheduler.Task {
+func lhasaRefreshTask(refresher ports.HazardRefresher, logger *slog.Logger) scheduler.Task {
 	return scheduler.Task{Name: "nasa-lhasa", Run: func(ctx context.Context) error {
-		snapshot, _, err := collector.Collect(ctx)
+		snapshot, _, err := refresher.Refresh(ctx)
 		if err != nil {
 			return err
 		}

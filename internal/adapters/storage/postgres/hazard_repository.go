@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -75,6 +76,48 @@ func saveSnapshot(ctx context.Context, executor sqlExecutor, value hazard.Snapsh
 func (r *HazardRepository) Latest(ctx context.Context, hazardType hazard.Type) (hazard.Snapshot, error) {
 	row := r.pool.QueryRow(ctx, selectSnapshotSQL+latestSnapshotWhere, hazardType)
 	return scanSnapshot(row)
+}
+
+// LatestRisk 返回指定灾种最新的完整风险分析。
+func (r *HazardRepository) LatestRisk(ctx context.Context,
+	hazardType hazard.Type,
+) (hazard.Snapshot, []hazard.RiskZone, error) {
+	if err := validateRiskHazardType(hazardType); err != nil {
+		return hazard.Snapshot{}, nil, err
+	}
+	return r.readRisk(ctx, latestSnapshotWhere, hazardType)
+}
+
+// RiskDetail 返回指定快照的完整风险分析。
+func (r *HazardRepository) RiskDetail(ctx context.Context,
+	snapshotID string,
+) (hazard.Snapshot, []hazard.RiskZone, error) {
+	if err := validateRiskSnapshotID(snapshotID); err != nil {
+		return hazard.Snapshot{}, nil, err
+	}
+	return r.readRisk(ctx, riskDetailWhere, snapshotID)
+}
+
+func (r *HazardRepository) readRisk(ctx context.Context, where string,
+	args ...any,
+) (hazard.Snapshot, []hazard.RiskZone, error) {
+	tx, err := r.pool.BeginTx(ctx, completeRiskReadOptions)
+	if err != nil {
+		return hazard.Snapshot{}, nil, fmt.Errorf("开始读取风险分析事务: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	snapshot, err := scanSnapshot(tx.QueryRow(ctx, selectSnapshotSQL+where, args...))
+	if err != nil {
+		return hazard.Snapshot{}, nil, fmt.Errorf("读取完整风险快照: %w", err)
+	}
+	zones, err := zonesBySnapshot(ctx, tx, snapshot.ID)
+	if err != nil {
+		return hazard.Snapshot{}, nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return hazard.Snapshot{}, nil, fmt.Errorf("提交风险分析读取事务: %w", err)
+	}
+	return snapshot, zones, nil
 }
 
 // LatestAnalysis 返回指定灾种、模型和处理版本的最新完整分析。
@@ -168,6 +211,34 @@ func validateAnalysisSelector(selector hazard.AnalysisSelector) error {
 	return nil
 }
 
+func validateRiskHazardType(value hazard.Type) error {
+	raw := string(value)
+	if raw == "" || raw != strings.TrimSpace(raw) || len(raw) > 64 || !validRiskTypeStart(raw[0]) {
+		return fmt.Errorf("%w: 灾种标识无效", domain.ErrInvalidInput)
+	}
+	for index := 1; index < len(raw); index++ {
+		if !validRiskTypePart(raw[index]) {
+			return fmt.Errorf("%w: 灾种标识无效", domain.ErrInvalidInput)
+		}
+	}
+	return nil
+}
+
+func validRiskTypeStart(value byte) bool {
+	return value >= 'a' && value <= 'z'
+}
+
+func validRiskTypePart(value byte) bool {
+	return validRiskTypeStart(value) || value >= '0' && value <= '9' || value == '_'
+}
+
+func validateRiskSnapshotID(value string) error {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 256 {
+		return fmt.Errorf("%w: 风险快照标识无效", domain.ErrInvalidInput)
+	}
+	return nil
+}
+
 func validateZoneSet(snapshotID string, zones []hazard.RiskZone) error {
 	if snapshotID == "" {
 		return fmt.Errorf("%w: 灾害快照标识为空", domain.ErrInvalidInput)
@@ -233,7 +304,10 @@ func zonesBySnapshot(ctx context.Context, queryer sqlQueryer, snapshotID string)
 		}
 		values = append(values, value)
 	}
-	return values, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历风险区: %w", err)
+	}
+	return values, nil
 }
 
 func snapshotJSON(value hazard.Snapshot) ([]byte, []byte, []byte, error) {
@@ -351,6 +425,9 @@ const selectSnapshotSQL = `SELECT id,hazard_type,model_name,model_version,run_at
 const latestSnapshotWhere = ` WHERE hazard_type=$1 AND analysis_complete=TRUE
     AND status IN ('available','stale') ORDER BY run_at DESC, created_at DESC, id DESC LIMIT 1`
 
+const riskDetailWhere = ` WHERE id=$1 AND analysis_complete=TRUE
+    AND status IN ('available','stale')`
+
 const latestAnalysisWhere = ` WHERE hazard_type=$1 AND model_name=$2
     AND source->>'transformVersion'=$3 AND source->>'provider'=$4 AND source->>'dataset'=$5
     AND analysis_complete=TRUE
@@ -365,3 +442,8 @@ const selectZonesSQL = `SELECT id,snapshot_id,ST_AsGeoJSON(geometry)::jsonb,
     probability_minimum,probability_mean,probability_maximum,risk_level,area_square_meters,
     area_calculated,admin_codes,input_references,limitations
     FROM risk_zones WHERE snapshot_id=$1 ORDER BY id`
+
+var completeRiskReadOptions = pgx.TxOptions{
+	IsoLevel:   pgx.RepeatableRead,
+	AccessMode: pgx.ReadOnly,
+}
