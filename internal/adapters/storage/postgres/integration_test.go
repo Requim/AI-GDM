@@ -79,6 +79,28 @@ func TestHazardRepositoryTreatsZeroZonesAsCompleteAnalysis(t *testing.T) {
 	}
 }
 
+func TestHazardRepositoryAreaCalculatedRoundTrip(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	snapshot, calculated := storageFixture(time.Now().UTC())
+	renameStorageFixture(&snapshot, &calculated, snapshot.ID+"-area-calculated")
+	cleanupSnapshot(t, repository, snapshot.ID)
+	calculated.AreaCalculated = true
+	uncalculated := calculated
+	uncalculated.ID += "-pending"
+	uncalculated.AreaSquareM = 0
+	uncalculated.AreaCalculated = false
+	if err := repository.SaveAnalysis(ctx, snapshot, []hazard.RiskZone{calculated, uncalculated}); err != nil {
+		t.Fatal(err)
+	}
+	zones, err := repository.ZonesBySnapshot(ctx, snapshot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(zones) != 2 || !zones[0].AreaCalculated || zones[1].AreaCalculated {
+		t.Fatalf("AreaCalculated 往返结果错误: %+v", zones)
+	}
+}
+
 func integrationHazardRepository(t *testing.T) (context.Context, *HazardRepository) {
 	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")

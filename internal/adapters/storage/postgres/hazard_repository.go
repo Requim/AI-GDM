@@ -121,10 +121,10 @@ func (r *HazardRepository) SaveZones(ctx context.Context, snapshotID string, zon
 		return fmt.Errorf("开始保存风险区事务: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err = replaceZones(ctx, tx, snapshotID, zones); err != nil {
+	if err = markAnalysisComplete(ctx, tx, snapshotID); err != nil {
 		return err
 	}
-	if err = markAnalysisComplete(ctx, tx, snapshotID); err != nil {
+	if err = replaceZones(ctx, tx, snapshotID, zones); err != nil {
 		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -189,6 +189,9 @@ func validateZoneSet(snapshotID string, zones []hazard.RiskZone) error {
 }
 
 func replaceZones(ctx context.Context, tx pgx.Tx, snapshotID string, zones []hazard.RiskZone) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM spatial_analyses WHERE snapshot_id=$1`, snapshotID); err != nil {
+		return fmt.Errorf("使旧空间分析失效: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM risk_zones WHERE snapshot_id=$1`, snapshotID); err != nil {
 		return fmt.Errorf("清理旧风险区: %w", err)
 	}
@@ -301,7 +304,8 @@ func saveZone(ctx context.Context, tx pgx.Tx, snapshotID string, zone hazard.Ris
 	inputReferences, _ := json.Marshal(zone.InputReferences)
 	limitations, _ := json.Marshal(zone.Limitations)
 	_, err = tx.Exec(ctx, saveZoneSQL, zone.ID, snapshotID, string(geometry), zone.Minimum,
-		zone.Mean, zone.Maximum, zone.Level, zone.AreaSquareM, adminCodes, inputReferences, limitations)
+		zone.Mean, zone.Maximum, zone.Level, zone.AreaSquareM, zone.AreaCalculated,
+		adminCodes, inputReferences, limitations)
 	if err != nil {
 		return fmt.Errorf("保存风险区 %s: %w", zone.ID, err)
 	}
@@ -312,7 +316,8 @@ func scanZone(row rowScanner) (hazard.RiskZone, error) {
 	var value hazard.RiskZone
 	var geometry, adminCodes, inputs, limitations []byte
 	err := row.Scan(&value.ID, &value.SnapshotID, &geometry, &value.Minimum, &value.Mean,
-		&value.Maximum, &value.Level, &value.AreaSquareM, &adminCodes, &inputs, &limitations)
+		&value.Maximum, &value.Level, &value.AreaSquareM, &value.AreaCalculated,
+		&adminCodes, &inputs, &limitations)
 	if err != nil {
 		return hazard.RiskZone{}, fmt.Errorf("扫描风险区: %w", err)
 	}
@@ -353,9 +358,10 @@ const latestAnalysisWhere = ` WHERE hazard_type=$1 AND model_name=$2
 
 const saveZoneSQL = `INSERT INTO risk_zones (
     id,snapshot_id,geometry,probability_minimum,probability_mean,probability_maximum,
-    risk_level,area_square_meters,admin_codes,input_references,limitations
-) VALUES ($1,$2,ST_SetSRID(ST_GeomFromGeoJSON($3),4326),$4,$5,$6,$7,$8,$9,$10,$11)`
+    risk_level,area_square_meters,area_calculated,admin_codes,input_references,limitations
+) VALUES ($1,$2,ST_SetSRID(ST_GeomFromGeoJSON($3),4326),$4,$5,$6,$7,$8,$9,$10,$11,$12)`
 
 const selectZonesSQL = `SELECT id,snapshot_id,ST_AsGeoJSON(geometry)::jsonb,
     probability_minimum,probability_mean,probability_maximum,risk_level,area_square_meters,
-    admin_codes,input_references,limitations FROM risk_zones WHERE snapshot_id=$1 ORDER BY id`
+    area_calculated,admin_codes,input_references,limitations
+    FROM risk_zones WHERE snapshot_id=$1 ORDER BY id`

@@ -19,7 +19,15 @@ var migrationFiles embed.FS
 
 // Migrate 按版本顺序执行尚未应用的嵌入式 SQL 迁移。
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, schemaTableSQL); err != nil {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("开始数据库迁移事务: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationAdvisoryLockID); err != nil {
+		return fmt.Errorf("获取数据库迁移锁: %w", err)
+	}
+	if _, err = tx.Exec(ctx, schemaTableSQL); err != nil {
 		return fmt.Errorf("建立迁移版本表: %w", err)
 	}
 	migrations, err := loadMigrations()
@@ -27,9 +35,12 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	for _, migration := range migrations {
-		if err := applyMigration(ctx, pool, migration); err != nil {
+		if err = applyMigration(ctx, tx, migration); err != nil {
 			return err
 		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("提交数据库迁移事务: %w", err)
 	}
 	return nil
 }
@@ -73,14 +84,9 @@ func readMigration(name string) (migration, error) {
 	return migration{version: version, name: name, sql: string(content)}, nil
 }
 
-func applyMigration(ctx context.Context, pool *pgxpool.Pool, value migration) error {
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("开始迁移事务 %s: %w", value.name, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+func applyMigration(ctx context.Context, tx pgx.Tx, value migration) error {
 	var applied bool
-	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, value.version).Scan(&applied)
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, value.version).Scan(&applied)
 	if err != nil || applied {
 		if err != nil {
 			return fmt.Errorf("查询迁移版本 %s: %w", value.name, err)
@@ -93,11 +99,10 @@ func applyMigration(ctx context.Context, pool *pgxpool.Pool, value migration) er
 	if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version, name) VALUES($1,$2)`, value.version, value.name); err != nil {
 		return fmt.Errorf("记录迁移 %s: %w", value.name, err)
 	}
-	if err = tx.Commit(ctx); err != nil {
-		return fmt.Errorf("提交迁移 %s: %w", value.name, err)
-	}
 	return nil
 }
+
+const migrationAdvisoryLockID int64 = 0x414947444d
 
 const schemaTableSQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
