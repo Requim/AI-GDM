@@ -52,6 +52,47 @@ func TestLHASACollectorReusesSameCompleteAnalysis(t *testing.T) {
 	}
 }
 
+func TestLHASACollectorPreservesFirstSeenTimeForSameRevision(t *testing.T) {
+	now := lhasaNow()
+	oldArtifact := lhasaFixtureArtifact(now.Add(-12*time.Hour - time.Nanosecond))
+	snapshot, zones := lhasaFixtureAnalysis(oldArtifact, "transform-v1")
+	discovered := lhasaFixtureArtifact(now)
+	store := &lhasaAnalysisStoreStub{latest: snapshot, latestZones: zones}
+	fetcher := &lhasaFetcherStub{artifact: discovered}
+	collector := newLHASATestCollector(t, &lhasaDiscoveryStub{artifact: discovered},
+		fetcher, &lhasaProcessorStub{}, store, now)
+
+	_, _, err := collector.Collect(context.Background())
+	if !errors.Is(err, domain.ErrInsufficientData) {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if fetcher.calls != 0 || store.saveCalls != 0 {
+		t.Fatalf("过期的同一修订仍执行，fetch=%d save=%d", fetcher.calls, store.saveCalls)
+	}
+}
+
+func TestLHASACollectorProcessesChangedRevisionAtStableURL(t *testing.T) {
+	now := lhasaNow()
+	oldArtifact := lhasaFixtureArtifact(now.Add(-time.Hour))
+	latest, latestZones := lhasaFixtureAnalysis(oldArtifact, "transform-v1")
+	current := lhasaFixtureArtifact(now)
+	current.Provenance.SourceRevision = `"revision-2"`
+	processed, processedZones := lhasaFixtureAnalysis(current, "transform-v1")
+	store := &lhasaAnalysisStoreStub{latest: latest, latestZones: latestZones}
+	fetcher := &lhasaFetcherStub{artifact: current}
+	processor := &lhasaProcessorStub{snapshot: processed, zones: processedZones}
+	collector := newLHASATestCollector(t, &lhasaDiscoveryStub{artifact: current},
+		fetcher, processor, store, now)
+
+	got, _, err := collector.Collect(context.Background())
+	if err != nil || got.Source.SourceRevision != `"revision-2"` {
+		t.Fatalf("Collect() = %+v, error=%v", got, err)
+	}
+	if fetcher.calls != 1 || processor.calls != 1 || store.saveCalls != 1 {
+		t.Fatalf("calls fetch=%d process=%d save=%d", fetcher.calls, processor.calls, store.saveCalls)
+	}
+}
+
 func TestLHASACollectorFallsBackForPipelineFailures(t *testing.T) {
 	sentinel := errors.New("provider failed")
 	cases := []struct {
@@ -126,8 +167,7 @@ func lhasaFailureFixture(t *testing.T, stage string, sentinel error) (
 	oldArtifact := lhasaFixtureArtifact(now.Add(-time.Hour))
 	latest, latestZones := lhasaFixtureAnalysis(oldArtifact, "transform-v1")
 	newArtifact := lhasaFixtureArtifact(now.Add(-30 * time.Minute))
-	newArtifact.Reference = "https://example.test/new.tif"
-	newArtifact.Provenance.SourceURI = newArtifact.Reference
+	newArtifact.Provenance.SourceRevision = `"revision-2"`
 	processed, processedZones := lhasaFixtureAnalysis(newArtifact, "transform-v1")
 	discovery := &lhasaDiscoveryStub{artifact: newArtifact}
 	fetcher := &lhasaFetcherStub{artifact: newArtifact}
@@ -165,15 +205,16 @@ func newLHASATestCollector(t *testing.T, discovery *lhasaDiscoveryStub,
 	return collector
 }
 
-func lhasaFixtureArtifact(observed time.Time) provenance.Artifact {
+func lhasaFixtureArtifact(firstSeen time.Time) provenance.Artifact {
 	return provenance.Artifact{
-		Reference: "https://example.test/20260824T0600.tif", MediaType: "image/tiff",
+		Reference: "https://example.test/ImageServer/exportImage?bbox=china", MediaType: "image/tiff",
 		LocalPath: "/data/lhasa.tif", SizeBytes: 10,
 		Provenance: provenance.Provenance{
-			Provider: lhasaProviderName, Dataset: lhasaDatasetName, DatasetVersion: "2.1.1",
-			SourceURI: "https://example.test/20260824T0600.tif", DataKind: provenance.DataKindNowcast,
-			ObservedAt: observed, FetchedAt: observed.Add(time.Minute), ValidFrom: observed,
-			ValidTo: observed.Add(12 * time.Hour), SHA256: "checksum",
+			Provider: lhasaProviderName, Dataset: lhasaDatasetName, DatasetVersion: "2.1",
+			SourceRevision: `"revision-1"`, SourceURI: "https://example.test/ImageServer/exportImage?bbox=china",
+			DataKind:            provenance.DataKindNowcast,
+			RevisionFirstSeenAt: firstSeen, FetchedAt: firstSeen.Add(time.Minute), ValidFrom: firstSeen,
+			ValidTo: firstSeen.Add(12 * time.Hour), SHA256: "checksum",
 		},
 	}
 }
@@ -184,8 +225,9 @@ func lhasaFixtureAnalysis(artifact provenance.Artifact,
 	source := artifact.Provenance
 	source.TransformVersion = version
 	snapshot := hazard.Snapshot{
-		ID: "lhasa-fixture", HazardType: hazard.TypeLandslide, ModelName: "NASA LHASA", ModelVersion: "2.1.1",
-		RunAt: source.ObservedAt, ValidFrom: source.ValidFrom, ValidTo: source.ValidTo,
+		ID: "lhasa-fixture", HazardType: hazard.TypeLandslide, ModelName: "NASA LHASA",
+		ModelVersion: source.DatasetVersion,
+		RunAt:        source.FetchedAt, ValidFrom: source.ValidFrom, ValidTo: source.ValidTo,
 		RasterReference: artifact.Reference + "#sha256=checksum", ProbabilitySemantics: "测试概率",
 		Thresholds: []hazard.RiskThreshold{{Level: hazard.RiskLow, Minimum: 0, Maximum: 1}},
 		Status:     hazard.SnapshotAvailable, Source: source, Limitations: []string{"辅助研判"},

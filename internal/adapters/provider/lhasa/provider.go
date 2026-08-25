@@ -1,18 +1,15 @@
 package lhasa
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"math"
+	"mime"
 	"net/http"
 	"net/url"
-	"path"
-	"regexp"
-	"sort"
+	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/net/html"
 
 	"github.com/Requim/AI-GDM/internal/adapters/provider/httpclient"
 	"github.com/Requim/AI-GDM/internal/domain"
@@ -21,172 +18,317 @@ import (
 )
 
 const (
-	DefaultBaseURL = "https://maps.nccs.nasa.gov/download/landslides"
-	datasetName    = "LHASA NRT Hazard"
-	datasetVersion = "2.1.1"
-	filenameLayout = "20060102T1504"
+	DefaultServiceURL = "https://gis.earthdata.nasa.gov/gis01/rest/services/Landslides/LHASA_Hazard_Today/ImageServer"
+	ProviderName      = "NASA Earthdata GIS"
+	DatasetName       = "LHASA Hazard Today"
+	DatasetVersion    = "2.1"
+	defaultTileWidth  = 2048
+	defaultTileHeight = 2048
+	defaultResolution = 1.0 / 120.0
+	maxServiceWidth   = 15000
+	maxServiceHeight  = 4100
+	defaultMaxPart    = 32 << 20
+	defaultMaxBytes   = 512 << 20
+	maxTileCount      = 256
+	minimumTIFFBytes  = 1024
 )
 
-var tifPattern = regexp.MustCompile(`^(\d{8}T\d{4})\.tif$`)
+var defaultBBox = [4]float64{73.5, 18.0, 135.1, 53.6}
 
-// Config 配置 NASA LHASA 近实时目录和过期阈值。
+// Config 配置 NASA Earthdata GIS 的 LHASA 固定目标网格分片和资源上限。
 type Config struct {
-	BaseURL    string
-	StaleAfter time.Duration
+	ServiceURL   string
+	StaleAfter   time.Duration
+	BBox         [4]float64
+	Resolution   float64
+	TileWidth    int
+	TileHeight   int
+	MaxPartBytes int64
+	MaxBytes     int64
 }
 
-// Provider 动态发现 LHASA 近实时 GeoTIFF 制品。
+// Provider 通过公开 ImageServer 发现当前 LHASA Today 组合栅格修订。
 type Provider struct {
-	client     *httpclient.Client
-	baseURL    string
-	staleAfter time.Duration
-	now        func() time.Time
+	client       *httpclient.Client
+	serviceURL   *url.URL
+	staleAfter   time.Duration
+	bbox         [4]float64
+	resolution   float64
+	tileWidth    int
+	tileHeight   int
+	maxPartBytes int64
+	maxBytes     int64
+}
+
+type sourceTile struct {
+	bbox   [4]float64
+	width  int
+	height int
 }
 
 var _ ports.ArtifactDiscovery = (*Provider)(nil)
 
-// New 创建 LHASA 目录发现适配器。
-func New(client *httpclient.Client, config Config) *Provider {
-	if config.BaseURL == "" {
-		config.BaseURL = DefaultBaseURL
+// New 创建 Earthdata GIS LHASA 分片发现适配器。
+func New(client *httpclient.Client, config Config) (*Provider, error) {
+	config = applyDefaults(config)
+	serviceURL, err := validateConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	if client == nil {
+		client = httpclient.New(httpclient.Options{})
+	}
+	return &Provider{
+		client: client, serviceURL: serviceURL, staleAfter: config.StaleAfter,
+		bbox: config.BBox, resolution: config.Resolution,
+		tileWidth: config.TileWidth, tileHeight: config.TileHeight,
+		maxPartBytes: config.MaxPartBytes, maxBytes: config.MaxBytes,
+	}, nil
+}
+
+// DiscoverLatest 逐片读取强 ETag 并生成可审计组合修订。
+func (p *Provider) DiscoverLatest(ctx context.Context) (provenance.Artifact, error) {
+	parts, total, firstSeen, err := p.discoverParts(ctx)
+	if err != nil {
+		return provenance.Artifact{}, err
+	}
+	return p.artifact(parts, total, firstSeen), nil
+}
+
+// VerifyCurrent 确认逻辑制品的所有分片仍与发现阶段一致。
+func (p *Provider) VerifyCurrent(ctx context.Context, artifact provenance.Artifact) error {
+	parts, _, _, err := p.discoverParts(ctx)
+	if err != nil {
+		return err
+	}
+	if artifact.Provenance.SourceRevision != provenance.CompositeSourceRevision(parts) ||
+		!sameSourceParts(artifact.Provenance.SourceParts, parts) {
+		return fmt.Errorf("%w: Earthdata 组合修订已变化", domain.ErrProviderUnavailable)
+	}
+	return nil
+}
+
+func (p *Provider) discoverParts(ctx context.Context) ([]provenance.SourcePart, int64, time.Time, error) {
+	tiles, err := buildTiles(p.bbox, p.resolution, p.tileWidth, p.tileHeight)
+	if err != nil {
+		return nil, 0, time.Time{}, err
+	}
+	parts := make([]provenance.SourcePart, 0, len(tiles))
+	var total int64
+	var firstSeen time.Time
+	for _, tile := range tiles {
+		part, fetchedAt, partErr := p.discoverPart(ctx, tile)
+		if partErr != nil {
+			return nil, 0, time.Time{}, partErr
+		}
+		if part.SizeBytes > p.maxBytes-total {
+			return nil, 0, time.Time{}, fmt.Errorf("%w: Earthdata 分片总大小超过上限", domain.ErrProviderUnavailable)
+		}
+		total += part.SizeBytes
+		parts = append(parts, part)
+		if fetchedAt.After(firstSeen) {
+			firstSeen = fetchedAt
+		}
+	}
+	return parts, total, firstSeen.UTC(), nil
+}
+
+func (p *Provider) discoverPart(ctx context.Context, tile sourceTile) (provenance.SourcePart, time.Time, error) {
+	reference := p.exportURL(tile)
+	response, err := p.client.Do(ctx, httpclient.Request{Method: http.MethodHead, URL: reference})
+	if err != nil {
+		return provenance.SourcePart{}, time.Time{}, fmt.Errorf("读取 Earthdata LHASA 分片描述: %w", err)
+	}
+	size, revision, err := p.validateHeaders(response.Header)
+	if err != nil {
+		return provenance.SourcePart{}, time.Time{}, err
+	}
+	return provenance.SourcePart{
+		Reference: reference, Revision: revision, SizeBytes: size, BBox: tile.bbox,
+	}, response.FetchedAt.UTC(), nil
+}
+
+func applyDefaults(config Config) Config {
+	if strings.TrimSpace(config.ServiceURL) == "" {
+		config.ServiceURL = DefaultServiceURL
 	}
 	if config.StaleAfter <= 0 {
 		config.StaleAfter = 12 * time.Hour
 	}
-	return &Provider{
-		client: client, baseURL: strings.TrimRight(config.BaseURL, "/"), staleAfter: config.StaleAfter,
-		now: func() time.Time { return time.Now().UTC() },
+	if config.BBox == [4]float64{} {
+		config.BBox = defaultBBox
 	}
+	if config.Resolution <= 0 {
+		config.Resolution = defaultResolution
+	}
+	if config.TileWidth <= 0 {
+		config.TileWidth = defaultTileWidth
+	}
+	if config.TileHeight <= 0 {
+		config.TileHeight = defaultTileHeight
+	}
+	if config.MaxPartBytes <= 0 {
+		config.MaxPartBytes = defaultMaxPart
+	}
+	if config.MaxBytes <= 0 {
+		config.MaxBytes = defaultMaxBytes
+	}
+	return config
 }
 
-// DiscoverLatest 解析目录并返回时间戳最新的 GeoTIFF。
-func (p *Provider) DiscoverLatest(ctx context.Context) (provenance.Artifact, error) {
-	directoryURL := p.baseURL + "/nrt/hazard/tif/"
-	response, err := p.client.Do(ctx, httpclient.Request{
-		Method: http.MethodGet, URL: directoryURL, CacheKey: "provider:lhasa:directory:tif",
-		CacheTTL: 5 * time.Minute, MaxBodyBytes: 2 << 20,
-	})
-	if err != nil {
-		return provenance.Artifact{}, fmt.Errorf("读取 LHASA 目录: %w", err)
+func validateConfig(config Config) (*url.URL, error) {
+	serviceURL, err := url.Parse(strings.TrimSpace(config.ServiceURL))
+	if err != nil || serviceURL.Scheme == "" || serviceURL.Host == "" ||
+		serviceURL.RawQuery != "" || serviceURL.Fragment != "" {
+		return nil, fmt.Errorf("%w: Earthdata ImageServer 地址无效", domain.ErrInvalidInput)
 	}
-	candidates, err := parseDirectory(response.Body, directoryURL)
-	if err != nil {
-		return provenance.Artifact{}, err
+	if !strings.HasSuffix(strings.TrimRight(serviceURL.Path, "/"), "/ImageServer") {
+		return nil, fmt.Errorf("%w: Earthdata 地址必须指向 ImageServer", domain.ErrInvalidInput)
 	}
-	if len(candidates) == 0 {
-		return provenance.Artifact{}, fmt.Errorf("%w: LHASA 目录没有时间戳 GeoTIFF", domain.ErrProviderUnavailable)
+	if !validBBox(config.BBox) || !validResolution(config.BBox, config.Resolution) {
+		return nil, fmt.Errorf("%w: Earthdata 栅格范围或分辨率无效", domain.ErrInvalidInput)
 	}
-	latest, found := latestUsable(candidates, p.now())
-	if !found {
-		return provenance.Artifact{}, fmt.Errorf("%w: LHASA 目录只有未来时间戳文件", domain.ErrProviderUnavailable)
+	if config.TileWidth > maxServiceWidth || config.TileHeight > maxServiceHeight {
+		return nil, fmt.Errorf("%w: Earthdata 分片尺寸超过服务上限", domain.ErrInvalidInput)
 	}
-	return p.artifact(latest, response.FetchedAt), nil
+	if config.MaxPartBytes < minimumTIFFBytes || config.MaxBytes < config.MaxPartBytes {
+		return nil, fmt.Errorf("%w: Earthdata 制品上限无效", domain.ErrInvalidInput)
+	}
+	_, err = buildTiles(config.BBox, config.Resolution, config.TileWidth, config.TileHeight)
+	return serviceURL, err
 }
 
-type candidate struct {
-	url        string
-	observedAt time.Time
-}
-
-func parseDirectory(content []byte, directoryURL string) ([]candidate, error) {
-	document, err := html.Parse(bytes.NewReader(content))
-	if err != nil {
-		return nil, fmt.Errorf("解析 LHASA 目录 HTML: %w", err)
-	}
-	base, err := url.Parse(directoryURL)
-	if err != nil {
-		return nil, fmt.Errorf("解析 LHASA 目录地址: %w", err)
-	}
-	values := make([]candidate, 0)
-	walkLinks(document, func(href string) {
-		if value, ok := parseCandidate(base, href); ok {
-			values = append(values, value)
-		}
-	})
-	sort.Slice(values, func(i, j int) bool { return values[i].observedAt.Before(values[j].observedAt) })
-	return deduplicate(values), nil
-}
-
-func walkLinks(node *html.Node, visit func(string)) {
-	if node.Type == html.ElementNode && node.Data == "a" {
-		for _, attribute := range node.Attr {
-			if attribute.Key == "href" {
-				visit(attribute.Val)
-				break
-			}
+func validBBox(value [4]float64) bool {
+	for _, coordinate := range value {
+		if math.IsNaN(coordinate) || math.IsInf(coordinate, 0) {
+			return false
 		}
 	}
-	for child := node.FirstChild; child != nil; child = child.NextSibling {
-		walkLinks(child, visit)
-	}
+	return value[0] >= -180 && value[2] <= 180 && value[1] >= -90 && value[3] <= 90 &&
+		value[0] < value[2] && value[1] < value[3]
 }
 
-func parseCandidate(base *url.URL, href string) (candidate, bool) {
-	reference, err := url.Parse(href)
-	if err != nil {
-		return candidate{}, false
+func validResolution(bbox [4]float64, resolution float64) bool {
+	if math.IsNaN(resolution) || math.IsInf(resolution, 0) || resolution <= 0 {
+		return false
 	}
-	resolved := base.ResolveReference(reference)
-	if resolved.Scheme != base.Scheme || !strings.EqualFold(resolved.Host, base.Host) {
-		return candidate{}, false
-	}
-	if resolved.RawQuery != "" || resolved.Fragment != "" || path.Dir(path.Clean(resolved.Path)) != path.Clean(base.Path) {
-		return candidate{}, false
-	}
-	name := path.Base(resolved.Path)
-	matches := tifPattern.FindStringSubmatch(name)
-	if len(matches) != 2 {
-		return candidate{}, false
-	}
-	observedAt, err := time.ParseInLocation(filenameLayout, matches[1], time.UTC)
-	if err != nil {
-		return candidate{}, false
-	}
-	return candidate{url: resolved.String(), observedAt: observedAt}, true
+	width := math.Round((bbox[2] - bbox[0]) / resolution)
+	height := math.Round((bbox[3] - bbox[1]) / resolution)
+	return width > 0 && height > 0 &&
+		math.Abs(width*resolution-(bbox[2]-bbox[0])) < 1e-9 &&
+		math.Abs(height*resolution-(bbox[3]-bbox[1])) < 1e-9
 }
 
-func deduplicate(values []candidate) []candidate {
-	result := make([]candidate, 0, len(values))
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		if _, exists := seen[value.url]; exists {
-			continue
-		}
-		seen[value.url] = struct{}{}
-		result = append(result, value)
+func buildTiles(bbox [4]float64, resolution float64, tileWidth, tileHeight int) ([]sourceTile, error) {
+	if tileWidth <= 0 || tileHeight <= 0 || !validResolution(bbox, resolution) {
+		return nil, fmt.Errorf("%w: Earthdata 分片网格无效", domain.ErrInvalidInput)
 	}
-	return result
-}
-
-func latestUsable(values []candidate, now time.Time) (candidate, bool) {
-	latestAllowed := now.Add(time.Hour)
-	for index := len(values) - 1; index >= 0; index-- {
-		if !values[index].observedAt.After(latestAllowed) {
-			return values[index], true
+	width := int(math.Round((bbox[2] - bbox[0]) / resolution))
+	height := int(math.Round((bbox[3] - bbox[1]) / resolution))
+	count := ((width + tileWidth - 1) / tileWidth) * ((height + tileHeight - 1) / tileHeight)
+	if count <= 0 || count > maxTileCount {
+		return nil, fmt.Errorf("%w: Earthdata 分片数量超过上限", domain.ErrInvalidInput)
+	}
+	values := make([]sourceTile, 0, count)
+	for y := 0; y < height; y += tileHeight {
+		partHeight := min(tileHeight, height-y)
+		for x := 0; x < width; x += tileWidth {
+			partWidth := min(tileWidth, width-x)
+			values = append(values, newSourceTile(bbox, resolution, x, y, partWidth, partHeight))
 		}
 	}
-	return candidate{}, false
+	return values, nil
 }
 
-func (p *Provider) artifact(value candidate, fetchedAt time.Time) provenance.Artifact {
-	now := p.now()
-	qualityFlags := []string{}
-	if value.observedAt.After(now.Add(time.Hour)) {
-		qualityFlags = append(qualityFlags, "future_timestamp")
+func newSourceTile(bbox [4]float64, resolution float64,
+	x, y, width, height int,
+) sourceTile {
+	return sourceTile{
+		bbox: [4]float64{
+			bbox[0] + float64(x)*resolution, bbox[1] + float64(y)*resolution,
+			bbox[0] + float64(x+width)*resolution, bbox[1] + float64(y+height)*resolution,
+		},
+		width: width, height: height,
 	}
+}
+
+func (p *Provider) exportURL(tile sourceTile) string {
+	target := *p.serviceURL
+	target.Path = strings.TrimRight(target.Path, "/") + "/exportImage"
+	query := target.Query()
+	query.Set("bbox", bboxValue(tile.bbox))
+	query.Set("bboxSR", "4326")
+	query.Set("imageSR", "4326")
+	query.Set("size", fmt.Sprintf("%d,%d", tile.width, tile.height))
+	query.Set("format", "tiff")
+	query.Set("pixelType", "F32")
+	query.Set("noData", "-9999")
+	query.Set("interpolation", "RSP_NearestNeighbor")
+	query.Set("adjustAspectRatio", "false")
+	query.Set("f", "image")
+	target.RawQuery = query.Encode()
+	return target.String()
+}
+
+func bboxValue(value [4]float64) string {
+	parts := make([]string, len(value))
+	for index, coordinate := range value {
+		parts[index] = strconv.FormatFloat(coordinate, 'f', -1, 64)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (p *Provider) validateHeaders(header http.Header) (int64, string, error) {
+	mediaType, _, err := mime.ParseMediaType(header.Get("Content-Type"))
+	if err != nil || mediaType != "image/tiff" {
+		return 0, "", fmt.Errorf("%w: Earthdata 未返回 TIFF", domain.ErrProviderUnavailable)
+	}
+	size, err := strconv.ParseInt(header.Get("Content-Length"), 10, 64)
+	if err != nil || size < minimumTIFFBytes || size > p.maxPartBytes {
+		return 0, "", fmt.Errorf("%w: Earthdata TIFF 分片大小无效", domain.ErrProviderUnavailable)
+	}
+	revision := header.Get("ETag")
+	if !httpclient.IsStrongETag(revision) {
+		return 0, "", fmt.Errorf("%w: Earthdata 分片缺少强 ETag", domain.ErrProviderUnavailable)
+	}
+	return size, revision, nil
+}
+
+func (p *Provider) artifact(parts []provenance.SourcePart, size int64,
+	firstSeen time.Time,
+) provenance.Artifact {
 	return provenance.Artifact{
-		Reference: value.url, MediaType: "image/tiff",
+		Reference: p.serviceURL.String(), MediaType: "image/tiff", SizeBytes: size,
 		Provenance: provenance.Provenance{
-			Provider: "NASA", Dataset: datasetName, DatasetVersion: datasetVersion,
-			SourceURI: value.url, Citation: "NASA LHASA 2.1.1",
-			DataKind: provenance.DataKindNowcast, ObservedAt: value.observedAt, FetchedAt: fetchedAt,
-			ValidFrom: value.observedAt, ValidTo: value.observedAt.Add(p.staleAfter),
-			SpatialResolution: "30 arc-second (~1 km)", TemporalResolution: "通常每日约4次，best-effort",
-			CRS: "EPSG:4326", Stale: now.Sub(value.observedAt) > p.staleAfter,
-			QualityFlags: qualityFlags, Limitations: []string{
+			Provider: ProviderName, Dataset: DatasetName, DatasetVersion: DatasetVersion,
+			SourceRevision: provenance.CompositeSourceRevision(parts), SourceURI: p.serviceURL.String(),
+			Citation: "NASA GSFC LHASA 2.1", DataKind: provenance.DataKindNowcast,
+			RevisionFirstSeenAt: firstSeen, FetchedAt: firstSeen,
+			ValidFrom: firstSeen, ValidTo: firstSeen.Add(p.staleAfter),
+			SpatialResolution:  "Earthdata 最近邻导出到固定 30 弧秒目标网格",
+			TemporalResolution: "官方标注每日更新两次，具体生产时刻未公开",
+			CRS:                "EPSG:4326", BBox: p.bbox, Model: "LHASA 2.1", SourceParts: parts,
+			QualityFlags: []string{"source_revision_first_seen", "composite_tile_revision", "target_grid_tiled_export"},
+			Limitations: []string{
+				"NASA 未提供精确模型运行时刻，观测时间保持未知，时效从组合修订首次发现时开始计算",
+				"组合修订由固定目标网格分片 ETag 计算，供应商未提供跨分片原子版本号",
+				"服务源网格与目标网格存在亚像元偏移，导出使用最近邻重采样且不插值概率值",
 				"全球模型估计，不是中国官方地质灾害预警",
-				"主要描述降雨触发滑坡概率，不能覆盖所有泥石流或实际滑坡边界",
 			},
 		},
 	}
+}
+
+func sameSourceParts(expected, actual []provenance.SourcePart) bool {
+	if len(expected) != len(actual) {
+		return false
+	}
+	for index := range expected {
+		left, right := expected[index], actual[index]
+		if left.Reference != right.Reference || left.Revision != right.Revision ||
+			left.SizeBytes != right.SizeBytes || left.BBox != right.BBox {
+			return false
+		}
+	}
+	return true
 }

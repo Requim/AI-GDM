@@ -15,8 +15,8 @@ import (
 
 const (
 	lhasaFallbackQualityFlag = "fallback_last_success"
-	lhasaProviderName        = "NASA"
-	lhasaDatasetName         = "LHASA NRT Hazard"
+	lhasaProviderName        = "NASA Earthdata GIS"
+	lhasaDatasetName         = "LHASA Hazard Today"
 )
 
 // LHASACollector 获取、处理并原子保存 LHASA 风险分析。
@@ -52,6 +52,7 @@ func (c *LHASACollector) Collect(ctx context.Context) (hazard.Snapshot, []hazard
 	if err != nil {
 		return c.fallback(previous, fmt.Errorf("发现最新 LHASA 制品: %w", err))
 	}
+	artifact = reconcileArtifactRevision(artifact, previous)
 	if err = c.validateArtifact(artifact); err != nil {
 		return c.fallback(previous, err)
 	}
@@ -131,7 +132,8 @@ func (c *LHASACollector) validateArtifact(artifact provenance.Artifact) error {
 	}
 	if artifact.Provenance.Provider != lhasaProviderName ||
 		artifact.Provenance.Dataset != lhasaDatasetName ||
-		artifact.Provenance.DataKind != provenance.DataKindNowcast {
+		artifact.Provenance.DataKind != provenance.DataKindNowcast ||
+		artifact.Provenance.SourceRevision == "" || artifact.Provenance.RevisionFirstSeenAt.IsZero() {
 		return fmt.Errorf("%w: LHASA 制品供应商、数据集或数据分类无效", domain.ErrInvalidInput)
 	}
 	if provenanceExpired(artifact.Provenance, c.clock.Now().UTC(), c.maxAge) {
@@ -151,7 +153,8 @@ func (c *LHASACollector) validateAnalysis(snapshot hazard.Snapshot, zones []haza
 	if err := snapshot.Source.Validate(); err != nil {
 		return fmt.Errorf("校验 LHASA 分析来源: %w", err)
 	}
-	if snapshot.Source.Provider != lhasaProviderName || snapshot.Source.Dataset != lhasaDatasetName {
+	if snapshot.Source.Provider != lhasaProviderName || snapshot.Source.Dataset != lhasaDatasetName ||
+		snapshot.Source.SourceRevision == "" || snapshot.Source.RevisionFirstSeenAt.IsZero() {
 		return fmt.Errorf("%w: LHASA 分析供应商或数据集无效", domain.ErrInvalidInput)
 	}
 	if err := validateSnapshotShape(snapshot); err != nil {
@@ -164,10 +167,14 @@ func (c *LHASACollector) validateAnalysis(snapshot hazard.Snapshot, zones []haza
 }
 
 func provenanceExpired(source provenance.Provenance, now time.Time, maxAge time.Duration) bool {
-	if source.ObservedAt.IsZero() || source.ObservedAt.After(now.Add(time.Hour)) {
+	anchor := source.RevisionFirstSeenAt
+	if anchor.IsZero() {
+		anchor = source.ObservedAt
+	}
+	if anchor.IsZero() || anchor.After(now.Add(time.Hour)) {
 		return true
 	}
-	return source.IsStale(now) || now.Sub(source.ObservedAt) > maxAge
+	return source.IsStale(now) || now.Sub(anchor) > maxAge
 }
 
 func validateZoneOwnership(snapshotID string, zones []hazard.RiskZone) error {
@@ -201,7 +208,36 @@ func validateSnapshotShape(snapshot hazard.Snapshot) error {
 func sameLHASAArtifact(snapshot hazard.Snapshot, artifact provenance.Artifact) bool {
 	return snapshot.Source.SourceURI == artifact.Reference &&
 		snapshot.Source.DatasetVersion == artifact.Provenance.DatasetVersion &&
-		snapshot.Source.ObservedAt.Equal(artifact.Provenance.ObservedAt)
+		snapshot.Source.SourceRevision == artifact.Provenance.SourceRevision &&
+		snapshot.Source.RevisionFirstSeenAt.Equal(artifact.Provenance.RevisionFirstSeenAt)
+}
+
+func reconcileArtifactRevision(artifact provenance.Artifact, previous lhasaAnalysis) provenance.Artifact {
+	if previous.err != nil || !sameSourceRevision(previous.snapshot.Source, artifact.Provenance) {
+		return artifact
+	}
+	prior, current := previous.snapshot.Source, artifact.Provenance
+	current.ObservedAt, current.PublishedAt = prior.ObservedAt, prior.PublishedAt
+	current.RevisionFirstSeenAt = prior.RevisionFirstSeenAt
+	current.ValidFrom, current.ValidTo = prior.ValidFrom, prior.ValidTo
+	current.QualityFlags = mergeUniqueValues(prior.QualityFlags, current.QualityFlags)
+	current.Limitations = mergeUniqueValues(prior.Limitations, current.Limitations)
+	artifact.Provenance = current
+	return artifact
+}
+
+func sameSourceRevision(previous, current provenance.Provenance) bool {
+	return current.SourceRevision != "" && previous.Provider == current.Provider &&
+		previous.Dataset == current.Dataset && previous.DatasetVersion == current.DatasetVersion &&
+		previous.SourceURI == current.SourceURI && previous.SourceRevision == current.SourceRevision
+}
+
+func mergeUniqueValues(first, second []string) []string {
+	result := append([]string(nil), first...)
+	for _, value := range second {
+		result = appendUnique(result, value)
+	}
+	return result
 }
 
 func markLHASAFallback(snapshot hazard.Snapshot,
@@ -221,6 +257,7 @@ func cloneSnapshot(value hazard.Snapshot) hazard.Snapshot {
 	value.Limitations = append([]string(nil), value.Limitations...)
 	value.Source.QualityFlags = append([]string(nil), value.Source.QualityFlags...)
 	value.Source.Limitations = append([]string(nil), value.Source.Limitations...)
+	value.Source.SourceParts = append([]provenance.SourcePart(nil), value.Source.SourceParts...)
 	return value
 }
 

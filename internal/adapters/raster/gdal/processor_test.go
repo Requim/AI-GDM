@@ -160,9 +160,10 @@ func fixtureArtifact(path string) provenance.Artifact {
 		Reference: "https://example.test/20260824T0600.tif", MediaType: "image/tiff",
 		LocalPath: path, SizeBytes: 7,
 		Provenance: provenance.Provenance{
-			Provider: "NASA", Dataset: "LHASA NRT Hazard", DatasetVersion: "2.1.1",
-			SourceURI: "https://example.test/20260824T0600.tif", DataKind: provenance.DataKindNowcast,
-			ObservedAt: observed, FetchedAt: observed.Add(time.Minute), ValidFrom: observed,
+			Provider: "NASA Earthdata GIS", Dataset: "LHASA Hazard Today", DatasetVersion: "2.1",
+			SourceRevision: `"revision-1"`, SourceURI: "https://example.test/20260824T0600.tif",
+			DataKind: provenance.DataKindNowcast, RevisionFirstSeenAt: observed,
+			FetchedAt: observed.Add(time.Minute), ValidFrom: observed,
 			ValidTo: observed.Add(12 * time.Hour), SHA256: hex.EncodeToString(digest[:]), CRS: "EPSG:4326",
 		},
 	}

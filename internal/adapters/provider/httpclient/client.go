@@ -308,6 +308,19 @@ func sleepContext(ctx context.Context, delay time.Duration) error {
 	}
 }
 
+// IsStrongETag 判断供应商修订标识是否可用于条件请求和响应一致性比对。
+func IsStrongETag(value string) bool {
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return false
+	}
+	for index := 1; index < len(value)-1; index++ {
+		if value[index] == '"' || value[index] <= 0x20 || value[index] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 // RedactURL 隐藏 URL 中的密钥、令牌和供应商自定义敏感参数。
 func RedactURL(rawURL string, extraKeys ...string) string {
 	parsed, err := url.Parse(rawURL)

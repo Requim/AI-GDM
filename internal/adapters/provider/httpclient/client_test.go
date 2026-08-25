@@ -69,6 +69,20 @@ func TestRedactURL(t *testing.T) {
 	}
 }
 
+func TestIsStrongETag(t *testing.T) {
+	for value, expected := range map[string]bool{
+		`"revision-1"`:   true,
+		`W/"revision-1"`: false,
+		"revision-1":     false,
+		"\"bad\nvalue\"": false,
+		`"bad"value"`:    false,
+	} {
+		if got := IsStrongETag(value); got != expected {
+			t.Fatalf("IsStrongETag(%q) = %v", value, got)
+		}
+	}
+}
+
 func TestClientRedactsSensitiveTransportError(t *testing.T) {
 	sentinel := errors.New("dial unavailable")
 	transport := roundTripperFunc(func(*http.Request) (*http.Response, error) {

@@ -39,11 +39,18 @@ func NewDownloader(client *httpclient.Client, store *Store, maxBytes int64) *Dow
 
 // Fetch 下载、校验、计算摘要并原子保存制品。
 func (d *Downloader) Fetch(ctx context.Context, artifact provenance.Artifact) (provenance.Artifact, error) {
-	response, err := d.client.Open(ctx, httpclient.Request{Method: http.MethodGet, URL: artifact.Reference})
+	request, err := downloadRequest(artifact)
+	if err != nil {
+		return provenance.Artifact{}, err
+	}
+	response, err := d.client.Open(ctx, request)
 	if err != nil {
 		return provenance.Artifact{}, err
 	}
 	defer response.Body.Close()
+	if err = validateResponseRevision(artifact.Provenance.SourceRevision, response.Header.Get("ETag")); err != nil {
+		return provenance.Artifact{}, err
+	}
 	if err = d.validateLength(response.ContentLength); err != nil {
 		return provenance.Artifact{}, err
 	}
@@ -61,6 +68,29 @@ func (d *Downloader) Fetch(ctx context.Context, artifact provenance.Artifact) (p
 		return provenance.Artifact{}, fmt.Errorf("保存下载制品: %w", err)
 	}
 	return stored, nil
+}
+
+func downloadRequest(artifact provenance.Artifact) (httpclient.Request, error) {
+	request := httpclient.Request{Method: http.MethodGet, URL: artifact.Reference}
+	if artifact.Provenance.SourceRevision == "" {
+		return request, nil
+	}
+	if !httpclient.IsStrongETag(artifact.Provenance.SourceRevision) {
+		return httpclient.Request{}, fmt.Errorf("%w: 制品来源修订不是强 ETag", domain.ErrInvalidInput)
+	}
+	request.Headers = make(http.Header)
+	request.Headers.Set("If-Match", artifact.Provenance.SourceRevision)
+	return request, nil
+}
+
+func validateResponseRevision(expected, actual string) error {
+	if expected == "" {
+		return nil
+	}
+	if actual != expected {
+		return fmt.Errorf("%w: 制品下载期间来源修订发生变化", domain.ErrProviderUnavailable)
+	}
+	return nil
 }
 
 func (d *Downloader) validateLength(length int64) error {

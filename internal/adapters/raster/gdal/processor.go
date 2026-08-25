@@ -164,11 +164,15 @@ func (p *Processor) snapshot(artifact provenance.Artifact) hazard.Snapshot {
 	}
 	return hazard.Snapshot{
 		ID: p.snapshotID(artifact), HazardType: hazard.TypeLandslide, ModelName: p.ModelName(),
-		ModelVersion: source.DatasetVersion, RunAt: source.ObservedAt, ValidFrom: source.ValidFrom, ValidTo: source.ValidTo,
+		ModelVersion: source.DatasetVersion, RunAt: checkedAt, ValidFrom: source.ValidFrom, ValidTo: source.ValidTo,
 		RasterReference:      artifact.Reference + "#sha256=" + source.SHA256,
-		ProbabilitySemantics: "约 30 弧秒网格的日尺度滑坡发生概率模型估计；等级为 AI-GDM 派生且采用严格大于阈值",
+		ProbabilitySemantics: "固定 30 弧秒目标网格最近邻导出的日尺度滑坡发生概率模型估计；源网格存在亚像元偏移，等级由 AI-GDM 按严格大于阈值派生",
 		Thresholds:           defaultThresholds(), Status: status, Source: source,
-		Limitations: []string{"辅助研判结果，不是中国官方预警", "当前仅为 WGS84 外包矩形预筛选，不代表中国国界或行政区"},
+		Limitations: []string{
+			"辅助研判结果，不是中国官方预警",
+			"RunAt 表示 AI-GDM 本地确定性处理时刻，NASA 精确模型运行时刻未知",
+			"当前仅为 WGS84 外包矩形预筛选，不代表中国国界或行政区",
+		},
 	}
 }
 
@@ -188,7 +192,7 @@ func zones(snapshot hazard.Snapshot, artifact provenance.Artifact, features []fe
 }
 
 func (p *Processor) snapshotID(artifact provenance.Artifact) string {
-	payload := artifact.Provenance.SHA256 + "|" + artifact.Provenance.ObservedAt.UTC().Format(time.RFC3339Nano) + "|" +
+	payload := artifact.Provenance.SHA256 + "|" + artifact.Provenance.SourceRevision + "|" +
 		TransformVersion + "|" + bboxValue(p.config.BBox)
 	digest := sha256.Sum256([]byte(payload))
 	return "lhasa-" + hex.EncodeToString(digest[:8])

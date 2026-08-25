@@ -29,6 +29,7 @@ import (
 const (
 	weatherFallbackFlag      = "fallback_last_success"
 	maxLHASAArtifactBytes    = 512 << 20
+	maxLHASAPartBytes        = 32 << 20
 	lhasaDiscoveryTimeout    = 30 * time.Second
 	lhasaDownloadTimeout     = 3 * time.Minute
 	lhasaMaxAttempts         = 2
@@ -94,10 +95,27 @@ func newLHASARunner(cfg config.Config, dependencies *resources.Resources,
 		HTTPClient: &http.Client{Timeout: lhasaDownloadTimeout}, Limiter: limiter,
 		Logger: logger, MaxAttempts: lhasaMaxAttempts,
 	})
-	provider := lhasa.New(discoveryClient,
-		lhasa.Config{BaseURL: cfg.LHASA.BaseURL, StaleAfter: cfg.LHASA.StaleAfter})
+	provider, err := lhasa.New(discoveryClient,
+		lhasa.Config{
+			ServiceURL: cfg.LHASA.ServiceURL, StaleAfter: cfg.LHASA.StaleAfter,
+			MaxPartBytes: maxLHASAPartBytes, MaxBytes: maxLHASAArtifactBytes,
+		})
+	if err != nil {
+		return nil, fmt.Errorf("创建 Earthdata LHASA 发现适配器: %w", err)
+	}
 	store := artifactstore.New(cfg.LHASA.DataDir, maxLHASAArtifactBytes)
-	downloader := artifactstore.NewDownloader(downloadClient, store, maxLHASAArtifactBytes)
+	mosaicker, err := gdal.NewMosaicker(gdal.MosaicConfig{Binary: cfg.LHASA.GDALBinary})
+	if err != nil {
+		return nil, fmt.Errorf("创建 LHASA 栅格拼接器: %w", err)
+	}
+	downloader, err := lhasa.NewTiledFetcher(downloadClient, provider, mosaicker, store,
+		lhasa.FetcherConfig{
+			TemporaryDir: cfg.LHASA.TemporaryDir,
+			MaxPartBytes: maxLHASAPartBytes, MaxBytes: maxLHASAArtifactBytes, Logger: logger,
+		})
+	if err != nil {
+		return nil, fmt.Errorf("创建 Earthdata LHASA 分片获取器: %w", err)
+	}
 	processor, err := gdal.New(gdal.Config{
 		Binary: cfg.LHASA.GDALBinary, ArtifactRoot: cfg.LHASA.DataDir,
 		TemporaryDir: cfg.LHASA.TemporaryDir,
@@ -160,7 +178,8 @@ func lhasaRefreshTask(collector lhasaCollector, logger *slog.Logger) scheduler.T
 		}
 		if hasQualityFlag(snapshot.Source.QualityFlags, weatherFallbackFlag) {
 			logger.WarnContext(ctx, "LHASA 刷新使用最后成功分析",
-				"snapshot_id", snapshot.ID, "observed_at", snapshot.Source.ObservedAt)
+				"snapshot_id", snapshot.ID,
+				"revision_first_seen_at", snapshot.Source.RevisionFirstSeenAt)
 		}
 		return nil
 	}}
