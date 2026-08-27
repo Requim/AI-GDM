@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"golang.org/x/time/rate"
 
 	"github.com/Requim/AI-GDM/internal/adapters/http/hazardapi"
@@ -29,8 +31,11 @@ import (
 )
 
 type hazardRuntime struct {
-	service   hazardapp.RiskService
-	landslide *hazardapp.HazardProvider
+	service         hazardapp.RiskService
+	landslide       *hazardapp.HazardProvider
+	riskDetail      ports.RiskDetailReader
+	spatialAnalysis ports.SpatialAnalysisReader
+	database        *pgxpool.Pool
 }
 
 func newHazardRuntime(cfg config.Config, dependencies *resources.Resources,
@@ -59,7 +64,7 @@ func newHazardRuntime(cfg config.Config, dependencies *resources.Resources,
 	if err != nil {
 		return nil, fmt.Errorf("创建风险预警用例: %w", err)
 	}
-	return &hazardRuntime{service: service, landslide: provider}, nil
+	return &hazardRuntime{service: service, landslide: provider, riskDetail: repository, spatialAnalysis: spatialpg.New(dependencies.Database), database: dependencies.Database}, nil
 }
 
 func newLHASACollector(cfg config.Config, dependencies *resources.Resources,

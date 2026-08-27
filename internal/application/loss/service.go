@@ -21,11 +21,11 @@ import (
 
 // EstimateInput 是一次损失计算的显式输入；暴露量必须来自真实可追溯数据。
 type EstimateInput struct {
-	SnapshotID    string
-	RegionCode    string
-	HazardType    hazarddomain.Type
-	IntensityBand string
-	Exposures     []lossdomain.Exposure
+	SnapshotID    string                `json:"snapshotId"`
+	RegionCode    string                `json:"regionCode"`
+	HazardType    hazarddomain.Type     `json:"hazardType"`
+	IntensityBand string                `json:"intensityBand"`
+	Exposures     []lossdomain.Exposure `json:"exposures"`
 }
 
 // AssessmentService 是损失评估驱动适配器使用的最小端口。
