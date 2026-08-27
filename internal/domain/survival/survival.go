@@ -51,19 +51,23 @@ type Scenario struct {
 
 // Assessment 保存搜救优先级和可解释因素，不代表经临床验证的个体生还概率。
 type Assessment struct {
-	ScenarioID        string    `json:"scenarioId"`
-	ScoreBand         string    `json:"scoreBand"`
-	Priority          Priority  `json:"priority"`
-	Factors           []string  `json:"factors"`
-	ModelVersion      string    `json:"modelVersion"`
-	HumanReviewStatus string    `json:"humanReviewStatus"`
-	CalculatedAt      time.Time `json:"calculatedAt"`
-	Limitations       []string  `json:"limitations"`
+	ScenarioID        string          `json:"scenarioId"`
+	Score             int             `json:"score"`
+	ScoreBand         string          `json:"scoreBand"`
+	ProbabilityLow    float64         `json:"probabilityLow"`
+	ProbabilityHigh   float64         `json:"probabilityHigh"`
+	ProbabilityBand   ProbabilityBand `json:"probabilityBand"`
+	Priority          Priority        `json:"priority"`
+	Factors           []string        `json:"factors"`
+	ModelVersion      string          `json:"modelVersion"`
+	HumanReviewStatus string          `json:"humanReviewStatus"`
+	CalculatedAt      time.Time       `json:"calculatedAt"`
+	Limitations       []string        `json:"limitations"`
 }
 
 // Validate 校验首版搜救场景不冒充真实人员记录。
 func (s Scenario) Validate() error {
-	if s.ID == "" || s.AsOf.IsZero() || s.ElapsedMinutes < 0 {
+	if s.ID == "" || s.AsOf.IsZero() || !isUTC(s.AsOf) || s.ElapsedMinutes < 0 {
 		return fmt.Errorf("%w: 搜救场景基础字段无效", domain.ErrInvalidInput)
 	}
 	if s.InputCompleteness < 0 || s.InputCompleteness > 1 {
@@ -73,4 +77,9 @@ func (s Scenario) Validate() error {
 		return fmt.Errorf("%w: MVP 只允许合成匿名搜救场景", domain.ErrInvalidInput)
 	}
 	return nil
+}
+
+func isUTC(value time.Time) bool {
+	_, offset := value.Zone()
+	return offset == 0
 }
