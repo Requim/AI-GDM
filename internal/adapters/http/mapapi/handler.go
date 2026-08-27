@@ -30,27 +30,44 @@ const maxRequestBytes = 16 << 10
 
 // Handler 将浏览器地图请求转发到服务端供应商适配器，浏览器永远不会接触高德密钥。
 type Handler struct {
-	facilities applicationevacuation.FacilitySearcher
-	routes     ports.RoutePlanner
-	transit    ports.TransitRoutePlanner
-	logger     *slog.Logger
+	facilities  applicationevacuation.FacilitySearcher
+	routes      ports.RoutePlanner
+	transit     ports.TransitRoutePlanner
+	routeSafety applicationevacuation.RouteSafetySearcher
+	logger      *slog.Logger
 }
 
 // New 创建相对于 BasePath 挂载的地图代理路由。
 func New(facilities applicationevacuation.FacilitySearcher, routes ports.RoutePlanner,
 	logger *slog.Logger,
 ) (http.Handler, error) {
-	return NewWithTransit(facilities, routes, nil, logger)
+	return NewWithSafety(facilities, routes, nil, logger)
 }
 
 // NewWithTransit 创建支持公交城市编码的地图代理路由。
 func NewWithTransit(facilities applicationevacuation.FacilitySearcher, routes ports.RoutePlanner,
 	transit ports.TransitRoutePlanner, logger *slog.Logger,
 ) (http.Handler, error) {
+	return NewWithTransitAndSafety(facilities, routes, transit, nil, logger)
+}
+
+// NewWithSafety 创建带路线风险区过滤和安全排序的地图代理路由。
+func NewWithSafety(facilities applicationevacuation.FacilitySearcher, routes ports.RoutePlanner,
+	routeSafety applicationevacuation.RouteSafetySearcher, logger *slog.Logger,
+) (http.Handler, error) {
+	return NewWithTransitAndSafety(facilities, routes, nil, routeSafety, logger)
+}
+
+// NewWithTransitAndSafety 创建支持公交和路线安全评估的地图代理路由。
+func NewWithTransitAndSafety(facilities applicationevacuation.FacilitySearcher, routes ports.RoutePlanner,
+	transit ports.TransitRoutePlanner, routeSafety applicationevacuation.RouteSafetySearcher,
+	logger *slog.Logger,
+) (http.Handler, error) {
 	if facilities == nil || routes == nil || logger == nil {
 		return nil, fmt.Errorf("地图代理依赖不能为空")
 	}
-	handler := &Handler{facilities: facilities, routes: routes, transit: transit, logger: logger}
+	handler := &Handler{facilities: facilities, routes: routes, transit: transit,
+		routeSafety: routeSafety, logger: logger}
 	router := chi.NewRouter()
 	router.Post("/places/nearby", handler.nearby)
 	router.Post("/routes", handler.route)
@@ -67,6 +84,7 @@ type nearbyRequest struct {
 }
 
 type routeRequest struct {
+	HazardType      hazard.Type           `json:"hazardType,omitempty"`
 	Origin          spatial.Point         `json:"origin"`
 	Destination     spatial.Point         `json:"destination"`
 	Mode            evacuation.TravelMode `json:"mode"`
@@ -124,6 +142,16 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request) {
 	var input routeRequest
 	if err := decode(r, &input); err != nil {
 		h.writeError(w, r, err)
+		return
+	}
+	if h.routeSafety != nil {
+		searchInput, err := normalizeSafeRoute(input)
+		if err != nil {
+			h.writeError(w, r, err)
+			return
+		}
+		result, err := h.routeSafety.SearchRoutes(r.Context(), searchInput)
+		h.writeResult(w, r, result, err)
 		return
 	}
 	if err := validateRoute(input); err != nil {
@@ -219,6 +247,39 @@ func validateRoute(input routeRequest) error {
 	default:
 		return fmt.Errorf("%w: 交通方式无效", domain.ErrInvalidInput)
 	}
+}
+
+func normalizeSafeRoute(input routeRequest) (applicationevacuation.RouteSearchInput, error) {
+	hazardType := input.HazardType
+	if hazardType == "" {
+		hazardType = hazard.TypeLandslide
+	}
+	if err := validatePoint(input.Origin); err != nil {
+		return applicationevacuation.RouteSearchInput{}, fmt.Errorf("起点: %w", err)
+	}
+	if err := validatePoint(input.Destination); err != nil {
+		return applicationevacuation.RouteSearchInput{}, fmt.Errorf("终点: %w", err)
+	}
+	switch input.Mode {
+	case evacuation.TravelDriving, evacuation.TravelWalking:
+		if input.OriginCity != "" || input.DestinationCity != "" {
+			return applicationevacuation.RouteSearchInput{}, fmt.Errorf(
+				"%w: 非公交路线不需要城市编码", domain.ErrInvalidInput)
+		}
+	case evacuation.TravelTransit:
+		if err := validateCityCode(input.OriginCity, "起点城市"); err != nil {
+			return applicationevacuation.RouteSearchInput{}, err
+		}
+		if err := validateCityCode(input.DestinationCity, "终点城市"); err != nil {
+			return applicationevacuation.RouteSearchInput{}, err
+		}
+	default:
+		return applicationevacuation.RouteSearchInput{}, fmt.Errorf("%w: 交通方式无效", domain.ErrInvalidInput)
+	}
+	return applicationevacuation.RouteSearchInput{
+		HazardType: hazardType, Origin: input.Origin, Destination: input.Destination,
+		Mode: input.Mode, OriginCity: input.OriginCity, DestinationCity: input.DestinationCity,
+	}, nil
 }
 
 func validateCityCode(value, field string) error {
