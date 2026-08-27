@@ -9,6 +9,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/adapters/http/hazardapi"
 	"github.com/Requim/AI-GDM/internal/adapters/http/lossapi"
 	"github.com/Requim/AI-GDM/internal/adapters/http/mapapi"
+	"github.com/Requim/AI-GDM/internal/adapters/http/survivalapi"
 	"github.com/Requim/AI-GDM/internal/platform/config"
 	"github.com/Requim/AI-GDM/internal/platform/httpserver"
 	"github.com/Requim/AI-GDM/internal/platform/resources"
@@ -26,17 +27,22 @@ func mountApplicationAPI(server *httpserver.Server, runtime *hazardRuntime,
 	if err != nil {
 		return err
 	}
+	survivalHandler, err := newSurvivalAPIHandler(logger)
+	if err != nil {
+		return err
+	}
 	lossHandler, err := newLossAPIHandler(runtime, logger)
 	if err != nil {
 		return err
 	}
-	if hazardHandler == nil && mapHandler == nil && lossHandler == nil {
+	if hazardHandler == nil && mapHandler == nil && survivalHandler == nil && lossHandler == nil {
 		return nil
 	}
 	if err = server.Mount(hazardapi.BasePath, applicationAPI{
-		hazard: hazardHandler,
-		mapAPI: mapHandler,
-		loss:   lossHandler,
+		hazard:   hazardHandler,
+		mapAPI:   mapHandler,
+		survival: survivalHandler,
+		loss:     lossHandler,
 	}); err != nil {
 		return fmt.Errorf("挂载应用 HTTP 路由: %w", err)
 	}
@@ -45,9 +51,10 @@ func mountApplicationAPI(server *httpserver.Server, runtime *hazardRuntime,
 
 // applicationAPI 按业务前缀分发已挂载的 HTTP 适配器。
 type applicationAPI struct {
-	hazard http.Handler
-	mapAPI http.Handler
-	loss   http.Handler
+	hazard   http.Handler
+	mapAPI   http.Handler
+	survival http.Handler
+	loss     http.Handler
 }
 
 func (m applicationAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +64,10 @@ func (m applicationAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if m.mapAPI != nil && (path == mapapi.BasePath || strings.HasPrefix(path, mapapi.BasePath+"/")) {
 		m.mapAPI.ServeHTTP(w, requestWithPath(r, strings.TrimPrefix(path, mapapi.BasePath)))
+		return
+	}
+	if m.survival != nil && (path == survivalapi.BasePath || strings.HasPrefix(path, survivalapi.BasePath+"/")) {
+		m.survival.ServeHTTP(w, requestWithPath(r, strings.TrimPrefix(path, survivalapi.BasePath)))
 		return
 	}
 	if m.loss != nil && (path == lossapi.BasePath || strings.HasPrefix(path, lossapi.BasePath+"/")) {
