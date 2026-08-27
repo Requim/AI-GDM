@@ -80,7 +80,7 @@ func newMapAPIHandler(cfg config.Config, dependencies *resources.Resources,
 	if err != nil {
 		return nil, fmt.Errorf("创建避险设施搜索用例: %w", err)
 	}
-	handler, err := mapapi.New(facilities, provider, logger)
+	handler, err := mapapi.NewWithTransit(facilities, provider, provider, logger)
 	if err != nil {
 		return nil, fmt.Errorf("创建地图 HTTP 适配器: %w", err)
 	}

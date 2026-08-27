@@ -53,6 +53,13 @@ type RoutePlanner interface {
 	Plan(ctx context.Context, origin, destination spatial.Point, mode evacuation.TravelMode) ([]evacuation.Route, error)
 }
 
+// TransitRoutePlanner 规划需要起终点城市编码的公交候选路线。
+// 与 RoutePlanner 分离，避免在通用路线端口中引入公交专属参数。
+type TransitRoutePlanner interface {
+	// PlanTransit 使用高德 citycode 规划公交路线，坐标和几何均为 WGS84。
+	PlanTransit(ctx context.Context, origin, destination spatial.Point, city1, city2 string) ([]evacuation.Route, error)
+}
+
 // EvidenceSearcher 搜索最新公开灾害证据。
 type EvidenceSearcher interface {
 	// Search 返回去重且保留来源的搜索结果。

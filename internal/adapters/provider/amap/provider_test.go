@@ -99,6 +99,73 @@ func TestPlanRejectsTransitWithoutCity(t *testing.T) {
 	}
 }
 
+func TestPlanTransitMapsCityAndSegmentsToWGS84(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v5/direction/transit/integrated" {
+			t.Fatalf("公交路线路径错误: %s", request.URL.Path)
+		}
+		query := request.URL.Query()
+		if query.Get("city1") != "010" || query.Get("city2") != "021" ||
+			query.Get("strategy") != "0" || query.Get("show_fields") != "cost,polyline" {
+			t.Fatalf("公交参数错误: %v", query)
+		}
+		w.Header().Set("X-Request-ID", "transit-request-1")
+		_, _ = w.Write([]byte(`{"status":"1","route":{"transits":[{"distance":3600,"nightflag":"1","cost":{"duration":1800,"transit_fee":2},"segments":[{"walking":{"steps":[{"instruction":"步行至车站","road_name":"测试街","distance":300,"polyline":"116.410244,39.916404;116.411000,39.920000"}]}},{"bus":{"buslines":[{"name":"测试公交1路","distance":3000,"polyline":"116.411000,39.920000;116.420000,39.925000"}]}}]}]}}`))
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, server.URL)
+	result, err := provider.PlanTransit(context.Background(),
+		spatial.Point{Longitude: 116.397128, Latitude: 39.916527},
+		spatial.Point{Longitude: 116.420000, Latitude: 39.930000}, " 010 ", "021")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("公交方案数量错误: %d", len(result))
+	}
+	route := result[0]
+	if route.Mode != evacuation.TravelTransit || route.DistanceMeters != 3600 || route.DurationSeconds != 1800 {
+		t.Fatalf("公交路线结果错误: %+v", route)
+	}
+	if route.Geometry.Type != "LineString" || strings.Contains(string(route.Geometry.Coordinates), "116.410244,39.916404") {
+		t.Fatalf("公交几何未转换为 WGS84: %+v", route.Geometry)
+	}
+	if len(route.Steps) != 2 || route.Steps[1].Instruction != "乘坐 测试公交1路" {
+		t.Fatalf("公交分段说明错误: %+v", route.Steps)
+	}
+	if len(route.Limitations) != 2 || route.Limitations[1] != "该方案包含夜班公共交通" {
+		t.Fatalf("夜班标记未保留: %+v", route.Limitations)
+	}
+	if route.Source.ProviderRequestID != "transit-request-1" ||
+		strings.Contains(route.Source.SourceURI, "test-key") {
+		t.Fatalf("公交来源信息错误: %+v", route.Source)
+	}
+}
+
+func TestPlanTransitRequiresCityCodes(t *testing.T) {
+	provider := newTestProvider(t, "https://example.test")
+	_, err := provider.PlanTransit(context.Background(),
+		spatial.Point{Longitude: 116.4, Latitude: 39.9},
+		spatial.Point{Longitude: 116.5, Latitude: 39.8}, "北京", "021")
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("非法城市编码错误 = %v", err)
+	}
+}
+
+func TestPlanTransitRejectsMissingGeometry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"1","route":{"transits":[{"distance":100,"duration":60,"segments":[{"walking":{"steps":[{"instruction":"无坐标","distance":50}]}}]}]}}`))
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, server.URL)
+	_, err := provider.PlanTransit(context.Background(),
+		spatial.Point{Longitude: 116.4, Latitude: 39.9},
+		spatial.Point{Longitude: 116.5, Latitude: 39.8}, "010", "010")
+	if !errors.Is(err, domain.ErrProviderUnavailable) {
+		t.Fatalf("缺少公交几何错误 = %v", err)
+	}
+}
+
 func newTestProvider(t *testing.T, baseURL string) *Provider {
 	t.Helper()
 	client := httpclient.New(httpclient.Options{AllowHTTP: true, MaxAttempts: 1})

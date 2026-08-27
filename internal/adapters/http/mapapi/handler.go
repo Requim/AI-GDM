@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -31,6 +32,7 @@ const maxRequestBytes = 16 << 10
 type Handler struct {
 	facilities applicationevacuation.FacilitySearcher
 	routes     ports.RoutePlanner
+	transit    ports.TransitRoutePlanner
 	logger     *slog.Logger
 }
 
@@ -38,10 +40,17 @@ type Handler struct {
 func New(facilities applicationevacuation.FacilitySearcher, routes ports.RoutePlanner,
 	logger *slog.Logger,
 ) (http.Handler, error) {
+	return NewWithTransit(facilities, routes, nil, logger)
+}
+
+// NewWithTransit 创建支持公交城市编码的地图代理路由。
+func NewWithTransit(facilities applicationevacuation.FacilitySearcher, routes ports.RoutePlanner,
+	transit ports.TransitRoutePlanner, logger *slog.Logger,
+) (http.Handler, error) {
 	if facilities == nil || routes == nil || logger == nil {
 		return nil, fmt.Errorf("地图代理依赖不能为空")
 	}
-	handler := &Handler{facilities: facilities, routes: routes, logger: logger}
+	handler := &Handler{facilities: facilities, routes: routes, transit: transit, logger: logger}
 	router := chi.NewRouter()
 	router.Post("/places/nearby", handler.nearby)
 	router.Post("/routes", handler.route)
@@ -58,9 +67,11 @@ type nearbyRequest struct {
 }
 
 type routeRequest struct {
-	Origin      spatial.Point         `json:"origin"`
-	Destination spatial.Point         `json:"destination"`
-	Mode        evacuation.TravelMode `json:"mode"`
+	Origin          spatial.Point         `json:"origin"`
+	Destination     spatial.Point         `json:"destination"`
+	Mode            evacuation.TravelMode `json:"mode"`
+	OriginCity      string                `json:"originCity,omitempty"`
+	DestinationCity string                `json:"destinationCity,omitempty"`
 }
 
 type successResponse struct {
@@ -119,7 +130,18 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, err)
 		return
 	}
-	result, err := h.routes.Plan(r.Context(), input.Origin, input.Destination, input.Mode)
+	var result []evacuation.Route
+	var err error
+	if input.Mode == evacuation.TravelTransit {
+		if h.transit == nil {
+			err = fmt.Errorf("%w: 公交路线规划端口未配置", domain.ErrProviderUnavailable)
+		} else {
+			result, err = h.transit.PlanTransit(r.Context(), input.Origin, input.Destination,
+				input.OriginCity, input.DestinationCity)
+		}
+	} else {
+		result, err = h.routes.Plan(r.Context(), input.Origin, input.Destination, input.Mode)
+	}
 	h.writeResult(w, r, result, err)
 }
 
@@ -184,14 +206,32 @@ func validateRoute(input routeRequest) error {
 		return fmt.Errorf("终点: %w", err)
 	}
 	switch input.Mode {
-	case evacuation.TravelDriving, evacuation.TravelWalking, evacuation.TravelTransit:
-		if input.Mode == evacuation.TravelTransit {
-			return fmt.Errorf("%w: 公交路线需要城市参数，当前接口暂不支持", domain.ErrInvalidInput)
+	case evacuation.TravelDriving, evacuation.TravelWalking:
+		if input.OriginCity != "" || input.DestinationCity != "" {
+			return fmt.Errorf("%w: 非公交路线不需要城市编码", domain.ErrInvalidInput)
 		}
 		return nil
+	case evacuation.TravelTransit:
+		if err := validateCityCode(input.OriginCity, "起点城市"); err != nil {
+			return err
+		}
+		return validateCityCode(input.DestinationCity, "终点城市")
 	default:
 		return fmt.Errorf("%w: 交通方式无效", domain.ErrInvalidInput)
 	}
+}
+
+func validateCityCode(value, field string) error {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 12 {
+		return fmt.Errorf("%w: %s citycode 无效", domain.ErrInvalidInput, field)
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return fmt.Errorf("%w: %s 仅支持数字 citycode", domain.ErrInvalidInput, field)
+		}
+	}
+	return nil
 }
 
 func validatePoint(point spatial.Point) error {

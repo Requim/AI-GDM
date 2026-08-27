@@ -2,6 +2,7 @@
 package amap
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -63,6 +64,7 @@ var (
 
 var _ ports.PlaceFinder = (*Provider)(nil)
 var _ ports.RoutePlanner = (*Provider)(nil)
+var _ ports.TransitRoutePlanner = (*Provider)(nil)
 
 // New 创建高德 Web 服务适配器。密钥只能通过参数注入，不从请求方输入读取。
 func New(client *httpclient.Client, config Config) (*Provider, error) {
@@ -172,6 +174,47 @@ func (p *Provider) Plan(ctx context.Context, origin, destination spatial.Point,
 	return p.routes(payload, origin, destination, mode, requestURL, response)
 }
 
+// PlanTransit 代理高德 V5 公交路线，并将公交分段几何转换为 WGS84。
+// city1 和 city2 必须是高德 citycode；单独保留该端口以避免破坏通用路线契约。
+func (p *Provider) PlanTransit(ctx context.Context, origin, destination spatial.Point, city1, city2 string) ([]evacuation.Route, error) {
+	if err := validatePoint(origin); err != nil {
+		return nil, fmt.Errorf("起点: %w", err)
+	}
+	if err := validatePoint(destination); err != nil {
+		return nil, fmt.Errorf("终点: %w", err)
+	}
+	city1 = strings.TrimSpace(city1)
+	city2 = strings.TrimSpace(city2)
+	if err := validateCityCode(city1, "起点城市"); err != nil {
+		return nil, err
+	}
+	if err := validateCityCode(city2, "终点城市"); err != nil {
+		return nil, err
+	}
+	originGCJ, err := p.toGCJ02(origin)
+	if err != nil {
+		return nil, fmt.Errorf("转换起点坐标: %w", err)
+	}
+	destinationGCJ, err := p.toGCJ02(destination)
+	if err != nil {
+		return nil, fmt.Errorf("转换终点坐标: %w", err)
+	}
+	query := url.Values{
+		"key": {p.apiKey}, "origin": {formatPoint(originGCJ)},
+		"destination": {formatPoint(destinationGCJ)}, "city1": {city1}, "city2": {city2},
+		"strategy": {"0"}, "show_fields": {"cost,polyline"},
+	}
+	body, requestURL, response, err := p.do(ctx, "/v5/direction/transit/integrated", query)
+	if err != nil {
+		return nil, fmt.Errorf("规划高德公交路线: %w", err)
+	}
+	var payload transitResponse
+	if err = decodeSuccess(body, &payload); err != nil {
+		return nil, fmt.Errorf("解析高德公交路线: %w", err)
+	}
+	return p.transitRoutes(payload, origin, destination, requestURL, response)
+}
+
 func (p *Provider) do(ctx context.Context, path string, query url.Values) (
 	[]byte, string, httpclient.Response, error,
 ) {
@@ -262,6 +305,199 @@ func (p *Provider) route(path directionPathValue, origin, destination spatial.Po
 	}, nil
 }
 
+func (p *Provider) transitRoutes(payload transitResponse, origin, destination spatial.Point,
+	requestURL string, response httpclient.Response,
+) ([]evacuation.Route, error) {
+	plans := payload.Route.Transits
+	if len(plans) == 0 {
+		plans = payload.Route.Paths
+	}
+	if len(plans) == 0 {
+		return nil, fmt.Errorf("%w: 高德未返回可用公交方案", domain.ErrProviderUnavailable)
+	}
+	result := make([]evacuation.Route, 0, len(plans))
+	for index, plan := range plans {
+		route, err := p.transitRoute(plan, origin, destination, index, requestURL, response)
+		if err != nil {
+			return nil, fmt.Errorf("解析高德第 %d 条公交方案: %w", index+1, err)
+		}
+		result = append(result, route)
+	}
+	return result, nil
+}
+
+func (p *Provider) transitRoute(plan transitPlan, origin, destination spatial.Point,
+	index int, requestURL string, response httpclient.Response,
+) (evacuation.Route, error) {
+	distance, err := parsePositiveNumber(string(plan.Distance))
+	if err != nil {
+		return evacuation.Route{}, fmt.Errorf("距离无效: %w", err)
+	}
+	durationText := string(plan.Duration)
+	if strings.TrimSpace(durationText) == "" {
+		durationText = string(plan.Cost.Duration)
+	}
+	duration, err := parsePositiveInt(durationText)
+	if err != nil {
+		return evacuation.Route{}, fmt.Errorf("时长无效: %w", err)
+	}
+	geometry, steps, err := p.transitGeometry(plan)
+	if err != nil {
+		return evacuation.Route{}, err
+	}
+	limitations := []string{
+		"公交方案来自高德实时公共交通数据，仅作为疏散候选路线，尚未经过风险区过滤和交管部门确认",
+	}
+	if string(plan.NightFlag) == "1" {
+		limitations = append(limitations, "该方案包含夜班公共交通")
+	}
+	return evacuation.Route{
+		ID: fmt.Sprintf("amap-transit-%d", index+1), Origin: origin, Destination: destination,
+		Mode: evacuation.TravelTransit, DistanceMeters: distance, DurationSeconds: duration,
+		Geometry: geometry, Steps: steps, Source: p.provenance(requestURL, response, "公交路线规划"),
+		Limitations: limitations,
+	}, nil
+}
+
+func (p *Provider) transitGeometry(plan transitPlan) (spatial.Geometry, []evacuation.RouteStep, error) {
+	coordinates := make([][2]float64, 0)
+	steps := make([]evacuation.RouteStep, 0)
+	for _, segment := range plan.Segments {
+		if err := p.appendTransitSegment(segment, &coordinates, &steps); err != nil {
+			return spatial.Geometry{}, nil, err
+		}
+	}
+	if len(coordinates) == 0 {
+		if err := p.appendTransitPolyline(&coordinates, plan.Polyline); err != nil {
+			return spatial.Geometry{}, nil, err
+		}
+	}
+	if len(coordinates) < 2 {
+		return spatial.Geometry{}, nil, fmt.Errorf("%w: 公交方案缺少折线几何", domain.ErrProviderUnavailable)
+	}
+	content, err := json.Marshal(coordinates)
+	if err != nil {
+		return spatial.Geometry{}, nil, fmt.Errorf("%w: 公交路线几何编码失败", domain.ErrProviderUnavailable)
+	}
+	return spatial.Geometry{Type: "LineString", Coordinates: content}, steps, nil
+}
+
+func (p *Provider) appendTransitSegment(segment transitSegment, coordinates *[][2]float64,
+	steps *[]evacuation.RouteStep,
+) error {
+	before := len(*coordinates)
+	if segment.Walking != nil {
+		if err := p.appendTransitPart(segment.Walking.Polyline, segment.Walking.Steps, coordinates, steps); err != nil {
+			return err
+		}
+	}
+	if segment.Bus != nil {
+		if err := p.appendTransitPart(segment.Bus.Polyline, segment.Bus.Steps, coordinates, steps); err != nil {
+			return err
+		}
+		if err := p.appendTransitBuslines(segment.Bus.Buslines, coordinates, steps); err != nil {
+			return err
+		}
+	}
+	if segment.Railway != nil {
+		if err := p.appendTransitPart(segment.Railway.Polyline, segment.Railway.Steps, coordinates, steps); err != nil {
+			return err
+		}
+	}
+	if segment.Taxi != nil {
+		if err := p.appendTransitPart(segment.Taxi.Polyline, segment.Taxi.Steps, coordinates, steps); err != nil {
+			return err
+		}
+	}
+	if len(*coordinates) == before {
+		return p.appendTransitPolyline(coordinates, segment.Polyline)
+	}
+	return nil
+}
+
+func (p *Provider) appendTransitPart(polyline stringValue, values []transitStep,
+	coordinates *[][2]float64, steps *[]evacuation.RouteStep,
+) error {
+	if err := p.appendTransitPolyline(coordinates, polyline); err != nil {
+		return err
+	}
+	return p.appendTransitSteps(values, coordinates, steps)
+}
+
+func (p *Provider) appendTransitBuslines(values []transitBusline, coordinates *[][2]float64,
+	steps *[]evacuation.RouteStep,
+) error {
+	for _, value := range values {
+		if err := p.appendTransitPolyline(coordinates, value.Polyline); err != nil {
+			return err
+		}
+		name := strings.TrimSpace(string(value.Name))
+		if name == "" {
+			continue
+		}
+		distance, err := optionalDistance(value.Distance)
+		if err != nil {
+			return fmt.Errorf("公交分段距离无效: %w", err)
+		}
+		*steps = append(*steps, evacuation.RouteStep{
+			Instruction: "乘坐 " + name, RoadName: name, DistanceM: distance,
+		})
+	}
+	return nil
+}
+
+func (p *Provider) appendTransitSteps(values []transitStep, coordinates *[][2]float64,
+	steps *[]evacuation.RouteStep,
+) error {
+	for _, value := range values {
+		if err := p.appendTransitPolyline(coordinates, value.Polyline); err != nil {
+			return err
+		}
+		instruction := strings.TrimSpace(string(value.Instruction))
+		distanceValue := value.Distance
+		if strings.TrimSpace(string(distanceValue)) == "" {
+			distanceValue = value.StepDistance
+		}
+		distance, err := optionalDistance(distanceValue)
+		if err != nil {
+			return fmt.Errorf("公交步骤距离无效: %w", err)
+		}
+		if instruction == "" && distance == 0 {
+			continue
+		}
+		*steps = append(*steps, evacuation.RouteStep{
+			Instruction: instruction, RoadName: strings.TrimSpace(string(value.RoadName)), DistanceM: distance,
+		})
+	}
+	return nil
+}
+
+func (p *Provider) appendTransitPolyline(coordinates *[][2]float64, value stringValue) error {
+	content := strings.TrimSpace(string(value))
+	if content == "" {
+		return nil
+	}
+	added := 0
+	for _, item := range strings.Split(content, ";") {
+		if strings.TrimSpace(item) == "" {
+			continue
+		}
+		point, err := p.parseGCJPoint(item)
+		if err != nil {
+			return fmt.Errorf("%w: 公交路线几何无效", domain.ErrProviderUnavailable)
+		}
+		coordinate := [2]float64{point.Longitude, point.Latitude}
+		if len(*coordinates) == 0 || (*coordinates)[len(*coordinates)-1] != coordinate {
+			*coordinates = append(*coordinates, coordinate)
+		}
+		added++
+	}
+	if added == 0 {
+		return fmt.Errorf("%w: 公交路线几何为空", domain.ErrProviderUnavailable)
+	}
+	return nil
+}
+
 func (p *Provider) provenance(requestURL string, response httpclient.Response,
 	description string,
 ) provenance.Provenance {
@@ -288,6 +524,22 @@ func validatePoint(point spatial.Point) error {
 		return fmt.Errorf("%w: 坐标必须是有限数值", domain.ErrInvalidInput)
 	}
 	return point.Validate()
+}
+
+func validateCityCode(value, field string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%w: %s citycode 不能为空", domain.ErrInvalidInput, field)
+	}
+	value = strings.TrimSpace(value)
+	if len(value) > 12 {
+		return fmt.Errorf("%w: %s citycode 长度无效", domain.ErrInvalidInput, field)
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return fmt.Errorf("%w: %s 仅支持高德数字 citycode", domain.ErrInvalidInput, field)
+		}
+	}
+	return nil
 }
 
 func facilityKeyword(kind evacuation.FacilityType) (string, error) {
@@ -367,6 +619,13 @@ func parsePositiveNumber(value string) (float64, error) {
 	return parsed, nil
 }
 
+func optionalDistance(value stringValue) (float64, error) {
+	if strings.TrimSpace(string(value)) == "" {
+		return 0, nil
+	}
+	return parseNumber(string(value))
+}
+
 func parsePositiveInt(value string) (int64, error) {
 	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 	if err != nil || parsed <= 0 {
@@ -433,6 +692,93 @@ type directionResponse struct {
 	Route struct {
 		Paths []directionPathValue `json:"paths"`
 	} `json:"route"`
+}
+
+type transitResponse struct {
+	Route transitRouteValue `json:"route"`
+}
+
+type transitRouteValue struct {
+	Transits []transitPlan `json:"transits"`
+	Paths    []transitPlan `json:"paths"`
+}
+
+type transitPlan struct {
+	Distance  stringValue      `json:"distance"`
+	Duration  stringValue      `json:"duration"`
+	NightFlag stringValue      `json:"nightflag"`
+	Polyline  stringValue      `json:"polyline"`
+	Cost      transitCost      `json:"cost"`
+	Segments  []transitSegment `json:"segments"`
+}
+
+type transitCost struct {
+	Duration   stringValue `json:"duration"`
+	TransitFee stringValue `json:"transit_fee"`
+}
+
+type transitSegment struct {
+	Polyline stringValue     `json:"polyline"`
+	Walking  *transitWalking `json:"walking"`
+	Bus      *transitBus     `json:"bus"`
+	Railway  *transitRailway `json:"railway"`
+	Taxi     *transitTaxi    `json:"taxi"`
+}
+
+type transitWalking struct {
+	Polyline stringValue   `json:"polyline"`
+	Steps    []transitStep `json:"steps"`
+}
+
+type transitBus struct {
+	Polyline stringValue      `json:"polyline"`
+	Steps    []transitStep    `json:"steps"`
+	Buslines []transitBusline `json:"buslines"`
+}
+
+type transitRailway struct {
+	Polyline stringValue   `json:"polyline"`
+	Steps    []transitStep `json:"steps"`
+}
+
+type transitTaxi struct {
+	Polyline stringValue   `json:"polyline"`
+	Steps    []transitStep `json:"steps"`
+}
+
+type transitStep struct {
+	Instruction  stringValue `json:"instruction"`
+	RoadName     stringValue `json:"road_name"`
+	Distance     stringValue `json:"distance"`
+	StepDistance stringValue `json:"step_distance"`
+	Polyline     stringValue `json:"polyline"`
+}
+
+type transitBusline struct {
+	Name     stringValue `json:"name"`
+	Distance stringValue `json:"distance"`
+	Polyline stringValue `json:"polyline"`
+}
+
+type stringValue string
+
+func (value *stringValue) UnmarshalJSON(content []byte) error {
+	content = bytes.TrimSpace(content)
+	if bytes.Equal(content, []byte("null")) {
+		*value = ""
+		return nil
+	}
+	var textValue string
+	if err := json.Unmarshal(content, &textValue); err == nil {
+		*value = stringValue(textValue)
+		return nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(content, &number); err != nil {
+		return fmt.Errorf("字符串或数字字段无效: %w", err)
+	}
+	*value = stringValue(number.String())
+	return nil
 }
 
 type directionPathValue struct {
