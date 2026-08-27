@@ -32,6 +32,12 @@ func TestApplicationAPIDispatchesRiskAndMapPrefixes(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusNoContent)
 		}),
+		ai: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/report" {
+				t.Fatalf("智能研判适配器收到错误路径: %s", r.URL.Path)
+			}
+			w.WriteHeader(http.StatusResetContent)
+		}),
 	}
 	if err := server.Mount("/api/v1", app); err != nil {
 		t.Fatal(err)
@@ -48,6 +54,10 @@ func TestApplicationAPIDispatchesRiskAndMapPrefixes(t *testing.T) {
 	survivalResponse := serveApplication(t, server.Handler(), "/api/v1/survival/cases")
 	if survivalResponse.Code != http.StatusNoContent {
 		t.Fatalf("生还回放路由状态 = %d", survivalResponse.Code)
+	}
+	aiResponse := serveApplication(t, server.Handler(), "/api/v1/ai/report")
+	if aiResponse.Code != http.StatusResetContent {
+		t.Fatalf("智能研判路由状态 = %d", aiResponse.Code)
 	}
 }
 

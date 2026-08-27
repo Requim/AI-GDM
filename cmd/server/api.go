@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Requim/AI-GDM/internal/adapters/http/aiapi"
 	"github.com/Requim/AI-GDM/internal/adapters/http/hazardapi"
 	"github.com/Requim/AI-GDM/internal/adapters/http/lossapi"
 	"github.com/Requim/AI-GDM/internal/adapters/http/mapapi"
@@ -18,6 +19,7 @@ import (
 // mountApplicationAPI 将风险和地图适配器合并到同一个 /api/v1 挂载点，避免通配路由互相遮蔽。
 func mountApplicationAPI(server *httpserver.Server, runtime *hazardRuntime,
 	cfg config.Config, dependencies *resources.Resources, logger *slog.Logger,
+	aiHandler http.Handler,
 ) error {
 	hazardHandler, err := newHazardAPIHandler(runtime, logger)
 	if err != nil {
@@ -35,7 +37,7 @@ func mountApplicationAPI(server *httpserver.Server, runtime *hazardRuntime,
 	if err != nil {
 		return err
 	}
-	if hazardHandler == nil && mapHandler == nil && survivalHandler == nil && lossHandler == nil {
+	if hazardHandler == nil && mapHandler == nil && survivalHandler == nil && lossHandler == nil && aiHandler == nil {
 		return nil
 	}
 	if err = server.Mount(hazardapi.BasePath, applicationAPI{
@@ -43,6 +45,7 @@ func mountApplicationAPI(server *httpserver.Server, runtime *hazardRuntime,
 		mapAPI:   mapHandler,
 		survival: survivalHandler,
 		loss:     lossHandler,
+		ai:       aiHandler,
 	}); err != nil {
 		return fmt.Errorf("挂载应用 HTTP 路由: %w", err)
 	}
@@ -55,6 +58,7 @@ type applicationAPI struct {
 	mapAPI   http.Handler
 	survival http.Handler
 	loss     http.Handler
+	ai       http.Handler
 }
 
 func (m applicationAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +76,10 @@ func (m applicationAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if m.loss != nil && (path == lossapi.BasePath || strings.HasPrefix(path, lossapi.BasePath+"/")) {
 		m.loss.ServeHTTP(w, requestWithPath(r, strings.TrimPrefix(path, lossapi.BasePath)))
+		return
+	}
+	if m.ai != nil && (path == aiapi.BasePath || strings.HasPrefix(path, aiapi.BasePath+"/")) {
+		m.ai.ServeHTTP(w, requestWithPath(r, strings.TrimPrefix(path, aiapi.BasePath)))
 		return
 	}
 	if m.hazard != nil {
