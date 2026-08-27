@@ -14,8 +14,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	applicationevacuation "github.com/Requim/AI-GDM/internal/application/evacuation"
 	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/evacuation"
+	"github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/domain/spatial"
 	"github.com/Requim/AI-GDM/internal/ports"
 )
@@ -27,17 +29,19 @@ const maxRequestBytes = 16 << 10
 
 // Handler 将浏览器地图请求转发到服务端供应商适配器，浏览器永远不会接触高德密钥。
 type Handler struct {
-	places ports.PlaceFinder
-	routes ports.RoutePlanner
-	logger *slog.Logger
+	facilities applicationevacuation.FacilitySearcher
+	routes     ports.RoutePlanner
+	logger     *slog.Logger
 }
 
 // New 创建相对于 BasePath 挂载的地图代理路由。
-func New(places ports.PlaceFinder, routes ports.RoutePlanner, logger *slog.Logger) (http.Handler, error) {
-	if places == nil || routes == nil || logger == nil {
+func New(facilities applicationevacuation.FacilitySearcher, routes ports.RoutePlanner,
+	logger *slog.Logger,
+) (http.Handler, error) {
+	if facilities == nil || routes == nil || logger == nil {
 		return nil, fmt.Errorf("地图代理依赖不能为空")
 	}
-	handler := &Handler{places: places, routes: routes, logger: logger}
+	handler := &Handler{facilities: facilities, routes: routes, logger: logger}
 	router := chi.NewRouter()
 	router.Post("/places/nearby", handler.nearby)
 	router.Post("/routes", handler.route)
@@ -47,9 +51,10 @@ func New(places ports.PlaceFinder, routes ports.RoutePlanner, logger *slog.Logge
 }
 
 type nearbyRequest struct {
-	Center  spatial.Point           `json:"center"`
-	Kind    evacuation.FacilityType `json:"kind"`
-	RadiusM int                     `json:"radiusMeters"`
+	HazardType hazard.Type             `json:"hazardType,omitempty"`
+	Center     spatial.Point           `json:"center"`
+	Kind       evacuation.FacilityType `json:"kind"`
+	RadiusM    int                     `json:"radiusMeters"`
 }
 
 type routeRequest struct {
@@ -73,18 +78,35 @@ type apiError struct {
 	RequestID string `json:"requestId"`
 }
 
+type nearbyResult struct {
+	Snapshot    hazard.Snapshot                          `json:"snapshot"`
+	Facilities  []evacuation.Facility                    `json:"facilities"`
+	Excluded    []applicationevacuation.ExcludedFacility `json:"excluded"`
+	Filter      facilityFilter                           `json:"filter"`
+	Limitations []string                                 `json:"limitations"`
+}
+
+type facilityFilter struct {
+	CandidateCount int `json:"candidateCount"`
+	AllowedCount   int `json:"allowedCount"`
+	ExcludedCount  int `json:"excludedCount"`
+}
+
+var errHazardNotSupported = errors.New("设施筛选灾种尚未接入")
+
 func (h *Handler) nearby(w http.ResponseWriter, r *http.Request) {
 	var input nearbyRequest
 	if err := decode(r, &input); err != nil {
 		h.writeError(w, r, err)
 		return
 	}
-	if err := validateNearby(input); err != nil {
+	searchInput, err := normalizeNearby(input)
+	if err != nil {
 		h.writeError(w, r, err)
 		return
 	}
-	result, err := h.places.FindNearby(r.Context(), input.Center, input.Kind, input.RadiusM)
-	h.writeResult(w, r, result, err)
+	result, err := h.facilities.Search(r.Context(), searchInput)
+	h.writeResult(w, r, buildNearbyResult(result), err)
 }
 
 func (h *Handler) route(w http.ResponseWriter, r *http.Request) {
@@ -117,18 +139,40 @@ func decode(request *http.Request, destination any) error {
 	return nil
 }
 
-func validateNearby(input nearbyRequest) error {
+func normalizeNearby(input nearbyRequest) (applicationevacuation.SearchInput, error) {
+	if input.HazardType == "" {
+		input.HazardType = hazard.TypeLandslide
+	}
+	if input.HazardType != hazard.TypeLandslide {
+		return applicationevacuation.SearchInput{}, fmt.Errorf("%w: 灾种 %q",
+			errHazardNotSupported, input.HazardType)
+	}
 	if err := validatePoint(input.Center); err != nil {
-		return fmt.Errorf("中心坐标: %w", err)
+		return applicationevacuation.SearchInput{}, fmt.Errorf("中心坐标: %w", err)
 	}
 	if input.RadiusM <= 0 || input.RadiusM > 50_000 {
-		return fmt.Errorf("%w: 搜索半径必须在 1 至 50000 米之间", domain.ErrInvalidInput)
+		return applicationevacuation.SearchInput{}, fmt.Errorf(
+			"%w: 搜索半径必须在 1 至 50000 米之间", domain.ErrInvalidInput)
 	}
 	switch input.Kind {
 	case evacuation.FacilityShelter, evacuation.FacilityHospital, evacuation.FacilityTransport:
-		return nil
+		return applicationevacuation.SearchInput{
+			HazardType: input.HazardType, Center: input.Center,
+			Kind: input.Kind, RadiusMeters: input.RadiusM,
+		}, nil
 	default:
-		return fmt.Errorf("%w: 设施类型无效", domain.ErrInvalidInput)
+		return applicationevacuation.SearchInput{}, fmt.Errorf("%w: 设施类型无效", domain.ErrInvalidInput)
+	}
+}
+
+func buildNearbyResult(result applicationevacuation.SearchResult) nearbyResult {
+	return nearbyResult{
+		Snapshot: result.Snapshot, Facilities: result.Facilities, Excluded: result.Excluded,
+		Filter: facilityFilter{
+			CandidateCount: len(result.Facilities) + len(result.Excluded),
+			AllowedCount:   len(result.Facilities), ExcludedCount: len(result.Excluded),
+		},
+		Limitations: result.Limitations,
 	}
 }
 
@@ -179,12 +223,16 @@ func classifyError(err error) (int, string, string) {
 	switch {
 	case errors.Is(err, domain.ErrInvalidInput):
 		return http.StatusBadRequest, "invalid_request", "请求参数无效"
+	case errors.Is(err, errHazardNotSupported):
+		return http.StatusNotFound, "hazard_not_supported", "尚未接入该灾种的实时设施筛选能力"
 	case errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout, "request_timeout", "地图供应商请求超时"
 	case errors.Is(err, context.Canceled):
 		return http.StatusRequestTimeout, "request_canceled", "请求已取消"
 	case errors.Is(err, domain.ErrProviderUnavailable):
 		return http.StatusServiceUnavailable, "provider_unavailable", "地图供应商暂时不可用"
+	case errors.Is(err, domain.ErrInsufficientData):
+		return http.StatusServiceUnavailable, "insufficient_data", "实时风险区数据不足，无法安全筛选设施"
 	default:
 		return http.StatusInternalServerError, "internal_error", "服务内部错误"
 	}

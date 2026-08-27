@@ -63,3 +63,175 @@ func (g Geometry) Validate() error {
 	}
 	return nil
 }
+
+// ContainsPoint 判断 WGS84 点是否落在 Polygon 或 MultiPolygon 内，边界按命中处理。
+// 洞环内部视为非风险区，但洞环边界仍按风险区边界处理。
+func (g Geometry) ContainsPoint(point Point) (bool, error) {
+	if err := point.Validate(); err != nil {
+		return false, err
+	}
+	if err := g.ValidateArea(); err != nil {
+		return false, err
+	}
+	switch g.Type {
+	case "Polygon":
+		var coordinates [][][]float64
+		if err := decodePolygonCoordinates(g.Coordinates, &coordinates); err != nil {
+			return false, err
+		}
+		return polygonContainsPoint(coordinates, point)
+	case "MultiPolygon":
+		var coordinates [][][][]float64
+		if err := json.Unmarshal(g.Coordinates, &coordinates); err != nil {
+			return false, fmt.Errorf("%w: MultiPolygon 坐标无效: %v", domain.ErrInvalidInput, err)
+		}
+		if len(coordinates) == 0 {
+			return false, fmt.Errorf("%w: MultiPolygon 不含多边形", domain.ErrInvalidInput)
+		}
+		inside := false
+		for _, polygon := range coordinates {
+			matched, err := polygonContainsPoint(polygon, point)
+			if err != nil {
+				return false, err
+			}
+			inside = inside || matched
+		}
+		return inside, nil
+	default:
+		return false, fmt.Errorf("%w: 仅支持 Polygon 或 MultiPolygon 点包含判断", domain.ErrInvalidInput)
+	}
+}
+
+// ValidateArea 校验可用于风险区点包含判断的 Polygon 或 MultiPolygon。
+// 与通用 Geometry.Validate 不同，它会解析并校验每一个环，避免空候选时漏过坏几何。
+func (g Geometry) ValidateArea() error {
+	if err := g.Validate(); err != nil {
+		return err
+	}
+	switch g.Type {
+	case "Polygon":
+		var coordinates [][][]float64
+		if err := decodePolygonCoordinates(g.Coordinates, &coordinates); err != nil {
+			return err
+		}
+	case "MultiPolygon":
+		var coordinates [][][][]float64
+		if err := json.Unmarshal(g.Coordinates, &coordinates); err != nil {
+			return fmt.Errorf("%w: MultiPolygon 坐标无效: %v", domain.ErrInvalidInput, err)
+		}
+		if len(coordinates) == 0 {
+			return fmt.Errorf("%w: MultiPolygon 不含多边形", domain.ErrInvalidInput)
+		}
+		for _, polygon := range coordinates {
+			if err := validatePolygonCoordinates(polygon); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("%w: 仅支持 Polygon 或 MultiPolygon 面几何", domain.ErrInvalidInput)
+	}
+	return nil
+}
+
+func decodePolygonCoordinates(raw json.RawMessage, value *[][][]float64) error {
+	if err := json.Unmarshal(raw, value); err != nil {
+		return fmt.Errorf("%w: Polygon 坐标无效: %v", domain.ErrInvalidInput, err)
+	}
+	if err := validatePolygonCoordinates(*value); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePolygonCoordinates(value [][][]float64) error {
+	if len(value) == 0 {
+		return fmt.Errorf("%w: Polygon 不含环", domain.ErrInvalidInput)
+	}
+	for _, ring := range value {
+		if err := validateRingCoordinates(ring); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRingCoordinates(ring [][]float64) error {
+	if len(ring) < 4 || !sameCoordinate(ring[0], ring[len(ring)-1]) {
+		return fmt.Errorf("%w: Polygon 环未闭合或点数不足", domain.ErrInvalidInput)
+	}
+	area := 0.0
+	for index := 0; index < len(ring)-1; index++ {
+		if len(ring[index]) < 2 || !validCoordinate(ring[index]) {
+			return fmt.Errorf("%w: Polygon 坐标超出 WGS84 范围", domain.ErrInvalidInput)
+		}
+		area += ring[index][0]*ring[index+1][1] - ring[index+1][0]*ring[index][1]
+	}
+	if !validCoordinate(ring[len(ring)-1]) || math.Abs(area) < 1e-15 {
+		return fmt.Errorf("%w: Polygon 环无效或面积为零", domain.ErrInvalidInput)
+	}
+	return nil
+}
+
+func validCoordinate(value []float64) bool {
+	return len(value) >= 2 && finiteCoordinate(value[0]) && finiteCoordinate(value[1]) &&
+		value[0] >= -180 && value[0] <= 180 && value[1] >= -90 && value[1] <= 90
+}
+
+func finiteCoordinate(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func sameCoordinate(left, right []float64) bool {
+	return len(left) >= 2 && len(right) >= 2 && left[0] == right[0] && left[1] == right[1]
+}
+
+func polygonContainsPoint(polygon [][][]float64, point Point) (bool, error) {
+	if err := validatePolygonCoordinates(polygon); err != nil {
+		return false, err
+	}
+	outer, boundary := ringContainsPoint(polygon[0], point)
+	if boundary {
+		return true, nil
+	}
+	if !outer {
+		return false, nil
+	}
+	for _, hole := range polygon[1:] {
+		inside, boundary := ringContainsPoint(hole, point)
+		if boundary {
+			return true, nil
+		}
+		if inside {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func ringContainsPoint(ring [][]float64, point Point) (inside, boundary bool) {
+	for index := 0; index < len(ring)-1; index++ {
+		if pointOnSegment(point, ring[index], ring[index+1]) {
+			return true, true
+		}
+	}
+	for index, next := 0, len(ring)-1; index < len(ring); next, index = index, index+1 {
+		left, right := ring[index], ring[next]
+		crosses := (left[1] > point.Latitude) != (right[1] > point.Latitude)
+		if crosses && point.Longitude < (right[0]-left[0])*(point.Latitude-left[1])/(right[1]-left[1])+left[0] {
+			inside = !inside
+		}
+	}
+	return inside, false
+}
+
+func pointOnSegment(point Point, left, right []float64) bool {
+	cross := (point.Longitude-left[0])*(right[1]-left[1]) -
+		(point.Latitude-left[1])*(right[0]-left[0])
+	if math.Abs(cross) > 1e-12 {
+		return false
+	}
+	return point.Longitude >= math.Min(left[0], right[0])-1e-12 &&
+		point.Longitude <= math.Max(left[0], right[0])+1e-12 &&
+		point.Latitude >= math.Min(left[1], right[1])-1e-12 &&
+		point.Latitude <= math.Max(left[1], right[1])+1e-12
+}

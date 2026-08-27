@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,10 @@ import (
 	"github.com/Requim/AI-GDM/internal/adapters/http/mapapi"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/amap"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/httpclient"
+	"github.com/Requim/AI-GDM/internal/adapters/storage/postgres"
+	applicationevacuation "github.com/Requim/AI-GDM/internal/application/evacuation"
+	"github.com/Requim/AI-GDM/internal/domain"
+	"github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/platform/config"
 	"github.com/Requim/AI-GDM/internal/platform/httpserver"
 	"github.com/Requim/AI-GDM/internal/platform/resources"
@@ -23,7 +28,7 @@ const (
 	amapBurstSize   = 2
 )
 
-// newMapProvider 在组合根创建高德适配器，业务层只接收 ports.PlaceFinder/RoutePlanner。
+// newMapProvider 在组合根创建高德适配器，业务层只接收地图端口。
 func newMapProvider(cfg config.Config, dependencies *resources.Resources,
 	logger *slog.Logger,
 ) (*amap.Provider, error) {
@@ -67,11 +72,26 @@ func newMapAPIHandler(cfg config.Config, dependencies *resources.Resources,
 	if provider == nil {
 		return nil, nil
 	}
-	handler, err := mapapi.New(provider, provider, logger)
+	var risks ports.LatestRiskReader = unavailableRiskReader{}
+	if dependencies != nil && dependencies.Database != nil {
+		risks = postgres.NewHazardRepository(dependencies.Database)
+	}
+	facilities, err := applicationevacuation.NewService(provider, risks)
+	if err != nil {
+		return nil, fmt.Errorf("创建避险设施搜索用例: %w", err)
+	}
+	handler, err := mapapi.New(facilities, provider, logger)
 	if err != nil {
 		return nil, fmt.Errorf("创建地图 HTTP 适配器: %w", err)
 	}
 	return handler, nil
+}
+
+// unavailableRiskReader 明确阻断没有完整风险区时的未过滤设施响应。
+type unavailableRiskReader struct{}
+
+func (unavailableRiskReader) LatestRisk(context.Context, hazard.Type) (hazard.Snapshot, []hazard.RiskZone, error) {
+	return hazard.Snapshot{}, nil, fmt.Errorf("%w: PostGIS 风险分析未连接", domain.ErrInsufficientData)
 }
 
 // mountMapAPI 挂载不暴露高德密钥的服务端地图代理。

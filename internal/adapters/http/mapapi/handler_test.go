@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,23 +14,44 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 
+	applicationevacuation "github.com/Requim/AI-GDM/internal/application/evacuation"
+	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/evacuation"
+	"github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/domain/spatial"
 	"github.com/Requim/AI-GDM/internal/ports"
 )
 
 func TestMapAPIProxiesNormalizedRequests(t *testing.T) {
-	places := &placeFinderStub{result: []evacuation.Facility{{ID: "shelter-1"}}}
+	places := &facilitySearcherStub{result: applicationevacuation.SearchResult{
+		Snapshot:   hazard.Snapshot{ID: "risk-1", HazardType: hazard.TypeLandslide},
+		Facilities: []evacuation.Facility{{ID: "shelter-1"}},
+		Excluded: []applicationevacuation.ExcludedFacility{{
+			Facility: evacuation.Facility{ID: "shelter-2"}, ZoneIDs: []string{"zone-1"},
+		}},
+	}}
 	routes := &routePlannerStub{result: []evacuation.Route{{ID: "route-1"}}}
 	handler := newHandler(t, places, routes)
 
 	placeResponse := serveJSON(t, handler, http.MethodPost, "/places/nearby",
 		`{"center":{"longitude":116.4,"latitude":39.9},"kind":"shelter","radiusMeters":2000}`)
-	if placeResponse.Code != http.StatusOK || places.radius != 2000 || places.kind != evacuation.FacilityShelter {
+	if placeResponse.Code != http.StatusOK || places.input.RadiusMeters != 2000 ||
+		places.input.Kind != evacuation.FacilityShelter || places.input.HazardType != hazard.TypeLandslide {
 		t.Fatalf("POI 代理错误: status=%d body=%s stub=%+v", placeResponse.Code, placeResponse.Body.String(), places)
 	}
-	if strings.Contains(placeResponse.Body.String(), "key") || strings.Contains(placeResponse.Body.String(), "jscode") {
-		t.Fatalf("响应包含供应商密钥字段: %s", placeResponse.Body.String())
+	placeBody := placeResponse.Body.String()
+	var payload struct {
+		Data nearbyResult `json:"data"`
+	}
+	if err := json.NewDecoder(strings.NewReader(placeBody)).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.Snapshot.ID != "risk-1" || payload.Data.Filter.CandidateCount != 2 ||
+		payload.Data.Filter.AllowedCount != 1 || payload.Data.Filter.ExcludedCount != 1 {
+		t.Fatalf("设施筛选响应缺少风险快照或统计: %+v", payload.Data)
+	}
+	if strings.Contains(placeBody, "key") || strings.Contains(placeBody, "jscode") {
+		t.Fatalf("响应包含供应商密钥字段: %s", placeBody)
 	}
 
 	routeResponse := serveJSON(t, handler, http.MethodPost, "/routes",
@@ -40,7 +62,7 @@ func TestMapAPIProxiesNormalizedRequests(t *testing.T) {
 }
 
 func TestMapAPIRejectsInvalidInputBeforeProvider(t *testing.T) {
-	places := &placeFinderStub{}
+	places := &facilitySearcherStub{}
 	routes := &routePlannerStub{}
 	handler := newHandler(t, places, routes)
 	response := serveJSON(t, handler, http.MethodPost, "/places/nearby",
@@ -52,7 +74,7 @@ func TestMapAPIRejectsInvalidInputBeforeProvider(t *testing.T) {
 }
 
 func TestMapAPIHidesProviderFailure(t *testing.T) {
-	handler := newHandler(t, &placeFinderStub{err: errors.New("供应商口令 secret-key")}, &routePlannerStub{})
+	handler := newHandler(t, &facilitySearcherStub{err: errors.New("供应商口令 secret-key")}, &routePlannerStub{})
 	response := serveJSON(t, handler, http.MethodPost, "/places/nearby",
 		`{"center":{"longitude":116.4,"latitude":39.9},"kind":"hospital","radiusMeters":100}`)
 	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "secret-key") {
@@ -60,14 +82,34 @@ func TestMapAPIHidesProviderFailure(t *testing.T) {
 	}
 }
 
+func TestMapAPIReturnsUnavailableWithoutRiskData(t *testing.T) {
+	handler := newHandler(t, &facilitySearcherStub{
+		err: fmt.Errorf("读取最新风险区: %w", domain.ErrInsufficientData),
+	}, &routePlannerStub{})
+	response := serveJSON(t, handler, http.MethodPost, "/places/nearby",
+		`{"hazardType":"landslide","center":{"longitude":116.4,"latitude":39.9},"kind":"hospital","radiusMeters":100}`)
+	assertError(t, response, http.StatusServiceUnavailable, "insufficient_data")
+}
+
+func TestMapAPIRejectsUnsupportedHazardBeforeSearch(t *testing.T) {
+	places := &facilitySearcherStub{}
+	handler := newHandler(t, places, &routePlannerStub{})
+	response := serveJSON(t, handler, http.MethodPost, "/places/nearby",
+		`{"hazardType":"earthquake","center":{"longitude":116.4,"latitude":39.9},"kind":"shelter","radiusMeters":100}`)
+	assertError(t, response, http.StatusNotFound, "hazard_not_supported")
+	if places.calls != 0 {
+		t.Fatal("未接入灾种仍调用了设施搜索服务")
+	}
+}
+
 func TestMapAPIReturnsJSONForUnknownRoute(t *testing.T) {
-	handler := newHandler(t, &placeFinderStub{}, &routePlannerStub{})
+	handler := newHandler(t, &facilitySearcherStub{}, &routePlannerStub{})
 	response := serveJSON(t, handler, http.MethodGet, "/unknown", "{}")
 	assertError(t, response, http.StatusNotFound, "route_not_found")
 }
 
 func TestMapAPIRejectsOversizedRequestBody(t *testing.T) {
-	handler := newHandler(t, &placeFinderStub{}, &routePlannerStub{})
+	handler := newHandler(t, &facilitySearcherStub{}, &routePlannerStub{})
 	body := strings.Repeat("x", maxRequestBytes+1)
 	request := httptest.NewRequest(http.MethodPost, "/places/nearby", strings.NewReader(body))
 	request.ContentLength = int64(len(body))
@@ -77,13 +119,15 @@ func TestMapAPIRejectsOversizedRequestBody(t *testing.T) {
 }
 
 func TestMapAPIRejectsTransitUntilCityContractExists(t *testing.T) {
-	handler := newHandler(t, &placeFinderStub{}, &routePlannerStub{})
+	handler := newHandler(t, &facilitySearcherStub{}, &routePlannerStub{})
 	response := serveJSON(t, handler, http.MethodPost, "/routes",
 		`{"origin":{"longitude":116.4,"latitude":39.9},"destination":{"longitude":116.5,"latitude":39.8},"mode":"transit"}`)
 	assertError(t, response, http.StatusBadRequest, "invalid_request")
 }
 
-func newHandler(t *testing.T, places ports.PlaceFinder, routes ports.RoutePlanner) http.Handler {
+func newHandler(t *testing.T, places applicationevacuation.FacilitySearcher,
+	routes ports.RoutePlanner,
+) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler, err := New(places, routes, logger)
@@ -116,20 +160,18 @@ func assertError(t *testing.T, response *httptest.ResponseRecorder, status int, 
 	}
 }
 
-type placeFinderStub struct {
-	result []evacuation.Facility
+type facilitySearcherStub struct {
+	result applicationevacuation.SearchResult
 	err    error
-	center spatial.Point
-	kind   evacuation.FacilityType
-	radius int
+	input  applicationevacuation.SearchInput
 	calls  int
 }
 
-func (s *placeFinderStub) FindNearby(_ context.Context, center spatial.Point,
-	kind evacuation.FacilityType, radiusM int,
-) ([]evacuation.Facility, error) {
+func (s *facilitySearcherStub) Search(_ context.Context,
+	input applicationevacuation.SearchInput,
+) (applicationevacuation.SearchResult, error) {
 	s.calls++
-	s.center, s.kind, s.radius = center, kind, radiusM
+	s.input = input
 	return s.result, s.err
 }
 
