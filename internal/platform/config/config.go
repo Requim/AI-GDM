@@ -53,6 +53,8 @@ type Config struct {
 	Weather         WeatherConfig
 	LHASA           LHASAConfig
 	Map             MapConfig
+	Search          SearchConfig
+	LLM             LLMConfig
 }
 
 // RefreshConfig 控制后台数据采集任务的生命周期。
@@ -92,6 +94,32 @@ type MapConfig struct {
 	Timeout      time.Duration
 }
 
+// SearchConfig 保存博查搜索服务端代理的连接和证据筛选边界。
+type SearchConfig struct {
+	Enabled        bool
+	BaseURL        string
+	APIKey         string
+	MaxResults     int
+	MaxAge         time.Duration
+	TrustedDomains []string
+}
+
+// LLMConfig 保存 Qwen 解释性报告客户端配置；核心数值不经过大模型计算。
+type LLMConfig struct {
+	Enabled             bool
+	BaseURL             string
+	APIKey              string
+	Model               string
+	MaxCompletionTokens int
+	OutputAttempts      int
+}
+
+// Validate 检查博查搜索启用时所需的服务端配置。
+func (config SearchConfig) Validate() error { return validateSearch(config) }
+
+// Validate 检查 Qwen 启用时所需的服务端配置。
+func (config LLMConfig) Validate() error { return validateLLM(config) }
+
 // Validate 检查高德地图启用时所需的服务端配置。
 func (config MapConfig) Validate() error {
 	return validateMap(config)
@@ -119,14 +147,61 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	base.Refresh, base.Weather, base.LHASA, base.Map = refresh, weather, lhasa, mapConfig
+	search, err := loadSearch()
+	if err != nil {
+		return Config{}, err
+	}
+	llm, err := loadLLM()
+	if err != nil {
+		return Config{}, err
+	}
+	base.Refresh, base.Weather, base.LHASA, base.Map, base.Search, base.LLM = refresh, weather, lhasa, mapConfig, search, llm
 	if err = validateRefresh(base); err != nil {
 		return Config{}, err
 	}
 	if err = validateMap(base.Map); err != nil {
 		return Config{}, err
 	}
+	if err = validateSearch(base.Search); err != nil {
+		return Config{}, err
+	}
+	if err = validateLLM(base.LLM); err != nil {
+		return Config{}, err
+	}
 	return base, nil
+}
+
+func loadSearch() (SearchConfig, error) {
+	enabled, err := boolEnv("BOCHA_ENABLED", false)
+	if err != nil {
+		return SearchConfig{}, err
+	}
+	maxResults, err := positiveIntEnv("BOCHA_MAX_RESULTS", 10)
+	if err != nil {
+		return SearchConfig{}, err
+	}
+	maxAge, err := durationEnv("BOCHA_MAX_AGE", 72*time.Hour)
+	if err != nil {
+		return SearchConfig{}, err
+	}
+	trusted := splitList(stringEnv("BOCHA_TRUSTED_DOMAINS", "gov.cn,mnr.gov.cn,mem.gov.cn,cma.cn,earthdata.nasa.gov"))
+	return SearchConfig{Enabled: enabled, BaseURL: stringEnv("BOCHA_BASE_URL", "https://api.bochaai.com/v1/web-search"), APIKey: strings.TrimSpace(os.Getenv("BOCHA_API_KEY")), MaxResults: maxResults, MaxAge: maxAge, TrustedDomains: trusted}, nil
+}
+
+func loadLLM() (LLMConfig, error) {
+	enabled, err := boolEnv("QWEN_ENABLED", false)
+	if err != nil {
+		return LLMConfig{}, err
+	}
+	tokens, err := positiveIntEnv("QWEN_MAX_COMPLETION_TOKENS", 1200)
+	if err != nil {
+		return LLMConfig{}, err
+	}
+	attempts, err := positiveIntEnv("QWEN_OUTPUT_ATTEMPTS", 2)
+	if err != nil {
+		return LLMConfig{}, err
+	}
+	return LLMConfig{Enabled: enabled, BaseURL: stringEnv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"), APIKey: strings.TrimSpace(os.Getenv("QWEN_API_KEY")), Model: stringEnv("QWEN_MODEL", "qwen-plus"), MaxCompletionTokens: tokens, OutputAttempts: attempts}, nil
 }
 
 func loadLHASA() (LHASAConfig, error) {
@@ -256,6 +331,61 @@ func validateMap(config MapConfig) error {
 	return nil
 }
 
+func validateSearch(config SearchConfig) error {
+	if !config.Enabled {
+		return nil
+	}
+	if err := validateHTTPSURL(config.BaseURL, "启用博查搜索时"); err != nil {
+		return err
+	}
+	if config.APIKey == "" {
+		return configError("启用博查搜索时必须配置 BOCHA_API_KEY")
+	}
+	if config.MaxResults <= 0 || config.MaxResults > 50 {
+		return configError("BOCHA_MAX_RESULTS 必须在 1 至 50 之间")
+	}
+	if config.MaxAge <= 0 {
+		return configError("BOCHA_MAX_AGE 必须为正数时长")
+	}
+	if len(config.TrustedDomains) == 0 {
+		return configError("BOCHA_TRUSTED_DOMAINS 不能为空")
+	}
+	return nil
+}
+
+func validateLLM(config LLMConfig) error {
+	if !config.Enabled {
+		return nil
+	}
+	if err := validateHTTPSURL(config.BaseURL, "启用 Qwen 时"); err != nil {
+		return err
+	}
+	if config.APIKey == "" {
+		return configError("启用 Qwen 时必须配置 QWEN_API_KEY")
+	}
+	if strings.TrimSpace(config.Model) == "" {
+		return configError("启用 Qwen 时必须配置 QWEN_MODEL")
+	}
+	if config.MaxCompletionTokens <= 0 || config.MaxCompletionTokens > 4096 {
+		return configError("QWEN_MAX_COMPLETION_TOKENS 必须在 1 至 4096 之间")
+	}
+	if config.OutputAttempts <= 0 || config.OutputAttempts > 3 {
+		return configError("QWEN_OUTPUT_ATTEMPTS 必须在 1 至 3 之间")
+	}
+	return nil
+}
+
+func validateHTTPSURL(raw, prefix string) error {
+	if strings.TrimSpace(raw) == "" {
+		return configError("%s 必须配置 HTTPS 地址", prefix)
+	}
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return configError("%s 地址必须是无用户信息的 HTTPS 地址", prefix)
+	}
+	return nil
+}
+
 func stringEnv(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value
@@ -309,6 +439,17 @@ func boolEnv(name string, fallback bool) (bool, error) {
 		return false, configError("配置 %s 必须是布尔值: %q", name, value)
 	}
 	return parsed, nil
+}
+
+func splitList(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
 }
 
 func pointListEnv(name, fallback string) ([]spatial.Point, error) {

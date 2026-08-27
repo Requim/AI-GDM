@@ -27,6 +27,10 @@ func TestLoadDefaults(t *testing.T) {
 		got.Map.APIKey != "" || got.Map.SecurityCode != "" {
 		t.Fatalf("Map = %+v", got.Map)
 	}
+	if got.Search.Enabled || got.Search.MaxResults != 10 || got.Search.MaxAge != 72*time.Hour ||
+		got.LLM.Enabled || got.LLM.Model != "qwen-plus" || got.LLM.MaxCompletionTokens != 1200 {
+		t.Fatalf("AI = Search=%+v LLM=%+v", got.Search, got.LLM)
+	}
 }
 
 func TestLoadRejectsInvalidTimeout(t *testing.T) {
@@ -132,6 +136,43 @@ func TestLoadRejectsInsecureMapBaseURL(t *testing.T) {
 	}
 }
 
+func TestLoadAIProviderConfig(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("BOCHA_ENABLED", "true")
+	t.Setenv("BOCHA_API_KEY", "search-key")
+	t.Setenv("BOCHA_BASE_URL", "https://search.example.test/v1/web-search")
+	t.Setenv("BOCHA_MAX_RESULTS", "7")
+	t.Setenv("BOCHA_MAX_AGE", "48h")
+	t.Setenv("BOCHA_TRUSTED_DOMAINS", "mnr.gov.cn,mem.gov.cn")
+	t.Setenv("QWEN_ENABLED", "true")
+	t.Setenv("QWEN_API_KEY", "llm-key")
+	t.Setenv("QWEN_BASE_URL", "https://llm.example.test/v1/chat/completions")
+	t.Setenv("QWEN_MODEL", "qwen-turbo")
+	t.Setenv("QWEN_MAX_COMPLETION_TOKENS", "800")
+	t.Setenv("QWEN_OUTPUT_ATTEMPTS", "1")
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Search.Enabled || got.Search.APIKey != "search-key" || got.Search.MaxResults != 7 || got.Search.MaxAge != 48*time.Hour ||
+		!got.LLM.Enabled || got.LLM.APIKey != "llm-key" || got.LLM.Model != "qwen-turbo" || got.LLM.MaxCompletionTokens != 800 {
+		t.Fatalf("AI = Search=%+v LLM=%+v", got.Search, got.LLM)
+	}
+}
+
+func TestLoadRejectsEnabledAIWithoutSecret(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("BOCHA_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() 未拒绝缺少 BOCHA_API_KEY")
+	}
+	clearConfigEnv(t)
+	t.Setenv("QWEN_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() 未拒绝缺少 QWEN_API_KEY")
+	}
+}
+
 func TestLoadRejectsInvalidLHASAStaleAfter(t *testing.T) {
 	clearConfigEnv(t)
 	t.Setenv("LHASA_STALE_AFTER", "0s")
@@ -192,6 +233,8 @@ func clearConfigEnv(t *testing.T) {
 		"LHASA_EARTHDATA_URL", "LHASA_DATA_DIR", "LHASA_STALE_AFTER",
 		"GDAL_BINARY", "GDAL_TEMP_DIR",
 		"AMAP_ENABLED", "AMAP_BASE_URL", "AMAP_API_KEY", "AMAP_JSCODE", "AMAP_TIMEOUT",
+		"BOCHA_ENABLED", "BOCHA_BASE_URL", "BOCHA_API_KEY", "BOCHA_MAX_RESULTS", "BOCHA_MAX_AGE", "BOCHA_TRUSTED_DOMAINS",
+		"QWEN_ENABLED", "QWEN_BASE_URL", "QWEN_API_KEY", "QWEN_MODEL", "QWEN_MAX_COMPLETION_TOKENS", "QWEN_OUTPUT_ATTEMPTS",
 	} {
 		t.Setenv(name, "")
 	}
