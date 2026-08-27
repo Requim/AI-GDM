@@ -40,12 +40,14 @@ type WeatherReader interface {
 }
 
 // PlaceFinder 搜索避险相关的候选设施。
+// 输入中心点和返回设施位置均使用领域层 WGS84；GCJ-02 转换只能由地图适配器内部完成。
 type PlaceFinder interface {
 	// FindNearby 按设施类型和半径查询候选点。
 	FindNearby(ctx context.Context, center spatial.Point, kind evacuation.FacilityType, radiusM int) ([]evacuation.Facility, error)
 }
 
 // RoutePlanner 规划尚未经过风险区过滤的候选路线。
+// 输入坐标和返回路线几何均使用领域层 WGS84；供应商坐标系不得泄漏到应用层。
 type RoutePlanner interface {
 	// Plan 返回指定交通方式的多个候选路线。
 	Plan(ctx context.Context, origin, destination spatial.Point, mode evacuation.TravelMode) ([]evacuation.Route, error)

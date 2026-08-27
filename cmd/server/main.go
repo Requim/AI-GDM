@@ -55,7 +55,7 @@ func run() error {
 		return fmt.Errorf("初始化数据刷新: %w", err)
 	}
 	server := httpserver.New(cfg.HTTPAddr, cfg.ShutdownTimeout, logger)
-	if err = mountHazardAPI(server, hazards, logger); err != nil {
+	if err = mountApplicationAPI(server, hazards, cfg, dependencies, logger); err != nil {
 		return err
 	}
 	if err = runServices(ctx, server, refresh); err != nil {

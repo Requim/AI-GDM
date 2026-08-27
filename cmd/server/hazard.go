@@ -202,6 +202,18 @@ func spatialUnavailable(snapshot hazard.Snapshot, _ []hazard.RiskZone) hazard.Sn
 	return snapshot
 }
 
+func newHazardAPIHandler(runtime *hazardRuntime, logger *slog.Logger) (http.Handler, error) {
+	if runtime == nil {
+		logger.Warn("未配置 Postgres，风险预警 API 未挂载")
+		return nil, nil
+	}
+	handler, err := hazardapi.New(runtime.service, logger)
+	if err != nil {
+		return nil, fmt.Errorf("创建风险预警 HTTP 适配器: %w", err)
+	}
+	return handler, nil
+}
+
 func mountHazardAPI(server *httpserver.Server, runtime *hazardRuntime,
 	logger *slog.Logger,
 ) error {

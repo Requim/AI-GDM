@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -29,6 +30,8 @@ const (
 	defaultLHASADataDir    = "data/raw/lhasa"
 	defaultLHASAStaleAfter = 12 * time.Hour
 	defaultGDALBinary      = "gdal"
+	defaultAMAPBaseURL     = "https://restapi.amap.com"
+	defaultAMAPTimeout     = 15 * time.Second
 	defaultPastHours       = 72
 	defaultForecastHours   = 24
 	defaultMaxPoints       = 25
@@ -49,6 +52,7 @@ type Config struct {
 	Refresh         RefreshConfig
 	Weather         WeatherConfig
 	LHASA           LHASAConfig
+	Map             MapConfig
 }
 
 // RefreshConfig 控制后台数据采集任务的生命周期。
@@ -78,6 +82,21 @@ type LHASAConfig struct {
 	TemporaryDir string
 }
 
+// MapConfig 保存高德服务端代理的连接和安全配置。
+// APIKey 与 SecurityCode 只允许在服务端环境变量中提供，不会下发到浏览器。
+type MapConfig struct {
+	Enabled      bool
+	BaseURL      string
+	APIKey       string
+	SecurityCode string
+	Timeout      time.Duration
+}
+
+// Validate 检查高德地图启用时所需的服务端配置。
+func (config MapConfig) Validate() error {
+	return validateMap(config)
+}
+
 // Load 从环境变量读取并校验配置。
 func Load() (Config, error) {
 	base, err := loadBase()
@@ -96,8 +115,15 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	base.Refresh, base.Weather, base.LHASA = refresh, weather, lhasa
+	mapConfig, err := loadMap()
+	if err != nil {
+		return Config{}, err
+	}
+	base.Refresh, base.Weather, base.LHASA, base.Map = refresh, weather, lhasa, mapConfig
 	if err = validateRefresh(base); err != nil {
+		return Config{}, err
+	}
+	if err = validateMap(base.Map); err != nil {
 		return Config{}, err
 	}
 	return base, nil
@@ -112,6 +138,24 @@ func loadLHASA() (LHASAConfig, error) {
 		ServiceURL: stringEnv("LHASA_EARTHDATA_URL", defaultLHASAServiceURL),
 		DataDir:    stringEnv("LHASA_DATA_DIR", defaultLHASADataDir), StaleAfter: staleAfter,
 		GDALBinary: stringEnv("GDAL_BINARY", defaultGDALBinary), TemporaryDir: os.Getenv("GDAL_TEMP_DIR"),
+	}, nil
+}
+
+func loadMap() (MapConfig, error) {
+	enabled, err := boolEnv("AMAP_ENABLED", false)
+	if err != nil {
+		return MapConfig{}, err
+	}
+	timeout, err := durationEnv("AMAP_TIMEOUT", defaultAMAPTimeout)
+	if err != nil {
+		return MapConfig{}, err
+	}
+	return MapConfig{
+		Enabled:      enabled,
+		BaseURL:      stringEnv("AMAP_BASE_URL", defaultAMAPBaseURL),
+		APIKey:       strings.TrimSpace(os.Getenv("AMAP_API_KEY")),
+		SecurityCode: strings.TrimSpace(os.Getenv("AMAP_JSCODE")),
+		Timeout:      timeout,
 	}, nil
 }
 
@@ -185,6 +229,29 @@ func validateRefresh(config Config) error {
 	}
 	if len(config.Weather.Points) == 0 {
 		return configError("启用刷新时必须配置 OPEN_METEO_POINTS")
+	}
+	return nil
+}
+
+func validateMap(config MapConfig) error {
+	if !config.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(config.BaseURL) == "" {
+		return configError("启用高德地图时必须配置 AMAP_BASE_URL")
+	}
+	baseURL, err := url.Parse(strings.TrimSpace(config.BaseURL))
+	if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil {
+		return configError("启用高德地图时 AMAP_BASE_URL 必须是无用户信息的 HTTPS 地址")
+	}
+	if config.APIKey == "" {
+		return configError("启用高德地图时必须配置 AMAP_API_KEY")
+	}
+	if config.SecurityCode == "" {
+		return configError("启用高德地图时必须配置 AMAP_JSCODE")
+	}
+	if config.Timeout <= 0 {
+		return configError("启用高德地图时 AMAP_TIMEOUT 必须为正数时长")
 	}
 	return nil
 }

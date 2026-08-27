@@ -23,6 +23,10 @@ func TestLoadDefaults(t *testing.T) {
 		got.LHASA.StaleAfter != 12*time.Hour || got.LHASA.GDALBinary != defaultGDALBinary {
 		t.Fatalf("LHASA = %+v", got.LHASA)
 	}
+	if got.Map.Enabled || got.Map.BaseURL != defaultAMAPBaseURL || got.Map.Timeout != defaultAMAPTimeout ||
+		got.Map.APIKey != "" || got.Map.SecurityCode != "" {
+		t.Fatalf("Map = %+v", got.Map)
+	}
 }
 
 func TestLoadRejectsInvalidTimeout(t *testing.T) {
@@ -73,6 +77,58 @@ func TestLoadLHASAConfig(t *testing.T) {
 		got.LHASA.StaleAfter != 8*time.Hour || got.LHASA.GDALBinary != "/usr/bin/gdal" ||
 		got.LHASA.TemporaryDir != "/tmp/gdal" {
 		t.Fatalf("LHASA = %+v", got.LHASA)
+	}
+}
+
+func TestLoadMapConfig(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("AMAP_ENABLED", "true")
+	t.Setenv("AMAP_BASE_URL", "https://example.test")
+	t.Setenv("AMAP_API_KEY", " server-key ")
+	t.Setenv("AMAP_JSCODE", " server-jscode ")
+	t.Setenv("AMAP_TIMEOUT", "8s")
+
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Map.Enabled || got.Map.BaseURL != "https://example.test" || got.Map.APIKey != "server-key" ||
+		got.Map.SecurityCode != "server-jscode" || got.Map.Timeout != 8*time.Second {
+		t.Fatalf("Map = %+v", got.Map)
+	}
+}
+
+func TestLoadRejectsEnabledMapWithoutServerSecrets(t *testing.T) {
+	for _, missing := range []string{"AMAP_API_KEY", "AMAP_JSCODE"} {
+		t.Run(missing, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("AMAP_ENABLED", "true")
+			t.Setenv("AMAP_API_KEY", "server-key")
+			t.Setenv("AMAP_JSCODE", "server-jscode")
+			t.Setenv(missing, "")
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() 未拒绝缺少 %s", missing)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidMapTimeout(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("AMAP_TIMEOUT", "0s")
+	if _, err := Load(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
+func TestLoadRejectsInsecureMapBaseURL(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("AMAP_ENABLED", "true")
+	t.Setenv("AMAP_BASE_URL", "http://example.test")
+	t.Setenv("AMAP_API_KEY", "server-key")
+	t.Setenv("AMAP_JSCODE", "server-jscode")
+	if _, err := Load(); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("Load() 未拒绝非 HTTPS 高德地址: %v", err)
 	}
 }
 
@@ -135,6 +191,7 @@ func clearConfigEnv(t *testing.T) {
 		"OPEN_METEO_FALLBACK_MAX_AGE", "OPEN_METEO_MAX_POINTS_PER_REQUEST",
 		"LHASA_EARTHDATA_URL", "LHASA_DATA_DIR", "LHASA_STALE_AFTER",
 		"GDAL_BINARY", "GDAL_TEMP_DIR",
+		"AMAP_ENABLED", "AMAP_BASE_URL", "AMAP_API_KEY", "AMAP_JSCODE", "AMAP_TIMEOUT",
 	} {
 		t.Setenv(name, "")
 	}
