@@ -77,6 +77,14 @@ type LossBaselineReader interface {
 	CostBaselines(ctx context.Context, regionCode string) ([]loss.CostBaseline, error)
 	// Vulnerabilities 返回指定灾种的脆弱性参数。
 	Vulnerabilities(ctx context.Context, hazardType string) ([]loss.Vulnerability, error)
+	// ExposureBaselines 返回某区域指定类别的最新有效人口或道路基线。
+	ExposureBaselines(ctx context.Context, regionCode string, kind loss.ExposureKind) ([]loss.ExposureBaseline, error)
+}
+
+// LossBaselineWriter 原子替换一个带版本的损失基线数据集。
+type LossBaselineWriter interface {
+	// ReplaceBaselineSet 校验并原子替换指定数据集版本的全部基线记录。
+	ReplaceBaselineSet(ctx context.Context, set loss.BaselineSet) error
 }
 
 // LossAssessmentWriter 保存可回放的损失评估。
