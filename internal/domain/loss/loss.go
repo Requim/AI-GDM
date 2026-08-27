@@ -117,6 +117,8 @@ type Assessment struct {
 	SnapshotID           string           `json:"snapshotId"`
 	FormulaVersion       string           `json:"formulaVersion"`
 	ScenarioMethod       string           `json:"scenarioMethod"`
+	HazardType           string           `json:"hazardType"`
+	RegionCode           string           `json:"regionCode"`
 	ConditionalLowCents  int64            `json:"conditionalLowCents"`
 	ConditionalMidCents  int64            `json:"conditionalCentralCents"`
 	ConditionalHighCents int64            `json:"conditionalHighCents"`
@@ -131,8 +133,53 @@ type Assessment struct {
 	IncludedAssets       []AssetType      `json:"includedAssets"`
 	ExcludedLosses       []string         `json:"excludedLosses"`
 	Status               AssessmentStatus `json:"status"`
+	Confidence           float64          `json:"confidence"`
+	ConfidenceBand       string           `json:"confidenceBand"`
 	Limitations          []string         `json:"limitations"`
 	CalculatedAt         time.Time        `json:"calculatedAt"`
+}
+
+// FormulaVersion 标识首版可回放损失计算公式。
+const FormulaVersion = "ai-gdm-loss-formula-v1"
+
+// Validate 校验风险区暴露记录的数值、单位和来源。
+func (e Exposure) Validate() error {
+	if strings.TrimSpace(e.ZoneID) == "" || strings.TrimSpace(e.AssetType) == "" || !finite(e.Quantity) || e.Quantity <= 0 ||
+		e.DataYear < 1900 || e.DataYear > 9999 || !finite(e.CoverageRatio) || e.CoverageRatio <= 0 || e.CoverageRatio > 1 {
+		return fmt.Errorf("%w: 损失暴露字段或数值无效", domain.ErrInvalidInput)
+	}
+	if err := e.Source.Validate(); err != nil {
+		return fmt.Errorf("校验损失暴露来源: %w", err)
+	}
+	return nil
+}
+
+// Validate 校验损失评估结果可回放且金额、置信度有界。
+func (a Assessment) Validate() error {
+	if strings.TrimSpace(a.ID) == "" || strings.TrimSpace(a.SnapshotID) == "" || strings.TrimSpace(a.HazardType) == "" ||
+		strings.TrimSpace(a.RegionCode) == "" || a.FormulaVersion != FormulaVersion || strings.TrimSpace(a.ScenarioMethod) == "" ||
+		a.CalculatedAt.IsZero() || !isUTC(a.CalculatedAt) {
+		return fmt.Errorf("%w: 损失评估身份、公式或时间无效", domain.ErrInvalidInput)
+	}
+	if a.ConditionalLowCents < 0 || a.ConditionalLowCents > a.ConditionalMidCents || a.ConditionalMidCents > a.ConditionalHighCents {
+		return fmt.Errorf("%w: 损失情景金额区间无效", domain.ErrInvalidInput)
+	}
+	if !finite(a.ImpactAreaSquareM) || a.ImpactAreaSquareM < 0 || !finite(a.AffectedPopulation) || a.AffectedPopulation < 0 ||
+		!finite(a.AffectedRoadMeters) || a.AffectedRoadMeters < 0 || a.AffectedFacilities < 0 || !finite(a.Confidence) ||
+		a.Confidence < 0 || a.Confidence > 1 {
+		return fmt.Errorf("%w: 损失影响范围或置信度无效", domain.ErrInvalidInput)
+	}
+	if a.Status != AssessmentAvailable && a.Status != AssessmentInsufficientData {
+		return fmt.Errorf("%w: 损失评估状态无效", domain.ErrInvalidInput)
+	}
+	if a.ConfidenceBand != "high" && a.ConfidenceBand != "moderate" &&
+		a.ConfidenceBand != "low" && a.ConfidenceBand != "very_low" {
+		return fmt.Errorf("%w: 损失评估置信度等级无效", domain.ErrInvalidInput)
+	}
+	if a.Status == AssessmentAvailable && len(a.InputReferences) == 0 {
+		return fmt.Errorf("%w: 可用损失评估缺少输入依据", domain.ErrInvalidInput)
+	}
+	return nil
 }
 
 // Validate 校验成本情景带、币种和审核要求。
