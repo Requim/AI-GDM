@@ -1,0 +1,99 @@
+{{define "index.html"}}<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AI-GDM 地质灾害辅助研判控制台</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-block">
+        <span class="brand-mark" aria-hidden="true">GDM</span>
+        <div>
+          <p class="brand-kicker">AI-GDM / 国家地质灾害辅助研判</p>
+          <h1>监控中心控制台</h1>
+        </div>
+      </div>
+      <div class="runtime-meta" aria-label="运行信息">
+        <span>{{.Environment}}</span>
+        <span>{{.Version}}</span>
+        <time>{{.GeneratedAt}}</time>
+      </div>
+    </header>
+
+    <nav class="workspace-nav" aria-label="工作台导航">
+      <a class="active" href="/">态势总览</a>
+      <a href="/#risk-map">风险地图</a>
+      <a href="/#evacuation">疏散调度</a>
+      <a href="/#assessment">智能评估</a>
+    </nav>
+
+    <main>
+      <section class="notice-band" aria-label="系统边界">
+        <strong>辅助研判原型</strong>
+        <span>公开模型与互联网数据不构成国家官方预警，所有结论必须由值班人员复核。</span>
+      </section>
+
+      <section class="summary-grid" aria-label="数据源概况">
+        <article class="summary-item summary-ready">
+          <span>正常或已配置</span>
+          <strong>{{.Summary.Available}}</strong>
+        </article>
+        <article class="summary-item summary-attention">
+          <span>需关注</span>
+          <strong>{{.Summary.Attention}}</strong>
+        </article>
+        <article class="summary-item summary-offline">
+          <span>不可用或未启用</span>
+          <strong>{{.Summary.Unavailable}}</strong>
+        </article>
+      </section>
+
+      <section class="source-section" aria-labelledby="source-title">
+        <div class="section-heading">
+          <div>
+            <p>DATA INTEGRITY</p>
+            <h2 id="source-title">数据源运行矩阵</h2>
+          </div>
+          <span>页面只读取配置与最后成功数据</span>
+        </div>
+
+        <div class="source-table" role="table" aria-label="数据源状态">
+          <div class="source-row source-header" role="row">
+            <span role="columnheader">数据源</span>
+            <span role="columnheader">状态</span>
+            <span role="columnheader">最后成功时间</span>
+            <span role="columnheader">有效期至</span>
+            <span role="columnheader">运行说明</span>
+          </div>
+          {{range .Sources}}
+          <article class="source-row" role="row" data-source="{{.ID}}">
+            <div class="source-name" role="cell">
+              <span class="source-category">{{.Category}}</span>
+              <strong>{{.Name}}</strong>
+              <small>{{.Provider}}</small>
+            </div>
+            <div role="cell">
+              <span class="status status-{{.State}}"><i aria-hidden="true"></i>{{.StateText}}</span>
+            </div>
+            <time role="cell">{{.UpdatedAt}}</time>
+            <time role="cell">{{.ValidTo}}</time>
+            <p role="cell">{{.Detail}}</p>
+          </article>
+          {{end}}
+        </div>
+      </section>
+
+      <section class="operations-strip" aria-label="值班检查">
+        <div><span>采集周期</span><strong>30 分钟</strong></div>
+        <div><span>LHASA 过期阈值</span><strong>12 小时</strong></div>
+        <div><span>气象回退阈值</span><strong>6 小时</strong></div>
+        <div><span>坐标基准</span><strong>WGS84</strong></div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>{{end}}

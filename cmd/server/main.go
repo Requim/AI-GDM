@@ -62,6 +62,9 @@ func run() error {
 	if err = mountApplicationAPI(server, hazards, cfg, dependencies, logger, aiHandler); err != nil {
 		return err
 	}
+	if err = mountWebConsole(server, hazards, cfg, dependencies, logger); err != nil {
+		return err
+	}
 	if err = runServices(ctx, server, refresh); err != nil {
 		return err
 	}

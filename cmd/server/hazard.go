@@ -33,6 +33,7 @@ import (
 type hazardRuntime struct {
 	service         hazardapp.RiskService
 	landslide       *hazardapp.HazardProvider
+	latestRisk      ports.LatestRiskReader
 	riskDetail      ports.RiskDetailReader
 	spatialAnalysis ports.SpatialAnalysisReader
 	database        *pgxpool.Pool
@@ -64,7 +65,9 @@ func newHazardRuntime(cfg config.Config, dependencies *resources.Resources,
 	if err != nil {
 		return nil, fmt.Errorf("创建风险预警用例: %w", err)
 	}
-	return &hazardRuntime{service: service, landslide: provider, riskDetail: repository, spatialAnalysis: spatialpg.New(dependencies.Database), database: dependencies.Database}, nil
+	return &hazardRuntime{service: service, landslide: provider, latestRisk: repository,
+		riskDetail: repository, spatialAnalysis: spatialpg.New(dependencies.Database),
+		database: dependencies.Database}, nil
 }
 
 func newLHASACollector(cfg config.Config, dependencies *resources.Resources,
