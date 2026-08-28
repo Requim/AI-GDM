@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/assets/vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="/assets/app.css">
   <script defer src="/assets/vendor/leaflet/leaflet.js"></script>
+  <script defer src="/assets/api.js"></script>
   <script defer src="/assets/risk-map.js"></script>
 </head>
 <body>
@@ -97,7 +98,7 @@
         <div><span>坐标基准</span><strong>WGS84</strong></div>
       </section>
 
-      <section id="risk-map" class="risk-section" data-risk-endpoint="/api/v1/hazards/landslide/risks/latest" aria-labelledby="risk-map-title">
+      <section id="risk-map" class="risk-section" data-risk-endpoint="/api/v1/hazards/landslide/risks/latest/map" data-request-timeout-ms="20000" aria-labelledby="risk-map-title">
         <div class="section-heading risk-heading">
           <div>
             <p>REAL-TIME RISK LAYER</p>

@@ -43,6 +43,7 @@ func New(service RiskService, logger *slog.Logger) (http.Handler, error) {
 	handler := &Handler{service: service, logger: logger}
 	router := chi.NewRouter()
 	router.Get("/hazards/{hazardType}/risks/latest", handler.latest)
+	router.Get("/hazards/{hazardType}/risks/latest/map", handler.latestMap)
 	router.Get("/hazards/{hazardType}/risks/{snapshotID}", handler.detail)
 	router.Post("/hazards/{hazardType}/refresh", handler.refresh)
 	router.NotFound(handler.notFound)
@@ -58,6 +59,16 @@ func (h *Handler) latest(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.service.Latest(r.Context(), hazardType)
 	h.writeResult(w, r, result, err)
+}
+
+func (h *Handler) latestMap(w http.ResponseWriter, r *http.Request) {
+	hazardType, err := hazardTypeFromRequest(r)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	result, err := h.service.Latest(r.Context(), hazardType)
+	h.writeMapResult(w, r, result, err)
 }
 
 func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {

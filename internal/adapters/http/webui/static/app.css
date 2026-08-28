@@ -269,6 +269,7 @@ main { padding: 24px clamp(18px, 4vw, 56px) 44px; }
 }
 
 .map-state-current { color: var(--green); }
+.map-state-fallback { color: var(--amber); background: #211c12; }
 .map-state-stale { color: var(--amber); background: #211c12; }
 .map-state-unavailable { color: var(--red); background: #261411; }
 

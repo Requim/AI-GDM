@@ -2,7 +2,12 @@
   "use strict";
 
   const MAX_VISIBLE_ZONES = 3000;
-  const LEVEL_ORDER = { low: 1, moderate: 2, high: 3, very_high: 4 };
+  const MAX_SOURCE_ZONES = 100000;
+  const MAX_ZONE_VERTICES = 5000;
+  const MAX_TOTAL_VERTICES = 200000;
+  const MAX_GEOMETRY_BYTES = 512 * 1024;
+  const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+  const MAX_EXPIRY_TIMER_MS = 60 * 60 * 1000;
   const LEVEL_TEXT = { low: "低", moderate: "中", high: "高", very_high: "很高" };
   const LEVEL_COLOR = { low: "#4ecb71", moderate: "#f0b85a", high: "#ef6a5b", very_high: "#d64882" };
   const root = document.getElementById("risk-map");
@@ -11,6 +16,8 @@
   const elements = collectElements();
   const map = createMap(elements.canvas);
   let riskLayer = window.L.layerGroup().addTo(map);
+  let expiryTimer = 0;
+  let activeData = null;
 
   elements.refresh.addEventListener("click", loadRisk);
   loadRisk();
@@ -42,8 +49,7 @@
     }
     const value = window.L.map(container, { preferCanvas: true, zoomControl: true }).setView([35.5, 104.5], 4);
     window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 18,
-      attribution: "&copy; OpenStreetMap contributors"
+      maxZoom: 18, attribution: "&copy; OpenStreetMap contributors"
     }).addTo(value);
     return value;
   }
@@ -55,7 +61,6 @@
       const data = await requestRisk(root.dataset.riskEndpoint);
       renderRisk(data);
     } catch (error) {
-      clearRiskLayer();
       renderUnavailable(error instanceof Error ? error.message : "风险数据暂时不可用");
     } finally {
       elements.refresh.disabled = false;
@@ -63,67 +68,150 @@
   }
 
   async function requestRisk(endpoint) {
-    const controller = new AbortController();
-    const timer = window.setTimeout(function () { controller.abort(); }, 20000);
-    try {
-      const response = await fetch(endpoint, {
-        headers: { Accept: "application/json" }, cache: "no-store", signal: controller.signal
-      });
-      const payload = await parsePayload(response);
-      if (!response.ok) throw new Error(apiMessage(response.status, payload));
-      if (!payload || !payload.data || !payload.data.snapshot || !Array.isArray(payload.data.zones)) {
-        throw new Error("风险接口返回的数据结构无效");
-      }
-      return payload.data;
-    } catch (error) {
-      if (error && error.name === "AbortError") throw new Error("读取风险数据超时");
-      throw error;
-    } finally {
-      window.clearTimeout(timer);
+    if (!window.AIGDM || !window.AIGDM.requestJSON) throw new Error("浏览器 API 客户端未加载");
+    const payload = await window.AIGDM.requestJSON(endpoint, {
+      timeoutMs: requestTimeout(), maxResponseBytes: MAX_RESPONSE_BYTES
+    });
+    return validateRiskPayload(payload);
+  }
+
+  function validateRiskPayload(payload) {
+    const data = payload && payload.data;
+    if (!data || !data.snapshot || !Array.isArray(data.zones) || !validLimits(data.limits)) {
+      throw new Error("风险地图接口契约不完整，已按不可用处理");
+    }
+    validateCounts(data);
+    requireValidTo(data);
+    validateGeometryLimits(data.zones, data.limits);
+    return data;
+  }
+
+  function validateCounts(data) {
+    const total = safeCount(data.totalZoneCount, "风险区总数");
+    const visible = safeCount(data.visibleZoneCount, "可见风险区数");
+    const omitted = safeCount(data.omittedZoneCount, "省略风险区数");
+    const complex = safeCount(data.omittedComplexZoneCount, "复杂几何省略数");
+    const payload = safeCount(data.omittedPayloadZoneCount, "负载省略数");
+    if (visible !== data.zones.length || total !== visible + omitted || omitted !== complex + payload ||
+      total > data.limits.maxSourceZones || visible > data.limits.maxZones) {
+      throw new Error("风险区计数契约不一致，已按不可用处理");
     }
   }
 
-  async function parsePayload(response) {
-    const text = await response.text();
-    if (!text) return null;
-    try { return JSON.parse(text); } catch (_) { return null; }
+  function safeCount(value, label) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error(label + "无效");
+    }
+    return value;
   }
 
-  function apiMessage(status, payload) {
-    if (payload && payload.error && payload.error.message) return payload.error.message;
-    if (status === 404) return "尚未生成实时风险数据";
-    if (status === 503) return "实时风险数据不足或供应商暂时不可用";
-    return "风险接口请求失败（HTTP " + status + "）";
+  function validLimits(limits) {
+    return limits && positiveLimit(limits.maxZones, MAX_VISIBLE_ZONES) &&
+      positiveLimit(limits.maxSourceZones, MAX_SOURCE_ZONES) &&
+      positiveLimit(limits.maxZoneVertices, MAX_ZONE_VERTICES) &&
+      positiveLimit(limits.maxTotalVertices, MAX_TOTAL_VERTICES) &&
+      positiveLimit(limits.maxGeometryBytes, MAX_GEOMETRY_BYTES) &&
+      positiveLimit(limits.maxResponseBytes, MAX_RESPONSE_BYTES);
+  }
+
+  function positiveLimit(value, maximum) {
+    return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= maximum;
+  }
+
+  function requireValidTo(data) {
+    const value = data.snapshot.validTo || (data.snapshot.source && data.snapshot.source.validTo);
+    const timestamp = Date.parse(value || "");
+    if (!value || !Number.isFinite(timestamp)) {
+      throw new Error("风险数据有效期缺失或无效，已按不可用处理");
+    }
+    return timestamp;
+  }
+
+  function validateGeometryLimits(zones, limits) {
+    let totalVertices = 0;
+    zones.forEach(function (zone) {
+      if (!validZone(zone)) throw new Error("风险区几何结构无效");
+      const bytes = new TextEncoder().encode(JSON.stringify(zone.geometry.coordinates)).byteLength;
+      if (bytes > limits.maxGeometryBytes) throw new Error("单个风险区几何超过浏览器字节上限");
+      const vertices = validateGeometry(zone.geometry, limits.maxZoneVertices);
+      totalVertices += vertices;
+      if (totalVertices > limits.maxTotalVertices) {
+        throw new Error("风险区几何总量超过浏览器安全上限");
+      }
+    });
+  }
+
+  function validateGeometry(geometry, maximum) {
+    const polygons = geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
+    if (!Array.isArray(polygons) || polygons.length === 0) throw new Error("风险区不含有效多边形");
+    let count = 0;
+    for (const polygon of polygons) {
+      count += validatePolygon(polygon, maximum - count);
+      if (count > maximum) throw new Error("单个风险区几何超过浏览器顶点上限");
+    }
+    return count;
+  }
+
+  function validatePolygon(polygon, maximum) {
+    if (!Array.isArray(polygon) || polygon.length === 0) throw new Error("风险区 Polygon 不含环");
+    let count = 0;
+    for (const ring of polygon) {
+      count += validateRing(ring);
+      if (count > maximum) throw new Error("单个风险区几何超过浏览器顶点上限");
+    }
+    return count;
+  }
+
+  function validateRing(ring) {
+    if (!Array.isArray(ring) || ring.length < 4) throw new Error("风险区 Polygon 环点数不足");
+    let area = 0;
+    for (let index = 0; index < ring.length; index++) {
+      validateCoordinate(ring[index]);
+      if (index < ring.length - 1) {
+        area += ring[index][0] * ring[index + 1][1] - ring[index + 1][0] * ring[index][1];
+      }
+    }
+    if (!sameCoordinate(ring[0], ring[ring.length - 1]) || Math.abs(area) < 1e-12) {
+      throw new Error("风险区 Polygon 环未闭合或面积为零");
+    }
+    return ring.length;
+  }
+
+  function validateCoordinate(value) {
+    if (!Array.isArray(value) || value.length < 2 || !Number.isFinite(value[0]) || !Number.isFinite(value[1]) ||
+      value[0] < -180 || value[0] > 180 || value[1] < -90 || value[1] > 90) {
+      throw new Error("风险区坐标超出 WGS84 范围");
+    }
+  }
+
+  function sameCoordinate(left, right) {
+    return left[0] === right[0] && left[1] === right[1];
   }
 
   function renderRisk(data) {
-    const zones = data.zones.slice().sort(compareZones);
-    const visible = zones.slice(0, MAX_VISIBLE_ZONES);
-    const drawn = renderLayer(visible);
-    renderMetadata(data);
-    elements.visibleCount.textContent = "已显示 " + drawn + " / " + zones.length + " 个风险区";
-    if (zones.length === 0) {
-      setState(snapshotState(data) === "stale" ? "stale" : "current", "当前快照未生成达到阈值的风险区。" );
+    activeData = data;
+    const drawn = renderLayer(data.zones);
+    const state = snapshotState(data);
+    renderMetadata(data, state);
+    elements.visibleCount.textContent = "已显示 " + drawn + " / " + data.totalZoneCount + " 个风险区";
+    scheduleExpiry(data);
+    if (data.zones.length === 0) {
+      setState(state, state === "fallback" ? "回退快照未生成达到阈值的风险区。" : "当前快照未生成达到阈值的风险区。" );
       return;
     }
     if (drawn === 0) {
-      setState("unavailable", "风险区几何无效，未绘制任何图层。" );
+      renderUnavailable("风险区几何无效，未绘制任何图层");
       return;
     }
-    const truncated = zones.length > visible.length ? "，为保障浏览器性能已按风险等级截断" : "";
-    const stale = snapshotState(data) === "stale";
-    setState(stale ? "stale" : "current", (stale ? "当前展示最后成功但已过期的数据" : "风险图层已更新") + truncated + "。" );
-  }
-
-  function compareZones(left, right) {
-    const level = (LEVEL_ORDER[right.riskLevel] || 0) - (LEVEL_ORDER[left.riskLevel] || 0);
-    if (level !== 0) return level;
-    return Number(right.probabilityMaximum || 0) - Number(left.probabilityMaximum || 0);
+    const truncated = data.totalZoneCount > drawn ? "，服务端已按风险优先级限制地图负载" : "";
+    const messages = { stale: "当前展示已过期的最后成功数据",
+      fallback: "当前使用未过期的最后成功回退数据", current: "风险图层已更新" };
+    setState(state, messages[state] + truncated + "。" );
   }
 
   function renderLayer(zones) {
     clearRiskLayer();
-    const features = zones.filter(validZone).map(function (zone) {
+    const features = zones.map(function (zone) {
       return { type: "Feature", geometry: zone.geometry, properties: zone };
     });
     if (features.length === 0) return 0;
@@ -133,7 +221,7 @@
     }).addTo(map);
     const bounds = riskLayer.getBounds();
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [20, 20], maxZoom: 9 });
-    return features.length;
+    return riskLayer.getLayers().length;
   }
 
   function validZone(zone) {
@@ -177,31 +265,55 @@
     return Number.isFinite(value) ? (value / 1000000).toFixed(2) + " km²" : "未提供";
   }
 
-  function renderMetadata(data) {
+  function renderMetadata(data, state) {
     const snapshot = data.snapshot || {};
     const source = snapshot.source || {};
     const assessment = data.assessment || {};
     const decision = assessment.decision || null;
-    elements.decision.textContent = decision ? levelText(decision.level) : "不可判定";
-    elements.assessment.textContent = assessmentText(assessment.status);
-    elements.dataStatus.textContent = dataStatusText(assessment.dataStatus, snapshotState(data));
-    elements.confidence.textContent = confidenceText(assessment.confidence);
+    const level = decision ? levelText(decision.level) : "不可判定";
+    const stale = state === "stale";
+    elements.decision.textContent = stale ? "已过期 / " + level : level;
+    elements.assessment.textContent = stale ? "数据已过期，仅保留图层供人工复核" :
+      state === "fallback" ? "正在使用最后成功回退数据，需人工复核" : assessmentText(assessment.status);
+    elements.dataStatus.textContent = dataStatusText(assessment.dataStatus, stale);
+    elements.confidence.textContent = stale ? "已过期，原输入质量不代表当前状态" : confidenceText(assessment.confidence);
     elements.model.textContent = joinNonEmpty([snapshot.modelName, snapshot.modelVersion]);
     elements.source.textContent = joinNonEmpty([source.provider, source.dataset, source.datasetVersion]);
     elements.fetchedAt.textContent = formatTime(source.fetchedAt);
     elements.validTo.textContent = formatTime(snapshot.validTo || source.validTo);
     elements.crs.textContent = textValue(source.crs || "WGS84");
     elements.ruleVersion.textContent = textValue(assessment.ruleVersion);
-    renderLimitations(snapshot.limitations, source.limitations, assessment.limitations);
+    renderLimitations(snapshot.limitations, source.limitations, assessment.limitations, data.mapLimitations,
+      stale ? ["风险数据已跨过有效期，禁止作为当前预警结论使用"] : []);
   }
 
   function snapshotState(data) {
     const snapshot = data.snapshot || {};
     const source = snapshot.source || {};
     const assessment = data.assessment || {};
-    const validTo = Date.parse(snapshot.validTo || source.validTo || "");
     return snapshot.status === "stale" || source.stale || assessment.dataStatus === "expired" ||
-      (Number.isFinite(validTo) && Date.now() > validTo) ? "stale" : "current";
+      Date.now() >= requireValidTo(data) ? "stale" : assessment.dataStatus === "fallback" ? "fallback" : "current";
+  }
+
+  function scheduleExpiry(data) {
+    clearExpiryTimer();
+    const validTo = requireValidTo(data);
+    const check = function () {
+      if (activeData !== data) return;
+      const remaining = validTo - Date.now();
+      if (remaining <= 0) {
+        renderMetadata(data, "stale");
+        setState("stale", "风险数据已跨过有效期，当前仅展示最后成功图层供人工复核。" );
+        return;
+      }
+      expiryTimer = window.setTimeout(check, Math.min(remaining + 25, MAX_EXPIRY_TIMER_MS));
+    };
+    check();
+  }
+
+  function clearExpiryTimer() {
+    if (expiryTimer) window.clearTimeout(expiryTimer);
+    expiryTimer = 0;
   }
 
   function renderLimitations() {
@@ -209,17 +321,29 @@
       return typeof value === "string" && value.trim() !== "";
     });
     values.unshift("风险图层仅用于辅助研判，不构成官方预警。");
-    const unique = Array.from(new Set(values)).slice(0, 8);
+    const unique = Array.from(new Set(values)).slice(0, 10);
     elements.limitations.replaceChildren();
     unique.forEach(function (value) { appendText(elements.limitations, "li", value); });
   }
 
   function renderUnavailable(message) {
-    setState("unavailable", message + "。页面不会使用模拟风险区替代。" );
+    activeData = null;
+    clearExpiryTimer();
+    clearRiskLayer();
+    map.setView([35.5, 104.5], 4);
+    setState("unavailable", sentence(message) + " 页面不会使用模拟风险区替代。" );
     elements.visibleCount.textContent = "未显示风险区";
     elements.decision.textContent = "不可用";
-    elements.assessment.textContent = "等待最后成功数据";
+    elements.assessment.textContent = "没有可用的当前风险结果";
     elements.dataStatus.textContent = "不可用";
+    elements.confidence.textContent = "未提供";
+    elements.model.textContent = "未提供";
+    elements.source.textContent = "未提供";
+    elements.fetchedAt.textContent = "未提供";
+    elements.validTo.textContent = "未提供";
+    elements.crs.textContent = "WGS84";
+    elements.ruleVersion.textContent = "未提供";
+    renderLimitations(["风险数据不可用，禁止沿用页面上一次成功结果"]);
   }
 
   function clearRiskLayer() {
@@ -232,14 +356,25 @@
     elements.message.textContent = message;
   }
 
+  function requestTimeout() {
+    const value = Number(root.dataset.requestTimeoutMs);
+    return Number.isFinite(value) && value >= 25 && value <= 60000 ? value : 20000;
+  }
+
+  function sentence(value) {
+    const text = String(value || "风险数据暂时不可用").trim();
+    return /[。！？]$/.test(text) ? text : text + "。";
+  }
+
   function levelText(value) { return LEVEL_TEXT[value] || textValue(value); }
 
   function assessmentText(value) {
     return ({ available: "研判可用", degraded: "降级研判，需重点复核", insufficient_data: "数据不足，不提供可操作等级" })[value] || "状态未提供";
   }
 
-  function dataStatusText(value, fallback) {
-    return ({ current: "当前数据", fallback: "最后成功数据回退", expired: "数据已过期" })[value] || (fallback === "stale" ? "数据已过期" : "未知");
+  function dataStatusText(value, stale) {
+    if (stale) return "数据已过期";
+    return ({ current: "当前数据", fallback: "最后成功数据回退", expired: "数据已过期" })[value] || "未知";
   }
 
   function confidenceText(value) {
