@@ -67,6 +67,27 @@ test("风险区全部被省略时明确显示地图不可用", async ({ page, re
   await expect(page.locator("#risk-source")).toContainText("NASA Earthdata");
 });
 
+test("风险区全部省略后跨期仍保持不可用并保留双重事实", async ({ page, request }) => {
+  await setScenario(request, "all_zones_omitted_then_expiry");
+  await page.clock.install({ time: FIXED_NOW });
+  await page.goto("/");
+
+  const message = page.locator("#risk-map-message");
+  await expect(message).toHaveClass(/map-state-unavailable/);
+  await expect(message).toContainText("全部因地图安全上限被省略");
+
+  await page.clock.fastForward(2_100);
+
+  await expect(message).toHaveClass(/map-state-unavailable/);
+  await expect(message).toContainText("风险数据已过期");
+  await expect(message).toContainText("全部因地图安全上限被省略");
+  await expect(message).not.toContainText("展示最后成功图层");
+  await expect(page.locator("#risk-visible-count")).toHaveText("已显示 0 / 1 个风险区（全部省略）");
+  await expect(page.locator("#risk-decision-level")).toHaveText("已过期 / 高");
+  await expect(page.locator("#risk-data-status")).toHaveText("数据已过期");
+  await expect(page.locator("#risk-limitations-list")).toContainText("已跨过有效期");
+});
+
 test("未过期 fallback 优先于 snapshot 与 source 的 stale 标记", async ({ page, request }) => {
   await setScenario(request, "fallback_unexpired");
   await page.clock.install({ time: FIXED_NOW });

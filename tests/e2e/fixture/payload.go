@@ -120,11 +120,10 @@ func envelopeFor(name string) riskEnvelope {
 		value = validEnvelope(shortValidTo)
 		markFallback(&value)
 	case "all_zones_omitted":
-		value.Data.Zones = []riskZone{}
-		value.Data.TotalZoneCount, value.Data.VisibleZoneCount = 1, 0
-		value.Data.OmittedZoneCount = 1
-		value.Data.OmittedComplexZoneCount, value.Data.OmittedPayloadZoneCount = 1, 0
-		value.Data.MapLimitations = []string{"全部风险区因地图安全上限被省略"}
+		markAllZonesOmitted(&value)
+	case "all_zones_omitted_then_expiry":
+		value = validEnvelope(shortValidTo)
+		markAllZonesOmitted(&value)
 	case "too_many_zones":
 		value.Data.Zones = repeatedZones(3001)
 		value.Data.TotalZoneCount, value.Data.VisibleZoneCount = 3001, 3001
@@ -138,6 +137,14 @@ func markFallback(value *riskEnvelope) {
 	value.Data.Assessment.Status = "degraded"
 	value.Data.Assessment.DataStatus = "fallback"
 	value.Data.Assessment.Confidence.Level = "medium"
+}
+
+func markAllZonesOmitted(value *riskEnvelope) {
+	value.Data.Zones = []riskZone{}
+	value.Data.TotalZoneCount, value.Data.VisibleZoneCount = 1, 0
+	value.Data.OmittedZoneCount = 1
+	value.Data.OmittedComplexZoneCount, value.Data.OmittedPayloadZoneCount = 1, 0
+	value.Data.MapLimitations = []string{"全部风险区因地图安全上限被省略"}
 }
 
 func validEnvelope(validTo string) riskEnvelope {

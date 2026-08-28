@@ -233,7 +233,8 @@
   function renderEmptyRiskMap(data, state) {
     if (data.totalZoneCount > 0 && data.omittedZoneCount === data.totalZoneCount) {
       elements.visibleCount.textContent = "已显示 0 / " + data.totalZoneCount + " 个风险区（全部省略）";
-      setState("unavailable", "风险快照包含风险区，但全部因地图安全上限被省略，地图当前不可用，不得据此降低风险判断。" );
+      const expired = state === "expired" ? "风险数据已过期，且" : "";
+      setState("unavailable", expired + "风险快照包含风险区，但全部因地图安全上限被省略，地图当前不可用，不得据此降低风险判断。" );
       return;
     }
     const messages = {
@@ -343,13 +344,21 @@
       if (activeData !== data) return;
       const remaining = validTo - Date.now();
       if (remaining <= 0) {
-        renderMetadata(data, "expired");
-        setState("stale", "风险数据已跨过有效期，当前仅展示最后成功图层供人工复核。" );
+        renderExpiredRisk(data);
         return;
       }
       expiryTimer = window.setTimeout(check, Math.min(remaining + 25, MAX_EXPIRY_TIMER_MS));
     };
     check();
+  }
+
+  function renderExpiredRisk(data) {
+    renderMetadata(data, "expired");
+    if (data.zones.length === 0) {
+      renderEmptyRiskMap(data, "expired");
+      return;
+    }
+    setState("stale", "风险数据已跨过有效期，当前仅展示最后成功图层供人工复核。" );
   }
 
   function clearExpiryTimer() {
