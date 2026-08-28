@@ -30,7 +30,7 @@ until docker exec "$POSTGRES_NAME" pg_isready -U ai_gdm -d ai_gdm >/dev/null 2>&
   sleep 2
 done
 
-docker run --rm --network "$NETWORK" -v "$ROOT:/src:ro" -w /src \
+sh "$ROOT/scripts/run-validation-container.sh" --network "$NETWORK" -v "$ROOT:/src:ro" -w /src \
   -e "GOPROXY=$GO_PROXY" \
   -e "TEST_DATABASE_URL=postgres://ai_gdm:$POSTGRES_PASSWORD@$POSTGRES_NAME:5432/ai_gdm?sslmode=disable" \
   golang:1.26.7-bookworm sh -c '

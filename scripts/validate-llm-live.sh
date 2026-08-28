@@ -29,7 +29,7 @@ if [ "$LLM_ENABLED" != "true" ]; then
   exit 1
 fi
 
-docker run --rm \
+sh "$ROOT/scripts/run-validation-container.sh" \
   -v "$ROOT:/src:ro" \
   -w /src \
   -e "GOPROXY=$GO_PROXY" \
