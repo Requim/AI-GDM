@@ -73,6 +73,15 @@ func TestMapAPIRejectsInvalidInputBeforeProvider(t *testing.T) {
 	}
 }
 
+func TestMapAPIMapsUnsafeFacilityProviderResult(t *testing.T) {
+	providerErr := fmt.Errorf("供应商设施坐标: %w: %w",
+		applicationevacuation.ErrUnsafeProviderResult, domain.ErrInvalidInput)
+	handler := newHandler(t, &facilitySearcherStub{err: providerErr}, &routePlannerStub{})
+	response := serveJSON(t, handler, http.MethodPost, "/places/nearby",
+		`{"center":{"longitude":116.4,"latitude":39.9},"kind":"shelter","radiusMeters":100}`)
+	assertError(t, response, http.StatusServiceUnavailable, "unsafe_provider_result")
+}
+
 func TestMapAPIHidesProviderFailure(t *testing.T) {
 	handler := newHandler(t, &facilitySearcherStub{err: errors.New("供应商口令 secret-key")}, &routePlannerStub{})
 	response := serveJSON(t, handler, http.MethodPost, "/places/nearby",

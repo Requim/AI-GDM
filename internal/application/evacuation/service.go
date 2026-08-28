@@ -78,6 +78,9 @@ func (s *Service) Search(ctx context.Context, input SearchInput) (SearchResult, 
 	if err != nil {
 		return SearchResult{}, fmt.Errorf("搜索 %s 避险设施: %w", input.Kind, err)
 	}
+	if err := validateProviderResultCount("设施供应商", len(candidates), MaxFacilityProviderCandidates); err != nil {
+		return SearchResult{}, err
+	}
 	return filterCandidates(snapshot, zones, input.Kind, candidates)
 }
 
@@ -118,6 +121,9 @@ func validateRiskData(expected hazard.Type, snapshot hazard.Snapshot, zones []ha
 	if snapshot.ID == "" || snapshot.HazardType != expected {
 		return fmt.Errorf("%w: 风险快照与搜索灾种不一致", domain.ErrInsufficientData)
 	}
+	if err := validateRiskValidTo(snapshot, "设施"); err != nil {
+		return err
+	}
 	if snapshot.Status != hazard.SnapshotAvailable && snapshot.Status != hazard.SnapshotStale {
 		return fmt.Errorf("%w: 风险快照当前不可用于设施筛选", domain.ErrInsufficientData)
 	}
@@ -135,21 +141,40 @@ func validateRiskData(expected hazard.Type, snapshot hazard.Snapshot, zones []ha
 	return nil
 }
 
+func validateRiskValidTo(snapshot hazard.Snapshot, subject string) error {
+	if snapshot.ValidTo.IsZero() || snapshot.Source.ValidTo.IsZero() {
+		return fmt.Errorf("%w: 风险快照缺少有效期，拒绝筛选%s", domain.ErrInsufficientData, subject)
+	}
+	if _, offset := snapshot.ValidTo.Zone(); offset != 0 {
+		return fmt.Errorf("%w: 风险快照有效期必须使用 UTC，拒绝筛选%s", domain.ErrInsufficientData, subject)
+	}
+	if _, offset := snapshot.Source.ValidTo.Zone(); offset != 0 {
+		return fmt.Errorf("%w: 风险来源有效期必须使用 UTC，拒绝筛选%s", domain.ErrInsufficientData, subject)
+	}
+	if !snapshot.ValidTo.Equal(snapshot.Source.ValidTo) {
+		return fmt.Errorf("%w: 风险快照与来源有效期不一致，拒绝筛选%s", domain.ErrInsufficientData, subject)
+	}
+	return nil
+}
+
 func filterCandidates(snapshot hazard.Snapshot, zones []hazard.RiskZone,
 	kind domainevacuation.FacilityType, candidates []domainevacuation.Facility,
 ) (SearchResult, error) {
 	result := SearchResult{
-		Snapshot:    snapshot,
-		Facilities:  make([]domainevacuation.Facility, 0, len(candidates)),
-		Excluded:    make([]ExcludedFacility, 0),
-		Limitations: []string{},
+		Snapshot:   snapshot,
+		Facilities: make([]domainevacuation.Facility, 0, len(candidates)),
+		Excluded:   make([]ExcludedFacility, 0),
+		Limitations: []string{
+			"设施结果仅覆盖地图供应商本次返回的有界候选集，空结果不代表附近不存在可用设施",
+		},
 	}
-	if snapshot.Status == hazard.SnapshotStale {
-		result.Limitations = append(result.Limitations, "风险区快照已过期，设施筛选结果仅供辅助研判")
+	if limitation := riskFreshnessLimitation(snapshot, "设施筛选结果"); limitation != "" {
+		result.Limitations = append(result.Limitations, limitation)
 	}
 	for index, candidate := range candidates {
 		if err := validateCandidate(kind, candidate); err != nil {
-			return SearchResult{}, fmt.Errorf("校验第 %d 个设施候选: %w", index, err)
+			context := fmt.Sprintf("校验第 %d 个设施候选", index+1)
+			return SearchResult{}, wrapUnsafeProviderResult(context, err)
 		}
 		zoneIDs, err := matchingZones(candidate.Location, zones)
 		if err != nil {

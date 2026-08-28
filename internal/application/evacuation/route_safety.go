@@ -34,10 +34,11 @@ type ExcludedRoute struct {
 
 // RouteSearchResult 保存过滤后的路线、排除明细和风险快照。
 type RouteSearchResult struct {
-	Snapshot    hazard.Snapshot          `json:"snapshot"`
-	Routes      []domainevacuation.Route `json:"routes"`
-	Excluded    []ExcludedRoute          `json:"excluded"`
-	Limitations []string                 `json:"limitations"`
+	Snapshot           hazard.Snapshot          `json:"snapshot"`
+	Routes             []domainevacuation.Route `json:"routes"`
+	Excluded           []ExcludedRoute          `json:"excluded"`
+	RiskScoreAvailable bool                     `json:"riskScoreAvailable"`
+	Limitations        []string                 `json:"limitations"`
 }
 
 // RouteSafetySearcher 是 HTTP 等驱动适配器使用的安全路线用例边界。
@@ -80,6 +81,9 @@ func (s *SafetyService) SearchRoutes(ctx context.Context, input RouteSearchInput
 	candidates, err := s.plan(ctx, input)
 	if err != nil {
 		return RouteSearchResult{}, fmt.Errorf("规划 %s 路线: %w", input.Mode, err)
+	}
+	if err := validateProviderResultCount("路线供应商", len(candidates), MaxRouteProviderCandidates); err != nil {
+		return RouteSearchResult{}, err
 	}
 	return evaluateRoutes(input, snapshot, zones, candidates)
 }
@@ -141,6 +145,9 @@ func validateRouteRiskData(expected hazard.Type, snapshot hazard.Snapshot, zones
 	if snapshot.ID == "" || snapshot.HazardType != expected {
 		return fmt.Errorf("%w: 风险快照与路线灾种不一致", domain.ErrInsufficientData)
 	}
+	if err := validateRiskValidTo(snapshot, "路线"); err != nil {
+		return err
+	}
 	if snapshot.Status != hazard.SnapshotAvailable && snapshot.Status != hazard.SnapshotStale {
 		return fmt.Errorf("%w: 风险快照当前不可用于路线筛选", domain.ErrInsufficientData)
 	}
@@ -167,13 +174,17 @@ func evaluateRoutes(input RouteSearchInput, snapshot hazard.Snapshot, zones []ha
 			"路线仅排除了穿越已知风险区的候选，不代表道路已获交管部门确认开放",
 		},
 	}
-	if snapshot.Status == hazard.SnapshotStale {
-		result.Limitations = append(result.Limitations, "风险区快照已过期，路线安全结果仅供辅助调度")
+	if limitation := riskFreshnessLimitation(snapshot, "路线安全结果"); limitation != "" {
+		result.Limitations = append(result.Limitations, limitation)
 	}
 	for index, candidate := range candidates {
+		if err := validateProviderGeometrySize(len(candidate.Geometry.Coordinates)); err != nil {
+			return RouteSearchResult{}, fmt.Errorf("校验第 %d 条路线负载: %w", index+1, err)
+		}
 		route := cloneRoute(candidate)
 		if err := validateCandidateRoute(input, route); err != nil {
-			return RouteSearchResult{}, fmt.Errorf("校验第 %d 条路线: %w", index+1, err)
+			context := fmt.Sprintf("校验第 %d 条路线", index+1)
+			return RouteSearchResult{}, wrapUnsafeProviderResult(context, err)
 		}
 		if route.IntersectsRiskZone {
 			result.Excluded = append(result.Excluded, ExcludedRoute{
@@ -195,8 +206,13 @@ func evaluateRoutes(input RouteSearchInput, snapshot hazard.Snapshot, zones []ha
 		result.Routes = append(result.Routes, route)
 	}
 	sortRoutes(result.Routes)
-	if allRiskScoresMissing(result.Routes) {
+	result.RiskScoreAvailable = riskScoresAvailable(result.Routes)
+	missingScores := missingRiskScoreCount(result.Routes)
+	if len(result.Routes) > 0 && missingScores == len(result.Routes) {
 		result.Limitations = append(result.Limitations, "供应商未提供路线风险分数，当前按风险区相交闸门后以时间和距离排序")
+	} else if missingScores > 0 {
+		result.Limitations = append(result.Limitations,
+			"部分路线缺少供应商风险分数；缺失项不按 0 分处理，并在已有分数之后按时间和距离排序")
 	}
 	return result, nil
 }
@@ -217,8 +233,8 @@ func validateCandidateRoute(input RouteSearchInput, route domainevacuation.Route
 	if err := route.Geometry.ValidateLineString(); err != nil {
 		return fmt.Errorf("校验路线几何: %w", err)
 	}
-	if math.IsNaN(route.RiskScore) || math.IsInf(route.RiskScore, 0) ||
-		route.RiskScore < 0 || route.RiskScore > 100 {
+	if route.RiskScoreProvided && (math.IsNaN(route.RiskScore) || math.IsInf(route.RiskScore, 0) ||
+		route.RiskScore < 0 || route.RiskScore > 100) {
 		return fmt.Errorf("%w: 路线风险分数必须在 0 到 100 之间", domain.ErrInvalidInput)
 	}
 	return nil
@@ -240,7 +256,10 @@ func intersectingZoneIDs(route spatial.Geometry, zones []hazard.RiskZone) ([]str
 
 func sortRoutes(routes []domainevacuation.Route) {
 	sort.SliceStable(routes, func(left, right int) bool {
-		if routes[left].RiskScore != routes[right].RiskScore {
+		if routes[left].RiskScoreProvided != routes[right].RiskScoreProvided {
+			return routes[left].RiskScoreProvided
+		}
+		if routes[left].RiskScoreProvided && routes[left].RiskScore != routes[right].RiskScore {
 			return routes[left].RiskScore < routes[right].RiskScore
 		}
 		if routes[left].DurationSeconds != routes[right].DurationSeconds {
@@ -256,16 +275,23 @@ func sortRoutes(routes []domainevacuation.Route) {
 	}
 }
 
-func allRiskScoresMissing(routes []domainevacuation.Route) bool {
-	if len(routes) == 0 {
-		return false
-	}
+func riskScoresAvailable(routes []domainevacuation.Route) bool {
 	for _, route := range routes {
-		if route.RiskScore > 0 {
-			return false
+		if route.RiskScoreProvided {
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+func missingRiskScoreCount(routes []domainevacuation.Route) int {
+	missing := 0
+	for _, route := range routes {
+		if !route.RiskScoreProvided {
+			missing++
+		}
+	}
+	return missing
 }
 
 func samePoint(left, right spatial.Point) bool {

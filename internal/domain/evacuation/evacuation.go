@@ -2,6 +2,7 @@ package evacuation
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/provenance"
@@ -56,6 +57,7 @@ type Route struct {
 	Steps              []RouteStep           `json:"steps"`
 	IntersectsRiskZone bool                  `json:"intersectsRiskZone"`
 	RiskScore          float64               `json:"riskScore"`
+	RiskScoreProvided  bool                  `json:"riskScoreProvided"`
 	Rank               int                   `json:"rank,omitempty"`
 	Source             provenance.Provenance `json:"source"`
 	Limitations        []string              `json:"limitations"`
@@ -69,8 +71,12 @@ func (r Route) Validate() error {
 	if err := r.Destination.Validate(); err != nil {
 		return err
 	}
-	if r.DistanceMeters <= 0 || r.DurationSeconds <= 0 || r.RiskScore < 0 {
+	if r.DistanceMeters <= 0 || r.DurationSeconds <= 0 ||
+		math.IsNaN(r.RiskScore) || math.IsInf(r.RiskScore, 0) || r.RiskScore < 0 || r.RiskScore > 100 {
 		return fmt.Errorf("%w: 路线距离、时长或风险分数无效", domain.ErrInvalidInput)
+	}
+	if !r.RiskScoreProvided && r.RiskScore != 0 {
+		return fmt.Errorf("%w: 未声明风险分数来源却返回了数值", domain.ErrInvalidInput)
 	}
 	if r.Mode != TravelDriving && r.Mode != TravelWalking && r.Mode != TravelTransit {
 		return fmt.Errorf("%w: 不支持的交通方式 %q", domain.ErrInvalidInput, r.Mode)

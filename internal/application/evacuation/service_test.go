@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Requim/AI-GDM/internal/domain"
 	domainevacuation "github.com/Requim/AI-GDM/internal/domain/evacuation"
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
+	"github.com/Requim/AI-GDM/internal/domain/provenance"
 	"github.com/Requim/AI-GDM/internal/domain/spatial"
 )
 
@@ -103,6 +105,74 @@ func TestServiceSearchAllowsCompleteEmptyRiskZoneSet(t *testing.T) {
 	if err != nil || len(result.Facilities) != 1 || len(result.Excluded) != 0 {
 		t.Fatalf("完整空风险区结果错误: result=%+v err=%v", result, err)
 	}
+	if len(result.Limitations) == 0 {
+		t.Fatal("空风险区设施结果缺少供应商候选集有界说明")
+	}
+}
+
+func TestServiceSearchRejectsMissingRiskValidToBeforeProvider(t *testing.T) {
+	places := &placeFinderStub{}
+	snapshot := testSnapshot(hazard.SnapshotAvailable)
+	snapshot.ValidTo = time.Time{}
+	service, err := NewService(places, &riskReaderStub{snapshot: snapshot, zones: []hazard.RiskZone{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Search(context.Background(), SearchInput{
+		HazardType: hazard.TypeLandslide, Center: spatial.Point{Longitude: 116.4, Latitude: 39.4},
+		Kind: domainevacuation.FacilityShelter, RadiusMeters: 1_000,
+	})
+	if !errors.Is(err, domain.ErrInsufficientData) || places.calls != 0 {
+		t.Fatalf("缺少 ValidTo 未被拒绝: err=%v calls=%d", err, places.calls)
+	}
+}
+
+func TestServiceSearchRejectsNonUTCRiskValidToBeforeProvider(t *testing.T) {
+	places := &placeFinderStub{}
+	snapshot := testSnapshot(hazard.SnapshotAvailable)
+	snapshot.ValidTo = time.Date(2026, 8, 29, 8, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	service, err := NewService(places, &riskReaderStub{snapshot: snapshot, zones: []hazard.RiskZone{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Search(context.Background(), SearchInput{
+		HazardType: hazard.TypeLandslide, Center: spatial.Point{Longitude: 116.4, Latitude: 39.4},
+		Kind: domainevacuation.FacilityShelter, RadiusMeters: 1_000,
+	})
+	if !errors.Is(err, domain.ErrInsufficientData) || places.calls != 0 {
+		t.Fatalf("非 UTC ValidTo 未被拒绝: err=%v calls=%d", err, places.calls)
+	}
+}
+
+func TestServiceSearchRejectsInvalidSourceValidToBeforeProvider(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*hazard.Snapshot)
+	}{
+		{name: "missing", mutate: func(value *hazard.Snapshot) { value.Source.ValidTo = time.Time{} }},
+		{name: "non_utc", mutate: func(value *hazard.Snapshot) {
+			value.Source.ValidTo = time.Date(2026, 8, 29, 8, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+		}},
+		{name: "mismatch", mutate: func(value *hazard.Snapshot) { value.Source.ValidTo = value.ValidTo.Add(time.Second) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			places := &placeFinderStub{}
+			snapshot := testSnapshot(hazard.SnapshotAvailable)
+			test.mutate(&snapshot)
+			service, err := NewService(places, &riskReaderStub{snapshot: snapshot, zones: []hazard.RiskZone{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = service.Search(context.Background(), SearchInput{
+				HazardType: hazard.TypeLandslide, Center: spatial.Point{Longitude: 116.4, Latitude: 39.4},
+				Kind: domainevacuation.FacilityShelter, RadiusMeters: 1_000,
+			})
+			if !errors.Is(err, domain.ErrInsufficientData) || places.calls != 0 {
+				t.Fatalf("风险来源 ValidTo 损坏未在供应商调用前拒绝: err=%v calls=%d", err, places.calls)
+			}
+		})
+	}
 }
 
 func TestServiceSearchRejectsInvalidRiskGeometryBeforeProvider(t *testing.T) {
@@ -140,7 +210,7 @@ func TestServiceSearchAddsStaleLimitation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Limitations) != 1 {
+	if len(result.Limitations) != 2 {
 		t.Fatalf("过期风险区限制说明缺失: %+v", result.Limitations)
 	}
 }
@@ -160,13 +230,55 @@ func TestServiceSearchRejectsProviderTypeMismatch(t *testing.T) {
 		HazardType: hazard.TypeLandslide, Center: spatial.Point{Longitude: 116.4, Latitude: 39.4},
 		Kind: domainevacuation.FacilityShelter, RadiusMeters: 500,
 	})
-	if !errors.Is(err, domain.ErrInvalidInput) {
-		t.Fatalf("供应商类型不一致应返回 ErrInvalidInput，实际为 %v", err)
+	if !errors.Is(err, ErrUnsafeProviderResult) || !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("供应商类型不一致未保留上游结果和字段校验语义，实际为 %v", err)
+	}
+}
+
+func TestServiceSearchRejectsInvalidProviderCoordinate(t *testing.T) {
+	places := &placeFinderStub{result: []domainevacuation.Facility{{
+		ID: "bad-coordinate", Type: domainevacuation.FacilityShelter,
+		Location: spatial.Point{Longitude: 181, Latitude: 39.5},
+	}}}
+	service, err := NewService(places, &riskReaderStub{
+		snapshot: testSnapshot(hazard.SnapshotAvailable), zones: []hazard.RiskZone{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Search(context.Background(), SearchInput{
+		HazardType: hazard.TypeLandslide, Center: spatial.Point{Longitude: 116.4, Latitude: 39.4},
+		Kind: domainevacuation.FacilityShelter, RadiusMeters: 500,
+	})
+	if !errors.Is(err, ErrUnsafeProviderResult) || !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("供应商非法坐标未转换为上游结果错误，实际为 %v", err)
+	}
+}
+
+func TestServiceSearchRejectsProviderOverflowBeforeCandidateValidation(t *testing.T) {
+	candidates := make([]domainevacuation.Facility, MaxFacilityProviderCandidates+1)
+	candidates[0] = domainevacuation.Facility{Type: domainevacuation.FacilityHospital}
+	service, err := NewService(&placeFinderStub{result: candidates}, &riskReaderStub{
+		snapshot: testSnapshot(hazard.SnapshotAvailable), zones: []hazard.RiskZone{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Search(context.Background(), SearchInput{
+		HazardType: hazard.TypeLandslide, Center: spatial.Point{Longitude: 116.4, Latitude: 39.4},
+		Kind: domainevacuation.FacilityShelter, RadiusMeters: 500,
+	})
+	if !errors.Is(err, ErrUnsafeProviderResult) || errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("设施数量门禁未先于候选字段校验执行，实际为 %v", err)
 	}
 }
 
 func testSnapshot(status hazard.SnapshotStatus) hazard.Snapshot {
-	return hazard.Snapshot{ID: "snapshot-1", HazardType: hazard.TypeLandslide, Status: status}
+	validTo := time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)
+	return hazard.Snapshot{
+		ID: "snapshot-1", HazardType: hazard.TypeLandslide, Status: status,
+		ValidTo: validTo, Source: provenance.Provenance{ValidTo: validTo},
+	}
 }
 
 func testRiskZone(id, snapshotID, coordinates string) hazard.RiskZone {

@@ -7,9 +7,11 @@
   <title>AI-GDM 地质灾害辅助研判控制台</title>
   <link rel="stylesheet" href="/assets/vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/evacuation.css">
   <script defer src="/assets/vendor/leaflet/leaflet.js"></script>
   <script defer src="/assets/api.js"></script>
   <script defer src="/assets/risk-map.js"></script>
+  <script defer src="/assets/evacuation.js"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -146,6 +148,92 @@
               </ul>
             </div>
           </aside>
+        </div>
+      </section>
+
+      <section id="evacuation" class="evacuation-section" data-facilities-endpoint="/api/v1/map/places/nearby" data-routes-endpoint="/api/v1/map/routes" data-request-timeout-ms="20000" data-max-response-bytes="2097152" aria-labelledby="evacuation-title">
+        <div class="section-heading evacuation-heading">
+          <div>
+            <p>EVACUATION DISPATCH</p>
+            <h2 id="evacuation-title">疏散调度工作台</h2>
+          </div>
+          <span>候选路线需结合交管、现场和通信状态人工确认</span>
+        </div>
+
+        <div class="evacuation-workspace">
+          <form id="evacuation-form" class="evacuation-form">
+            <fieldset>
+              <legend>地图点击写入</legend>
+              <div class="segmented-control" aria-label="地图点击写入目标">
+                <button type="button" data-coordinate-target="origin" aria-pressed="true">起点</button>
+                <button type="button" data-coordinate-target="destination" aria-pressed="false">终点</button>
+              </div>
+            </fieldset>
+
+            <div class="coordinate-block">
+              <strong>起点 WGS84</strong>
+              <label>经度<input id="origin-longitude" name="originLongitude" type="number" min="-180" max="180" step="0.000001" placeholder="104.066541" required></label>
+              <label>纬度<input id="origin-latitude" name="originLatitude" type="number" min="-90" max="90" step="0.000001" placeholder="30.572269" required></label>
+            </div>
+
+            <div class="coordinate-block">
+              <strong>终点 WGS84</strong>
+              <label>经度<input id="destination-longitude" name="destinationLongitude" type="number" min="-180" max="180" step="0.000001" placeholder="104.082000" required></label>
+              <label>纬度<input id="destination-latitude" name="destinationLatitude" type="number" min="-90" max="90" step="0.000001" placeholder="30.590000" required></label>
+            </div>
+
+            <fieldset>
+              <legend>交通方式</legend>
+              <div class="segmented-control travel-mode" aria-label="交通方式">
+                <label><input type="radio" name="travelMode" value="driving" checked><span>驾车</span></label>
+                <label><input type="radio" name="travelMode" value="walking"><span>步行</span></label>
+                <label><input type="radio" name="travelMode" value="transit"><span>公交</span></label>
+              </div>
+            </fieldset>
+
+            <div id="transit-city-fields" class="city-code-fields" hidden>
+              <label>起点高德 citycode<input id="origin-city" type="text" inputmode="numeric" maxlength="12" pattern="[0-9]+" placeholder="请输入数字编码"></label>
+              <label>终点高德 citycode<input id="destination-city" type="text" inputmode="numeric" maxlength="12" pattern="[0-9]+" placeholder="请输入数字编码"></label>
+            </div>
+
+            <div class="facility-search-controls">
+              <label>设施类型
+                <select id="facility-kind">
+                  <option value="shelter">应急避难场所</option>
+                  <option value="hospital">医院</option>
+                  <option value="transport">交通设施</option>
+                </select>
+              </label>
+              <label>半径（米）<input id="facility-radius" type="number" min="1" max="50000" step="1" value="5000"></label>
+            </div>
+
+            <div class="evacuation-actions">
+              <button id="facility-search" class="secondary-command" type="button"><span aria-hidden="true">&#9678;</span>搜索候选设施</button>
+              <button id="route-plan" class="primary-command" type="submit"><span aria-hidden="true">&#8594;</span>规划候选路线</button>
+            </div>
+          </form>
+
+          <div class="evacuation-map-panel">
+            <div id="evacuation-message" class="dispatch-state" role="status" aria-live="polite">请在地图上选择起点和终点，或直接输入 WGS84 坐标。</div>
+            <div id="evacuation-map-canvas" class="evacuation-map-canvas" aria-label="疏散起终点与候选路线地图"></div>
+          </div>
+        </div>
+
+        <div class="dispatch-results">
+          <section aria-labelledby="facility-result-title">
+            <div class="result-heading"><h3 id="facility-result-title">候选设施</h3><span id="facility-count">尚未搜索</span></div>
+            <div id="facility-status" class="result-state result-state-idle" role="status" aria-live="polite">尚未执行设施搜索。</div>
+            <div id="facility-results" class="result-list"><p class="empty-result">从起点搜索风险区外的设施。</p></div>
+          </section>
+          <section aria-labelledby="route-result-title">
+            <div class="result-heading"><h3 id="route-result-title">候选路线</h3><span id="route-count">尚未规划</span></div>
+            <div id="route-status" class="result-state result-state-idle" role="status" aria-live="polite">尚未执行路线规划。</div>
+            <div id="route-results" class="result-list"><p class="empty-result">输入起终点后规划路线。</p></div>
+          </section>
+          <section aria-labelledby="excluded-result-title">
+            <div class="result-heading"><h3 id="excluded-result-title">排除与限制</h3><span id="excluded-count">0 项</span></div>
+            <div id="excluded-results" class="result-list"><p class="empty-result">被风险区排除的设施和路线将在此显示。</p></div>
+          </section>
         </div>
       </section>
     </main>

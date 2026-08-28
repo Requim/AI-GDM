@@ -27,7 +27,8 @@ func TestHandlerRendersEscapedChineseConsole(t *testing.T) {
 	}
 	body := response.Body.String()
 	if !strings.Contains(body, "监控中心控制台") || !strings.Contains(body, `id="risk-map"`) ||
-		!strings.Contains(body, `/assets/risk-map.js`) || strings.Contains(body, "<script>alert") ||
+		!strings.Contains(body, `id="evacuation"`) || !strings.Contains(body, `/assets/risk-map.js`) ||
+		!strings.Contains(body, `/assets/evacuation.js`) || strings.Contains(body, "<script>alert") ||
 		!strings.Contains(body, "&lt;script&gt;alert") {
 		t.Fatalf("页面内容不符合预期: %s", body)
 	}
@@ -44,7 +45,10 @@ func TestHandlerServesEmbeddedAssets(t *testing.T) {
 		contains    string
 	}{
 		{path: "/assets/app.css", contentType: "text/css", contains: ".source-table"},
+		{path: "/assets/evacuation.css", contentType: "text/css", contains: ".evacuation-workspace"},
+		{path: "/assets/api.js", contentType: "text/javascript", contains: "requestJSON"},
 		{path: "/assets/risk-map.js", contentType: "text/javascript", contains: "MAX_VISIBLE_ZONES"},
+		{path: "/assets/evacuation.js", contentType: "text/javascript", contains: "planRoutes"},
 		{path: "/assets/vendor/leaflet/leaflet.js", contentType: "text/javascript", contains: "Leaflet"},
 		{path: "/assets/vendor/leaflet/images/layers.png", contentType: "image/png"},
 	}

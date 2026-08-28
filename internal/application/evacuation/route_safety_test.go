@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Requim/AI-GDM/internal/domain"
 	domainevacuation "github.com/Requim/AI-GDM/internal/domain/evacuation"
@@ -17,9 +18,9 @@ func TestSafetyServiceFiltersAndSortsRoutes(t *testing.T) {
 	destination := spatial.Point{Longitude: 118, Latitude: 39.5}
 	zones := []hazard.RiskZone{testRiskZone("zone-route", "snapshot-1", "[[[116,39],[117,39],[117,40],[116,40],[116,39]]]")}
 	planner := &safetyRoutePlannerStub{result: []domainevacuation.Route{
-		testRoute("blocked", origin, destination, 1, 300, 3_000, "[[115,39.5],[118,39.5]]"),
-		testRoute("high-risk", origin, destination, 30, 600, 2_500, "[[115,39.5],[115.5,39.8]]"),
-		testRoute("low-risk", origin, destination, 5, 900, 2_000, "[[115,39.5],[115.5,38.8]]"),
+		testRoute("blocked", origin, destination, 1, true, 300, 3_000, "[[115,39.5],[118,39.5]]"),
+		testRoute("high-risk", origin, destination, 30, true, 600, 2_500, "[[115,39.5],[115.5,39.8]]"),
+		testRoute("low-risk", origin, destination, 5, true, 900, 2_000, "[[115,39.5],[115.5,38.8]]"),
 	}}
 	service := newSafetyService(t, planner, zones)
 	result, err := service.SearchRoutes(context.Background(), RouteSearchInput{
@@ -35,6 +36,9 @@ func TestSafetyServiceFiltersAndSortsRoutes(t *testing.T) {
 	if result.Routes[0].Rank != 1 || result.Routes[1].Rank != 2 {
 		t.Fatalf("路线排名错误: %+v", result.Routes)
 	}
+	if !result.RiskScoreAvailable {
+		t.Fatal("非零路线风险分数应标记为可用")
+	}
 	if len(result.Excluded) != 1 || result.Excluded[0].Route.ID != "blocked" ||
 		len(result.Excluded[0].ZoneIDs) != 1 || result.Excluded[0].ZoneIDs[0] != "zone-route" {
 		t.Fatalf("风险路线排除记录错误: %+v", result.Excluded)
@@ -48,7 +52,7 @@ func TestSafetyServiceAllowsCompleteEmptyRiskZones(t *testing.T) {
 	origin := spatial.Point{Longitude: 115, Latitude: 39.5}
 	destination := spatial.Point{Longitude: 118, Latitude: 39.5}
 	planner := &safetyRoutePlannerStub{result: []domainevacuation.Route{
-		testRoute("safe", origin, destination, 0, 300, 1_000, "[[115,39.5],[118,39.5]]"),
+		testRoute("safe", origin, destination, 0, false, 300, 1_000, "[[115,39.5],[118,39.5]]"),
 	}}
 	planner.result[0].Mode = domainevacuation.TravelWalking
 	service := newSafetyService(t, planner, []hazard.RiskZone{})
@@ -61,6 +65,70 @@ func TestSafetyServiceAllowsCompleteEmptyRiskZones(t *testing.T) {
 	}
 	if len(result.Limitations) < 2 {
 		t.Fatalf("缺少无风险分数限制说明: %+v", result.Limitations)
+	}
+	if result.RiskScoreAvailable {
+		t.Fatal("全零路线风险分数不得标记为可用")
+	}
+}
+
+func TestSafetyServiceKeepsProvidedZeroDistinctFromMissingScore(t *testing.T) {
+	origin := spatial.Point{Longitude: 115, Latitude: 39.5}
+	destination := spatial.Point{Longitude: 118, Latitude: 39.5}
+	planner := &safetyRoutePlannerStub{result: []domainevacuation.Route{
+		testRoute("missing", origin, destination, 0, false, 100, 500, "[[115,39.5],[115.5,39.4]]"),
+		testRoute("provided-zero", origin, destination, 0, true, 300, 1_000, "[[115,39.5],[115.5,39.3]]"),
+	}}
+	result, err := newSafetyService(t, planner, []hazard.RiskZone{}).SearchRoutes(
+		context.Background(), RouteSearchInput{HazardType: hazard.TypeLandslide,
+			Origin: origin, Destination: destination, Mode: domainevacuation.TravelDriving})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.RiskScoreAvailable || result.Routes[0].ID != "provided-zero" ||
+		!result.Routes[0].RiskScoreProvided || result.Routes[1].RiskScoreProvided {
+		t.Fatalf("风险分数提供性或排序错误: %+v", result)
+	}
+}
+
+func TestSafetyServiceRejectsMissingRiskValidToBeforePlanning(t *testing.T) {
+	planner := &safetyRoutePlannerStub{}
+	snapshot := testSnapshot(hazard.SnapshotAvailable)
+	snapshot.ValidTo = time.Time{}
+	service, err := NewRouteSafetyService(planner, &routeRiskReaderStub{
+		snapshot: snapshot, zones: []hazard.RiskZone{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.SearchRoutes(context.Background(), RouteSearchInput{
+		HazardType:  hazard.TypeLandslide,
+		Origin:      spatial.Point{Longitude: 115, Latitude: 39.5},
+		Destination: spatial.Point{Longitude: 118, Latitude: 39.5},
+		Mode:        domainevacuation.TravelDriving,
+	})
+	if !errors.Is(err, domain.ErrInsufficientData) || planner.calls != 0 {
+		t.Fatalf("缺少 ValidTo 未被拒绝: err=%v calls=%d", err, planner.calls)
+	}
+}
+
+func TestSafetyServiceRejectsNonUTCRiskValidToBeforePlanning(t *testing.T) {
+	planner := &safetyRoutePlannerStub{}
+	snapshot := testSnapshot(hazard.SnapshotAvailable)
+	snapshot.ValidTo = time.Date(2026, 8, 29, 8, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	service, err := NewRouteSafetyService(planner, &routeRiskReaderStub{
+		snapshot: snapshot, zones: []hazard.RiskZone{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.SearchRoutes(context.Background(), RouteSearchInput{
+		HazardType:  hazard.TypeLandslide,
+		Origin:      spatial.Point{Longitude: 115, Latitude: 39.5},
+		Destination: spatial.Point{Longitude: 118, Latitude: 39.5},
+		Mode:        domainevacuation.TravelDriving,
+	})
+	if !errors.Is(err, domain.ErrInsufficientData) || planner.calls != 0 {
+		t.Fatalf("非 UTC ValidTo 未被拒绝: err=%v calls=%d", err, planner.calls)
 	}
 }
 
@@ -89,15 +157,43 @@ func TestSafetyServiceRejectsInvalidRouteGeometry(t *testing.T) {
 	origin := spatial.Point{Longitude: 115, Latitude: 39.5}
 	destination := spatial.Point{Longitude: 118, Latitude: 39.5}
 	planner := &safetyRoutePlannerStub{result: []domainevacuation.Route{
-		testRoute("invalid", origin, destination, 0, 300, 1_000, "[[115,39.5]]"),
+		testRoute("invalid", origin, destination, 0, false, 300, 1_000, "[[115,39.5]]"),
 	}}
 	service := newSafetyService(t, planner, []hazard.RiskZone{})
 	_, err := service.SearchRoutes(context.Background(), RouteSearchInput{
 		HazardType: hazard.TypeLandslide, Origin: origin, Destination: destination,
 		Mode: domainevacuation.TravelDriving,
 	})
-	if !errors.Is(err, domain.ErrInvalidInput) {
-		t.Fatalf("非法路线几何错误=%v", err)
+	if !errors.Is(err, ErrUnsafeProviderResult) || !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("非法路线几何未转换为上游结果错误: %v", err)
+	}
+}
+
+func TestSafetyServiceRejectsUnsafeProviderRouteFields(t *testing.T) {
+	origin := spatial.Point{Longitude: 115, Latitude: 39.5}
+	destination := spatial.Point{Longitude: 118, Latitude: 39.5}
+	tests := []struct {
+		name   string
+		mutate func(*domainevacuation.Route)
+	}{
+		{name: "mode", mutate: func(route *domainevacuation.Route) { route.Mode = domainevacuation.TravelWalking }},
+		{name: "origin", mutate: func(route *domainevacuation.Route) { route.Origin.Longitude++ }},
+		{name: "route_validate", mutate: func(route *domainevacuation.Route) { route.DistanceMeters = 0 }},
+		{name: "geometry_type", mutate: func(route *domainevacuation.Route) { route.Geometry.Type = "Polygon" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			route := testRoute("unsafe", origin, destination, 0, false, 300, 1_000,
+				"[[115,39.5],[118,39.5]]")
+			test.mutate(&route)
+			service := newSafetyService(t, &safetyRoutePlannerStub{result: []domainevacuation.Route{route}},
+				[]hazard.RiskZone{})
+			_, err := service.SearchRoutes(context.Background(), RouteSearchInput{HazardType: hazard.TypeLandslide,
+				Origin: origin, Destination: destination, Mode: domainevacuation.TravelDriving})
+			if !errors.Is(err, ErrUnsafeProviderResult) || !errors.Is(err, domain.ErrInvalidInput) {
+				t.Fatalf("供应商路线字段未转换为上游结果错误: %v", err)
+			}
+		})
 	}
 }
 
@@ -105,7 +201,7 @@ func TestSafetyServiceTransitUsesDedicatedPlanner(t *testing.T) {
 	origin := spatial.Point{Longitude: 115, Latitude: 39.5}
 	destination := spatial.Point{Longitude: 118, Latitude: 39.5}
 	planner := &safetyRoutePlannerStub{transitResult: []domainevacuation.Route{
-		testRoute("transit", origin, destination, 2, 1_200, 4_000, "[[115,39.5],[118,39.5]]"),
+		testRoute("transit", origin, destination, 2, true, 1_200, 4_000, "[[115,39.5],[118,39.5]]"),
 	}}
 	planner.transitResult[0].Mode = domainevacuation.TravelTransit
 	service := newSafetyService(t, planner, []hazard.RiskZone{})
@@ -140,14 +236,48 @@ func TestSafetyServiceTransitRequiresDedicatedPlanner(t *testing.T) {
 func TestSafetyServiceRejectsProviderRiskScoreOutOfRange(t *testing.T) {
 	origin := spatial.Point{Longitude: 115, Latitude: 39.5}
 	destination := spatial.Point{Longitude: 118, Latitude: 39.5}
-	route := testRoute("bad-score", origin, destination, 101, 300, 1_000, "[[115,39.5],[118,39.5]]")
+	route := testRoute("bad-score", origin, destination, 101, true, 300, 1_000, "[[115,39.5],[118,39.5]]")
 	service := newSafetyService(t, &safetyRoutePlannerStub{result: []domainevacuation.Route{route}}, []hazard.RiskZone{})
 	_, err := service.SearchRoutes(context.Background(), RouteSearchInput{
 		HazardType: hazard.TypeLandslide, Origin: origin, Destination: destination,
 		Mode: domainevacuation.TravelDriving,
 	})
-	if !errors.Is(err, domain.ErrInvalidInput) {
-		t.Fatalf("越界风险分数错误=%v", err)
+	if !errors.Is(err, ErrUnsafeProviderResult) || !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("越界风险分数未转换为上游结果错误: %v", err)
+	}
+}
+
+func TestSafetyServiceRejectsProviderOverflowBeforeRouteProcessing(t *testing.T) {
+	origin := spatial.Point{Longitude: 115, Latitude: 39.5}
+	destination := spatial.Point{Longitude: 118, Latitude: 39.5}
+	planner := &safetyRoutePlannerStub{result: make([]domainevacuation.Route, MaxRouteProviderCandidates+1)}
+	service := newSafetyService(t, planner, []hazard.RiskZone{})
+	_, err := service.SearchRoutes(context.Background(), RouteSearchInput{
+		HazardType: hazard.TypeLandslide, Origin: origin, Destination: destination,
+		Mode: domainevacuation.TravelDriving,
+	})
+	if !errors.Is(err, ErrUnsafeProviderResult) || errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("路线数量门禁未先于克隆和字段校验执行，实际为 %v", err)
+	}
+	if planner.calls != 1 {
+		t.Fatalf("路线供应商调用次数错误: %d", planner.calls)
+	}
+}
+
+func TestSafetyServiceRejectsOversizedGeometryBeforeDecode(t *testing.T) {
+	origin := spatial.Point{Longitude: 115, Latitude: 39.5}
+	destination := spatial.Point{Longitude: 118, Latitude: 39.5}
+	route := testRoute("oversized", origin, destination, 0, false, 300, 1_000,
+		"[[115,39.5],[118,39.5]]")
+	route.Geometry.Coordinates = make([]byte, MaxRouteProviderGeometryBytes+1)
+	service := newSafetyService(t, &safetyRoutePlannerStub{result: []domainevacuation.Route{route}},
+		[]hazard.RiskZone{})
+	_, err := service.SearchRoutes(context.Background(), RouteSearchInput{
+		HazardType: hazard.TypeLandslide, Origin: origin, Destination: destination,
+		Mode: domainevacuation.TravelDriving,
+	})
+	if !errors.Is(err, ErrUnsafeProviderResult) || errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("路线几何未在 JSON 解码前按字节上限拒绝: %v", err)
 	}
 }
 
@@ -162,12 +292,13 @@ func newSafetyService(t *testing.T, planner portsRoutePlanner, zones []hazard.Ri
 	return service
 }
 
-func testRoute(id string, origin, destination spatial.Point, risk float64,
+func testRoute(id string, origin, destination spatial.Point, risk float64, riskProvided bool,
 	duration int64, distance float64, coordinates string,
 ) domainevacuation.Route {
 	return domainevacuation.Route{
 		ID: id, Origin: origin, Destination: destination, Mode: domainevacuation.TravelDriving,
-		DistanceMeters: distance, DurationSeconds: duration, RiskScore: risk,
+		DistanceMeters: distance, DurationSeconds: duration,
+		RiskScore: risk, RiskScoreProvided: riskProvided,
 		Geometry: spatial.Geometry{Type: "LineString", Coordinates: json.RawMessage(coordinates)},
 	}
 }

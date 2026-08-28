@@ -19,11 +19,13 @@ import (
 )
 
 func TestMapAPIRoutesUseSafetySearcherWhenConfigured(t *testing.T) {
+	safeRoute := projectionRoute("safe-route", 2, 0, false)
+	safeRoute.Rank = 1
 	safety := &routeSafetyStub{result: applicationevacuation.RouteSearchResult{
 		Snapshot: hazard.Snapshot{ID: "snapshot-1", HazardType: hazard.TypeLandslide},
-		Routes:   []evacuation.Route{{ID: "safe-route", Rank: 1}},
+		Routes:   []evacuation.Route{safeRoute},
 		Excluded: []applicationevacuation.ExcludedRoute{{
-			Route: evacuation.Route{ID: "blocked-route"}, ZoneIDs: []string{"zone-1"},
+			Route: projectionRoute("blocked-route", 2, 0, false), ZoneIDs: []string{"zone-1"},
 		}},
 	}}
 	planner := &routePlannerStub{}
@@ -63,6 +65,15 @@ func TestMapAPISafeRoutesMapInsufficientData(t *testing.T) {
 	assertError(t, response, http.StatusServiceUnavailable, "insufficient_data")
 }
 
+func TestMapAPISafeRoutesMapUnsafeProviderResult(t *testing.T) {
+	safety := &routeSafetyStub{err: errors.Join(
+		applicationevacuation.ErrUnsafeProviderResult, domain.ErrInvalidInput,
+	)}
+	handler := newSafetyMapHandler(t, &facilitySearcherStub{}, &routePlannerStub{}, safety)
+	response := serveJSON(t, handler, http.MethodPost, "/routes", `{"origin":{"longitude":116.4,"latitude":39.9},"destination":{"longitude":116.5,"latitude":39.8},"mode":"walking"}`)
+	assertError(t, response, http.StatusServiceUnavailable, "unsafe_provider_result")
+}
+
 func TestMapAPISafeRoutesRejectTransitWithoutCities(t *testing.T) {
 	safety := &routeSafetyStub{}
 	handler := newSafetyMapHandler(t, &facilitySearcherStub{}, &routePlannerStub{}, safety)
@@ -86,7 +97,7 @@ func (s *routeSafetyStub) SearchRoutes(_ context.Context,
 	s.calls++
 	s.input = input
 	if s.err != nil {
-		return applicationevacuation.RouteSearchResult{}, errors.Join(domain.ErrInsufficientData, s.err)
+		return applicationevacuation.RouteSearchResult{}, s.err
 	}
 	return s.result, nil
 }

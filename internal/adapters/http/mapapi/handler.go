@@ -26,7 +26,11 @@ import (
 // BasePath 是地图代理在主 HTTP 服务中的固定挂载路径。
 const BasePath = "/map"
 
-const maxRequestBytes = 16 << 10
+const (
+	maxRequestBytes   = 16 << 10
+	maxResponseBytes  = 2 << 20
+	maxRequestIDBytes = 128
+)
 
 // Handler 将浏览器地图请求转发到服务端供应商适配器，浏览器永远不会接触高德密钥。
 type Handler struct {
@@ -107,20 +111,6 @@ type apiError struct {
 	RequestID string `json:"requestId"`
 }
 
-type nearbyResult struct {
-	Snapshot    hazard.Snapshot                          `json:"snapshot"`
-	Facilities  []evacuation.Facility                    `json:"facilities"`
-	Excluded    []applicationevacuation.ExcludedFacility `json:"excluded"`
-	Filter      facilityFilter                           `json:"filter"`
-	Limitations []string                                 `json:"limitations"`
-}
-
-type facilityFilter struct {
-	CandidateCount int `json:"candidateCount"`
-	AllowedCount   int `json:"allowedCount"`
-	ExcludedCount  int `json:"excludedCount"`
-}
-
 var errHazardNotSupported = errors.New("设施筛选灾种尚未接入")
 
 func (h *Handler) nearby(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +125,12 @@ func (h *Handler) nearby(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.facilities.Search(r.Context(), searchInput)
-	h.writeResult(w, r, buildNearbyResult(result), err)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	projected, err := buildNearbyResult(result)
+	h.writeResult(w, r, projected, err)
 }
 
 func (h *Handler) route(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +146,12 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result, err := h.routeSafety.SearchRoutes(r.Context(), searchInput)
-		h.writeResult(w, r, result, err)
+		if err != nil {
+			h.writeError(w, r, err)
+			return
+		}
+		projected, err := buildSafeRouteResult(result)
+		h.writeResult(w, r, projected, err)
 		return
 	}
 	if err := validateRoute(input); err != nil {
@@ -212,17 +212,6 @@ func normalizeNearby(input nearbyRequest) (applicationevacuation.SearchInput, er
 		}, nil
 	default:
 		return applicationevacuation.SearchInput{}, fmt.Errorf("%w: 设施类型无效", domain.ErrInvalidInput)
-	}
-}
-
-func buildNearbyResult(result applicationevacuation.SearchResult) nearbyResult {
-	return nearbyResult{
-		Snapshot: result.Snapshot, Facilities: result.Facilities, Excluded: result.Excluded,
-		Filter: facilityFilter{
-			CandidateCount: len(result.Facilities) + len(result.Excluded),
-			AllowedCount:   len(result.Facilities), ExcludedCount: len(result.Excluded),
-		},
-		Limitations: result.Limitations,
 	}
 }
 
@@ -322,6 +311,9 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 
 func classifyError(err error) (int, string, string) {
 	switch {
+	case errors.Is(err, applicationevacuation.ErrUnsafeProviderResult),
+		errors.Is(err, errUnsafeMapResult):
+		return http.StatusServiceUnavailable, "unsafe_provider_result", "地图供应商结果不满足安全显示约束"
 	case errors.Is(err, domain.ErrInvalidInput):
 		return http.StatusBadRequest, "invalid_request", "请求参数无效"
 	case errors.Is(err, errHazardNotSupported):
@@ -354,7 +346,14 @@ func (h *Handler) methodNotAllowed(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, r *http.Request, status int, value any) {
 	payload, err := json.Marshal(value)
 	if err != nil {
-		payload = []byte(`{"error":{"code":"internal_error","message":"服务内部错误"}}`)
+		payload, _ = json.Marshal(errorResponse{Error: apiError{
+			Code: "internal_error", Message: "服务内部错误", RequestID: requestID(r),
+		}})
+		status = http.StatusInternalServerError
+	} else if len(payload) > maxResponseBytes {
+		payload, _ = json.Marshal(errorResponse{Error: apiError{
+			Code: "response_too_large", Message: "响应超过安全上限", RequestID: requestID(r),
+		}})
 		status = http.StatusInternalServerError
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -363,9 +362,22 @@ func writeJSON(w http.ResponseWriter, r *http.Request, status int, value any) {
 		w.Header().Set("X-Request-ID", id)
 	}
 	w.WriteHeader(status)
-	_, _ = w.Write(append(payload, '\n'))
+	_, _ = w.Write(payload)
 }
 
 func requestID(r *http.Request) string {
-	return middleware.GetReqID(r.Context())
+	value := middleware.GetReqID(r.Context())
+	var result strings.Builder
+	for index := 0; index < len(value) && result.Len() < maxRequestIDBytes; index++ {
+		character := value[index]
+		if requestIDCharacter(character) {
+			result.WriteByte(character)
+		}
+	}
+	return result.String()
+}
+
+func requestIDCharacter(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' || strings.ContainsRune("-_.:", rune(value))
 }
