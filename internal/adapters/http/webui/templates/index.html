@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>AI-GDM 地质灾害辅助研判控制台</title>
+  <link rel="stylesheet" href="/assets/vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="/assets/app.css">
+  <script defer src="/assets/vendor/leaflet/leaflet.js"></script>
+  <script defer src="/assets/risk-map.js"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -92,6 +95,57 @@
         <div><span>LHASA 过期阈值</span><strong>12 小时</strong></div>
         <div><span>气象回退阈值</span><strong>6 小时</strong></div>
         <div><span>坐标基准</span><strong>WGS84</strong></div>
+      </section>
+
+      <section id="risk-map" class="risk-section" data-risk-endpoint="/api/v1/hazards/landslide/risks/latest" aria-labelledby="risk-map-title">
+        <div class="section-heading risk-heading">
+          <div>
+            <p>REAL-TIME RISK LAYER</p>
+            <h2 id="risk-map-title">实时风险地图</h2>
+          </div>
+          <button id="risk-map-refresh" class="icon-command" type="button" title="重新读取最新风险结果">
+            <span aria-hidden="true">&#8635;</span>重新读取
+          </button>
+        </div>
+
+        <div class="risk-toolbar" aria-label="风险等级图例">
+          <span><i class="legend-low" aria-hidden="true"></i>低</span>
+          <span><i class="legend-moderate" aria-hidden="true"></i>中</span>
+          <span><i class="legend-high" aria-hidden="true"></i>高</span>
+          <span><i class="legend-very-high" aria-hidden="true"></i>很高</span>
+          <strong id="risk-visible-count">等待风险数据</strong>
+        </div>
+
+        <div id="risk-map-message" class="map-state map-state-loading" role="status" aria-live="polite">
+          正在读取最后成功的风险分析...
+        </div>
+
+        <div class="risk-workspace">
+          <div id="risk-map-canvas" class="risk-map-canvas" aria-label="WGS84 滑坡风险区地图"></div>
+          <aside class="risk-inspector" aria-label="风险图层详情">
+            <div class="risk-decision">
+              <span>辅助研判等级</span>
+              <strong id="risk-decision-level">待读取</strong>
+              <small id="risk-assessment-status">尚未获得确定性研判</small>
+            </div>
+            <dl class="risk-metadata">
+              <div><dt>数据状态</dt><dd id="risk-data-status">未知</dd></div>
+              <div><dt>置信度</dt><dd id="risk-confidence">未知</dd></div>
+              <div><dt>模型</dt><dd id="risk-model">未提供</dd></div>
+              <div><dt>来源</dt><dd id="risk-source">未提供</dd></div>
+              <div><dt>获取时间</dt><dd id="risk-fetched-at">未提供</dd></div>
+              <div><dt>有效期至</dt><dd id="risk-valid-to">未提供</dd></div>
+              <div><dt>坐标系</dt><dd id="risk-crs">WGS84</dd></div>
+              <div><dt>规则版本</dt><dd id="risk-rule-version">未提供</dd></div>
+            </dl>
+            <div class="risk-limitations">
+              <h3>限制与人工复核</h3>
+              <ul id="risk-limitations-list">
+                <li>风险图层仅用于辅助研判，不构成官方预警。</li>
+              </ul>
+            </div>
+          </aside>
+        </div>
       </section>
     </main>
   </div>

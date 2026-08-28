@@ -26,7 +26,8 @@ func TestHandlerRendersEscapedChineseConsole(t *testing.T) {
 		t.Fatalf("status=%d calls=%d", response.Code, service.calls)
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, "监控中心控制台") || strings.Contains(body, "<script>alert") ||
+	if !strings.Contains(body, "监控中心控制台") || !strings.Contains(body, `id="risk-map"`) ||
+		!strings.Contains(body, `/assets/risk-map.js`) || strings.Contains(body, "<script>alert") ||
 		!strings.Contains(body, "&lt;script&gt;alert") {
 		t.Fatalf("页面内容不符合预期: %s", body)
 	}
@@ -35,12 +36,34 @@ func TestHandlerRendersEscapedChineseConsole(t *testing.T) {
 	}
 }
 
-func TestHandlerServesEmbeddedStyles(t *testing.T) {
+func TestHandlerServesEmbeddedAssets(t *testing.T) {
 	handler := newTestHandler(t, &serviceStub{})
-	response := serve(t, handler, "/assets/app.css")
-	if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Type"), "text/css") ||
-		!strings.Contains(response.Body.String(), ".source-table") {
-		t.Fatalf("静态样式响应无效: status=%d", response.Code)
+	tests := []struct {
+		path        string
+		contentType string
+		contains    string
+	}{
+		{path: "/assets/app.css", contentType: "text/css", contains: ".source-table"},
+		{path: "/assets/risk-map.js", contentType: "text/javascript", contains: "MAX_VISIBLE_ZONES"},
+		{path: "/assets/vendor/leaflet/leaflet.js", contentType: "text/javascript", contains: "Leaflet"},
+		{path: "/assets/vendor/leaflet/images/layers.png", contentType: "image/png"},
+	}
+	for _, test := range tests {
+		response := serve(t, handler, test.path)
+		if response.Code != http.StatusOK ||
+			!strings.HasPrefix(response.Header().Get("Content-Type"), test.contentType) ||
+			(test.contains != "" && !strings.Contains(response.Body.String(), test.contains)) {
+			t.Fatalf("静态资源 %s 响应无效: status=%d type=%s", test.path,
+				response.Code, response.Header().Get("Content-Type"))
+		}
+	}
+}
+
+func TestHandlerRejectsUnknownAsset(t *testing.T) {
+	handler := newTestHandler(t, &serviceStub{})
+	response := serve(t, handler, "/assets/unknown.js")
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("未知静态资源 status=%d", response.Code)
 	}
 }
 

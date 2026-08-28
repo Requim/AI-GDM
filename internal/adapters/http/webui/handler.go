@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"html/template"
 	"log/slog"
+	"mime"
 	"net/http"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -17,7 +20,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/application/dashboard"
 )
 
-//go:embed templates/*.html static/*.css
+//go:embed templates/*.html static
 var content embed.FS
 
 // OverviewService 是控制台 HTTP 适配器使用的最小应用接口。
@@ -44,7 +47,7 @@ func New(service OverviewService, logger *slog.Logger) (http.Handler, error) {
 	handler := &Handler{service: service, template: parsed, logger: logger}
 	router := chi.NewRouter()
 	router.Get("/", handler.index)
-	router.Get("/assets/app.css", handler.styles)
+	router.Get("/assets/*", handler.asset)
 	router.NotFound(handler.notFound)
 	return router, nil
 }
@@ -66,14 +69,25 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(payload.Bytes())
 }
 
-func (h *Handler) styles(w http.ResponseWriter, _ *http.Request) {
-	payload, err := content.ReadFile("static/app.css")
-	if err != nil {
-		http.Error(w, "静态资源不可用", http.StatusInternalServerError)
+func (h *Handler) asset(w http.ResponseWriter, r *http.Request) {
+	requested := strings.TrimPrefix(chi.URLParam(r, "*"), "/")
+	clean := strings.TrimPrefix(path.Clean("/"+requested), "/")
+	if requested == "" || clean != requested || strings.HasPrefix(clean, ".") {
+		h.notFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	payload, err := content.ReadFile("static/" + clean)
+	if err != nil {
+		h.notFound(w, r)
+		return
+	}
+	contentType := mime.TypeByExtension(path.Ext(clean))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(payload)
 }
 
