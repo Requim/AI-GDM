@@ -16,7 +16,7 @@ func TestGeneratePreservesAnalysisWhenProvidersSucceed(t *testing.T) {
 	search := &searchStub{values: []report.Evidence{validEvidence()}}
 	generator := &generatorStub{value: report.Narrative{
 		Summary: "说明", GeneratedAt: time.Date(2026, 8, 27, 4, 0, 0, 0, time.UTC),
-		Model: "qwen-plus", Available: true, Source: validSource("qwen"),
+		Model: "gpt-5.6-terra", Available: true, Source: validSource("llm"),
 	}}
 	service, err := New(search, generator, fixedClock{})
 	if err != nil {

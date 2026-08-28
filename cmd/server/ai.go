@@ -10,8 +10,8 @@ import (
 
 	"github.com/Requim/AI-GDM/internal/adapters/http/aiapi"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/bocha"
+	"github.com/Requim/AI-GDM/internal/adapters/provider/chatcompletions"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/httpclient"
-	"github.com/Requim/AI-GDM/internal/adapters/provider/qwen"
 	applicationagent "github.com/Requim/AI-GDM/internal/application/agent"
 	"github.com/Requim/AI-GDM/internal/platform/config"
 	"github.com/Requim/AI-GDM/internal/platform/resources"
@@ -23,7 +23,7 @@ const (
 	aiRequestRate = 500 * time.Millisecond
 )
 
-// newAIService 在组合根装配可选的博查和 Qwen 适配器。
+// newAIService 在组合根装配可选的博查和 LLM 适配器。
 func newAIService(cfg config.Config, dependencies *resources.Resources,
 	logger *slog.Logger,
 ) (*applicationagent.Service, error) {
@@ -86,12 +86,13 @@ func newNarrativeGenerator(cfg config.Config, dependencies *resources.Resources,
 	if err := cfg.LLM.Validate(); err != nil {
 		return nil, err
 	}
-	provider, err := qwen.New(newAIHTTPClient(dependencies, logger), qwen.Config{
-		BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model,
+	provider, err := chatcompletions.New(newAIHTTPClient(dependencies, logger), chatcompletions.Config{
+		ProviderName: cfg.LLM.ProviderName, BaseURL: cfg.LLM.BaseURL,
+		APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model,
 		MaxCompletionTokens: cfg.LLM.MaxCompletionTokens, OutputAttempts: cfg.LLM.OutputAttempts,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("创建 Qwen 适配器: %w", err)
+		return nil, fmt.Errorf("创建 LLM 适配器: %w", err)
 	}
 	return provider, nil
 }

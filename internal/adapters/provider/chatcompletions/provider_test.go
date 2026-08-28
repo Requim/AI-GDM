@@ -1,9 +1,11 @@
-package qwen
+package chatcompletions
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,18 +24,27 @@ func TestGenerateSendsConstrainedJSONPrompt(t *testing.T) {
 			http.Error(w, "missing auth", http.StatusUnauthorized)
 			return
 		}
-		var request chatRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if request.ResponseFormat.Type != "json_object" || request.EnableThinking || request.MaxTokens != 800 {
+		if bytes.Contains(body, []byte(`"enable_thinking"`)) {
+			t.Fatalf("请求包含供应商专用字段: %s", body)
+		}
+		var request chatRequest
+		if err = json.Unmarshal(body, &request); err != nil {
+			t.Fatal(err)
+		}
+		if request.ResponseFormat.Type != "json_object" || request.MaxTokens != 800 {
 			t.Fatalf("请求约束 = %+v", request)
 		}
 		if len(request.Messages) != 2 || !strings.Contains(request.Messages[0].Content, "不可信数据") ||
-			!strings.Contains(request.Messages[1].Content, "riskLevel") {
+			!strings.Contains(request.Messages[1].Content, "riskLevel") ||
+			!strings.Contains(request.Messages[1].Content, "json") ||
+			!strings.Contains(request.Messages[1].Content, "字符串数组") {
 			t.Fatalf("提示词缺少边界 = %+v", request.Messages)
 		}
-		w.Header().Set("X-Request-ID", "qwen-request-1")
+		w.Header().Set("X-Request-ID", "llm-request-1")
 		writeJSON(w, validChatResponse())
 	}))
 	defer server.Close()
@@ -44,7 +55,9 @@ func TestGenerateSendsConstrainedJSONPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Available || result.Model != "qwen-plus" || result.Source.ProviderRequestID != "qwen-request-1" {
+	if !result.Available || result.Model != DefaultModel || result.Source.ProviderRequestID != "llm-request-1" ||
+		result.Source.Provider != "测试兼容服务" || result.Source.Dataset != DatasetName ||
+		!strings.Contains(result.Source.Citation, "测试兼容服务") {
 		t.Fatalf("结果 = %+v", result)
 	}
 	if err = result.Validate(); err != nil {
@@ -77,6 +90,18 @@ func TestGenerateRejectsTrailingJSON(t *testing.T) {
 	content := "{\"summary\":\"说明\",\"keyFindings\":[],\"actions\":[],\"caveats\":[]} {\"extra\":true}"
 	if _, err := decodeNarrative(content); err == nil {
 		t.Fatal("decodeNarrative() 未拒绝尾随 JSON")
+	}
+}
+
+func TestGenerateRejectsMissingNullAndWrongFieldTypes(t *testing.T) {
+	for _, content := range []string{
+		`{"summary":"说明","keyFindings":[],"actions":[]}`,
+		`{"summary":"说明","keyFindings":[],"actions":[],"caveats":null}`,
+		`{"summary":"说明","keyFindings":[],"actions":[],"caveats":"不替代官方预警"}`,
+	} {
+		if _, err := decodeNarrative(content); err == nil {
+			t.Fatalf("decodeNarrative() 未拒绝 %s", content)
+		}
 	}
 }
 
@@ -116,7 +141,7 @@ func newFixtureProvider(t *testing.T, endpoint string, clientHTTP *http.Client,
 	t.Helper()
 	client := httpclient.New(httpclient.Options{HTTPClient: clientHTTP, MaxAttempts: 1})
 	provider, err := New(client, Config{
-		BaseURL: endpoint, APIKey: "test-key", Model: "qwen-plus",
+		ProviderName: "测试兼容服务", BaseURL: endpoint, APIKey: "test-key", Model: DefaultModel,
 		MaxCompletionTokens: tokens, OutputAttempts: attempts,
 	})
 	if err != nil {
@@ -130,7 +155,7 @@ func validChatResponse() string {
 		Summary: "风险资料已完成结构化整理。", KeyFindings: []string{"请复核公开来源。"},
 		Actions: []string{"由值班人员确认现场。"}, Caveats: []string{"不替代官方预警。"},
 	})
-	body, _ := json.Marshal(chatResponse{Model: "qwen-plus", Choices: []chatChoice{{
+	body, _ := json.Marshal(chatResponse{Model: DefaultModel, Choices: []chatChoice{{
 		FinishReason: "stop", Message: chatMessage{Content: string(content)},
 	}}})
 	return string(body)
@@ -138,7 +163,9 @@ func validChatResponse() string {
 
 func malformedChatResponse() string {
 	body, _ := json.Marshal(chatResponse{Choices: []chatChoice{{
-		FinishReason: "stop", Message: chatMessage{Content: "不是 JSON"},
+		FinishReason: "stop", Message: chatMessage{
+			Content: `{"summary":"说明","keyFindings":[],"actions":[],"caveats":"类型错误"}`,
+		},
 	}}})
 	return string(body)
 }

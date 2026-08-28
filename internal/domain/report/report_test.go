@@ -50,7 +50,7 @@ func TestNarrativeValidate(t *testing.T) {
 		Summary:     "风险区已由确定性模型计算，以下说明仅供辅助研判。",
 		KeyFindings: []string{"降雨证据来自公开来源。"}, Actions: []string{"由值班人员核验现场情况。"},
 		Caveats: []string{"不替代官方预警。"}, GeneratedAt: time.Date(2026, 8, 27, 4, 0, 0, 0, time.UTC),
-		Model: "qwen-plus", Available: true, Source: validSource("qwen"),
+		Model: "gpt-5.6-terra", Available: true, Source: validSource("llm"),
 	}
 	if err := narrative.Validate(); err != nil {
 		t.Fatal(err)

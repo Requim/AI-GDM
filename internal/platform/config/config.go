@@ -32,6 +32,9 @@ const (
 	defaultGDALBinary      = "gdal"
 	defaultAMAPBaseURL     = "https://restapi.amap.com"
 	defaultAMAPTimeout     = 15 * time.Second
+	defaultLLMProviderName = "Jojocode OpenAI 兼容服务"
+	defaultLLMBaseURL      = "https://jojocode.com/v1/chat/completions"
+	defaultLLMModel        = "gpt-5.6-terra"
 	defaultPastHours       = 72
 	defaultForecastHours   = 24
 	defaultMaxPoints       = 25
@@ -104,9 +107,10 @@ type SearchConfig struct {
 	TrustedDomains []string
 }
 
-// LLMConfig 保存 Qwen 解释性报告客户端配置；核心数值不经过大模型计算。
+// LLMConfig 保存 OpenAI 兼容解释性报告客户端配置；核心数值不经过大模型计算。
 type LLMConfig struct {
 	Enabled             bool
+	ProviderName        string
 	BaseURL             string
 	APIKey              string
 	Model               string
@@ -117,7 +121,7 @@ type LLMConfig struct {
 // Validate 检查博查搜索启用时所需的服务端配置。
 func (config SearchConfig) Validate() error { return validateSearch(config) }
 
-// Validate 检查 Qwen 启用时所需的服务端配置。
+// Validate 检查 LLM 启用时所需的服务端配置。
 func (config LLMConfig) Validate() error { return validateLLM(config) }
 
 // Validate 检查高德地图启用时所需的服务端配置。
@@ -189,19 +193,23 @@ func loadSearch() (SearchConfig, error) {
 }
 
 func loadLLM() (LLMConfig, error) {
-	enabled, err := boolEnv("QWEN_ENABLED", false)
+	enabled, err := boolEnv("LLM_ENABLED", false)
 	if err != nil {
 		return LLMConfig{}, err
 	}
-	tokens, err := positiveIntEnv("QWEN_MAX_COMPLETION_TOKENS", 1200)
+	tokens, err := positiveIntEnv("LLM_MAX_COMPLETION_TOKENS", 1200)
 	if err != nil {
 		return LLMConfig{}, err
 	}
-	attempts, err := positiveIntEnv("QWEN_OUTPUT_ATTEMPTS", 2)
+	attempts, err := positiveIntEnv("LLM_OUTPUT_ATTEMPTS", 2)
 	if err != nil {
 		return LLMConfig{}, err
 	}
-	return LLMConfig{Enabled: enabled, BaseURL: stringEnv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"), APIKey: strings.TrimSpace(os.Getenv("QWEN_API_KEY")), Model: stringEnv("QWEN_MODEL", "qwen-plus"), MaxCompletionTokens: tokens, OutputAttempts: attempts}, nil
+	return LLMConfig{
+		Enabled: enabled, ProviderName: stringEnv("LLM_PROVIDER_NAME", defaultLLMProviderName),
+		BaseURL: stringEnv("LLM_BASE_URL", defaultLLMBaseURL), APIKey: strings.TrimSpace(os.Getenv("LLM_API_KEY")),
+		Model: stringEnv("LLM_MODEL", defaultLLMModel), MaxCompletionTokens: tokens, OutputAttempts: attempts,
+	}, nil
 }
 
 func loadLHASA() (LHASAConfig, error) {
@@ -357,20 +365,24 @@ func validateLLM(config LLMConfig) error {
 	if !config.Enabled {
 		return nil
 	}
-	if err := validateHTTPSURL(config.BaseURL, "启用 Qwen 时"); err != nil {
+	if strings.TrimSpace(config.ProviderName) == "" || strings.ContainsAny(config.ProviderName, "\r\n") ||
+		len([]rune(config.ProviderName)) > 128 {
+		return configError("LLM_PROVIDER_NAME 必须是 1 至 128 个字符的单行名称")
+	}
+	if err := validateHTTPSURL(config.BaseURL, "启用 LLM 时"); err != nil {
 		return err
 	}
 	if config.APIKey == "" {
-		return configError("启用 Qwen 时必须配置 QWEN_API_KEY")
+		return configError("启用 LLM 时必须配置 LLM_API_KEY")
 	}
 	if strings.TrimSpace(config.Model) == "" {
-		return configError("启用 Qwen 时必须配置 QWEN_MODEL")
+		return configError("启用 LLM 时必须配置 LLM_MODEL")
 	}
 	if config.MaxCompletionTokens <= 0 || config.MaxCompletionTokens > 4096 {
-		return configError("QWEN_MAX_COMPLETION_TOKENS 必须在 1 至 4096 之间")
+		return configError("LLM_MAX_COMPLETION_TOKENS 必须在 1 至 4096 之间")
 	}
 	if config.OutputAttempts <= 0 || config.OutputAttempts > 3 {
-		return configError("QWEN_OUTPUT_ATTEMPTS 必须在 1 至 3 之间")
+		return configError("LLM_OUTPUT_ATTEMPTS 必须在 1 至 3 之间")
 	}
 	return nil
 }
