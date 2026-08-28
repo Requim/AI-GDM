@@ -8,6 +8,7 @@
   const MAX_GEOMETRY_BYTES = 512 * 1024;
   const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
   const MAX_EXPIRY_TIMER_MS = 60 * 60 * 1000;
+  const STRICT_UTC_RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
   const LEVEL_TEXT = { low: "低", moderate: "中", high: "高", very_high: "很高" };
   const LEVEL_COLOR = { low: "#4ecb71", moderate: "#f0b85a", high: "#ef6a5b", very_high: "#d64882" };
   const root = document.getElementById("risk-map");
@@ -119,12 +120,32 @@
   }
 
   function requireValidTo(data) {
-    const value = data.snapshot.validTo || (data.snapshot.source && data.snapshot.source.validTo);
-    const timestamp = Date.parse(value || "");
-    if (!value || !Number.isFinite(timestamp)) {
+    const snapshot = data.snapshot || {};
+    const source = snapshot.source || {};
+    const snapshotTimestamp = parseStrictUTC(snapshot.validTo);
+    const sourceTimestamp = parseStrictUTC(source.validTo);
+    if (snapshot.validTo !== source.validTo || snapshotTimestamp !== sourceTimestamp) {
+      throw new Error("风险快照与来源有效期不一致，已按不可用处理");
+    }
+    return snapshotTimestamp;
+  }
+
+  function parseStrictUTC(value) {
+    if (typeof value !== "string") throw new Error("风险数据有效期缺失或无效，已按不可用处理");
+    const match = STRICT_UTC_RFC3339.exec(value);
+    const timestamp = match ? Date.parse(value) : Number.NaN;
+    if (!match || !Number.isFinite(timestamp) || !calendarMatches(timestamp, match)) {
       throw new Error("风险数据有效期缺失或无效，已按不可用处理");
     }
     return timestamp;
+  }
+
+  function calendarMatches(timestamp, match) {
+    const value = new Date(timestamp);
+    return Number(match[1]) > 0 && value.getUTCFullYear() === Number(match[1]) &&
+      value.getUTCMonth() + 1 === Number(match[2]) && value.getUTCDate() === Number(match[3]) &&
+      value.getUTCHours() === Number(match[4]) && value.getUTCMinutes() === Number(match[5]) &&
+      value.getUTCSeconds() === Number(match[6]);
   }
 
   function validateGeometryLimits(zones, limits) {
@@ -196,7 +217,7 @@
     elements.visibleCount.textContent = "已显示 " + drawn + " / " + data.totalZoneCount + " 个风险区";
     scheduleExpiry(data);
     if (data.zones.length === 0) {
-      setState(state, state === "fallback" ? "回退快照未生成达到阈值的风险区。" : "当前快照未生成达到阈值的风险区。" );
+      renderEmptyRiskMap(data, state);
       return;
     }
     if (drawn === 0) {
@@ -204,9 +225,24 @@
       return;
     }
     const truncated = data.totalZoneCount > drawn ? "，服务端已按风险优先级限制地图负载" : "";
-    const messages = { stale: "当前展示已过期的最后成功数据",
+    const messages = { expired: "当前展示已过期的最后成功数据", stale: "当前展示陈旧的最后成功数据",
       fallback: "当前使用未过期的最后成功回退数据", current: "风险图层已更新" };
-    setState(state, messages[state] + truncated + "。" );
+    setState(state === "expired" ? "stale" : state, messages[state] + truncated + "。" );
+  }
+
+  function renderEmptyRiskMap(data, state) {
+    if (data.totalZoneCount > 0 && data.omittedZoneCount === data.totalZoneCount) {
+      elements.visibleCount.textContent = "已显示 0 / " + data.totalZoneCount + " 个风险区（全部省略）";
+      setState("unavailable", "风险快照包含风险区，但全部因地图安全上限被省略，地图当前不可用，不得据此降低风险判断。" );
+      return;
+    }
+    const messages = {
+      expired: "风险数据已过期，原快照未生成达到阈值的风险区。",
+      stale: "陈旧快照未生成达到阈值的风险区。",
+      fallback: "回退快照未生成达到阈值的风险区。",
+      current: "当前快照未生成达到阈值的风险区。"
+    };
+    setState(state === "expired" ? "stale" : state, messages[state]);
   }
 
   function renderLayer(zones) {
@@ -271,28 +307,33 @@
     const assessment = data.assessment || {};
     const decision = assessment.decision || null;
     const level = decision ? levelText(decision.level) : "不可判定";
+    const expired = state === "expired";
     const stale = state === "stale";
-    elements.decision.textContent = stale ? "已过期 / " + level : level;
-    elements.assessment.textContent = stale ? "数据已过期，仅保留图层供人工复核" :
+    elements.decision.textContent = expired ? "已过期 / " + level : stale ? "陈旧 / " + level : level;
+    elements.assessment.textContent = expired ? "数据已过期，仅保留图层供人工复核" :
+      stale ? "数据陈旧，仅保留图层供人工复核" :
       state === "fallback" ? "正在使用最后成功回退数据，需人工复核" : assessmentText(assessment.status);
-    elements.dataStatus.textContent = dataStatusText(assessment.dataStatus, stale);
-    elements.confidence.textContent = stale ? "已过期，原输入质量不代表当前状态" : confidenceText(assessment.confidence);
+    elements.dataStatus.textContent = dataStatusText(assessment.dataStatus, state);
+    elements.confidence.textContent = expired ? "已过期，原输入质量不代表当前状态" :
+      stale ? "数据陈旧，原输入质量需人工复核" : confidenceText(assessment.confidence);
     elements.model.textContent = joinNonEmpty([snapshot.modelName, snapshot.modelVersion]);
     elements.source.textContent = joinNonEmpty([source.provider, source.dataset, source.datasetVersion]);
     elements.fetchedAt.textContent = formatTime(source.fetchedAt);
-    elements.validTo.textContent = formatTime(snapshot.validTo || source.validTo);
+    elements.validTo.textContent = formatTime(snapshot.validTo);
     elements.crs.textContent = textValue(source.crs || "WGS84");
     elements.ruleVersion.textContent = textValue(assessment.ruleVersion);
     renderLimitations(snapshot.limitations, source.limitations, assessment.limitations, data.mapLimitations,
-      stale ? ["风险数据已跨过有效期，禁止作为当前预警结论使用"] : []);
+      expired ? ["风险数据已跨过有效期，禁止作为当前预警结论使用"] :
+        stale ? ["风险数据来源标记为陈旧，需人工复核后使用"] : []);
   }
 
   function snapshotState(data) {
     const snapshot = data.snapshot || {};
     const source = snapshot.source || {};
     const assessment = data.assessment || {};
-    return snapshot.status === "stale" || source.stale || assessment.dataStatus === "expired" ||
-      Date.now() >= requireValidTo(data) ? "stale" : assessment.dataStatus === "fallback" ? "fallback" : "current";
+    if (assessment.dataStatus === "expired" || Date.now() >= requireValidTo(data)) return "expired";
+    if (assessment.dataStatus === "fallback") return "fallback";
+    return snapshot.status === "stale" || source.stale ? "stale" : "current";
   }
 
   function scheduleExpiry(data) {
@@ -302,7 +343,7 @@
       if (activeData !== data) return;
       const remaining = validTo - Date.now();
       if (remaining <= 0) {
-        renderMetadata(data, "stale");
+        renderMetadata(data, "expired");
         setState("stale", "风险数据已跨过有效期，当前仅展示最后成功图层供人工复核。" );
         return;
       }
@@ -372,8 +413,9 @@
     return ({ available: "研判可用", degraded: "降级研判，需重点复核", insufficient_data: "数据不足，不提供可操作等级" })[value] || "状态未提供";
   }
 
-  function dataStatusText(value, stale) {
-    if (stale) return "数据已过期";
+  function dataStatusText(value, state) {
+    if (state === "expired") return "数据已过期";
+    if (state === "stale") return "数据陈旧";
     return ({ current: "当前数据", fallback: "最后成功数据回退", expired: "数据已过期" })[value] || "未知";
   }
 

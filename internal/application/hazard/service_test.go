@@ -9,6 +9,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/domain"
 	hazarddomain "github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/domain/risk"
+	"github.com/Requim/AI-GDM/internal/ports"
 )
 
 func TestServiceLatestBuildsDeterministicAssessment(t *testing.T) {
@@ -31,6 +32,37 @@ func TestServiceLatestBuildsDeterministicAssessment(t *testing.T) {
 	}
 	if got.Zones == nil {
 		t.Fatal("Latest() 必须把空风险区编码为 JSON 数组")
+	}
+}
+
+func TestServiceLatestMapAppliesReadLimitBeforeAssessment(t *testing.T) {
+	now := testNow()
+	reader := &riskReaderStub{
+		snapshot: testSnapshot("snapshot-map", hazarddomain.TypeLandslide),
+		zones:    []hazarddomain.RiskZone{},
+		mapTotal: 0,
+	}
+	evaluator := &evaluatorStub{}
+	service := testService(t, reader, reader, hazarddomain.TypeLandslide,
+		&refresherStub{}, evaluator, fixedClock{now: now})
+
+	got, err := service.LatestMap(context.Background(), hazarddomain.TypeLandslide, 100000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reader.mapMaxZones != 100000 || got.TotalZoneCount != 0 ||
+		got.Assessment.SnapshotID != "snapshot-map" {
+		t.Fatalf("LatestMap() = %+v, reader=%+v", got, reader)
+	}
+}
+
+func TestServiceLatestMapRejectsIncompleteBoundedRead(t *testing.T) {
+	reader := &riskReaderStub{snapshot: testSnapshot("snapshot-map", hazarddomain.TypeLandslide),
+		mapTotal: 100001}
+	service := testService(t, reader, reader, hazarddomain.TypeLandslide,
+		&refresherStub{}, &evaluatorStub{}, fixedClock{now: testNow()})
+	if _, err := service.LatestMap(context.Background(), hazarddomain.TypeLandslide, 100000); !errors.Is(err, domain.ErrInsufficientData) {
+		t.Fatalf("LatestMap() error = %v", err)
 	}
 }
 
@@ -133,8 +165,11 @@ func TestNewServiceRejectsMissingDependencies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = NewService(nil, &riskReaderStub{}, registry, fixedClock{}); !errors.Is(err, domain.ErrInvalidInput) {
+	if _, err = NewService(nil, &riskReaderStub{}, &riskReaderStub{}, registry, fixedClock{}); !errors.Is(err, domain.ErrInvalidInput) {
 		t.Fatalf("NewService() error = %v", err)
+	}
+	if _, err = NewService(&riskReaderStub{}, nil, &riskReaderStub{}, registry, fixedClock{}); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("NewService(map nil) error = %v", err)
 	}
 }
 
@@ -154,7 +189,7 @@ func testService(t *testing.T, latest *riskReaderStub, detail *riskReaderStub,
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewService(latest, detail, registry, clock)
+	service, err := NewService(latest, latest, detail, registry, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,6 +211,18 @@ type riskReaderStub struct {
 	latestType  hazarddomain.Type
 	detailID    string
 	latestCalls int
+	mapTotal    int
+	mapMaxZones int
+}
+
+func (s *riskReaderStub) LatestMapRisk(_ context.Context, value hazarddomain.Type,
+	maxZones int,
+) (ports.MapRiskRead, error) {
+	s.latestCalls++
+	s.latestType = value
+	s.mapMaxZones = maxZones
+	return ports.MapRiskRead{Snapshot: s.snapshot, Zones: s.zones,
+		TotalZoneCount: s.mapTotal}, s.err
 }
 
 func (s *riskReaderStub) LatestRisk(_ context.Context, value hazarddomain.Type) (

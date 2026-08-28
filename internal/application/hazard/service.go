@@ -19,6 +19,12 @@ type RiskResult struct {
 	Assessment risk.Assessment         `json:"assessment"`
 }
 
+// MapRiskResult 是浏览器地图使用的有界风险输出。
+type MapRiskResult struct {
+	RiskResult
+	TotalZoneCount int
+}
+
 // RiskService 是 HTTP 等驱动适配器使用的风险预警用例边界。
 type RiskService interface {
 	// Latest 返回某灾种最新的完整风险分析。
@@ -27,26 +33,32 @@ type RiskService interface {
 	Get(ctx context.Context, hazardType hazarddomain.Type, snapshotID string) (RiskResult, error)
 	// Refresh 刷新某灾种并返回刷新后的完整风险分析。
 	Refresh(ctx context.Context, hazardType hazarddomain.Type) (RiskResult, error)
+	// LatestMap 在仓储加载风险区前应用数量上限。
+	LatestMap(ctx context.Context, hazardType hazarddomain.Type, maxZones int) (MapRiskResult, error)
 }
 
 // Service 编排多灾种风险查询、详情和刷新。
 type Service struct {
-	latest   ports.LatestRiskReader
-	detail   ports.RiskDetailReader
-	registry *Registry
-	clock    ports.Clock
+	latest    ports.LatestRiskReader
+	mapLatest ports.LatestMapRiskReader
+	detail    ports.RiskDetailReader
+	registry  *Registry
+	clock     ports.Clock
 }
 
 var _ RiskService = (*Service)(nil)
 
 // NewService 创建风险预警应用服务。
-func NewService(latest ports.LatestRiskReader, detail ports.RiskDetailReader,
+func NewService(latest ports.LatestRiskReader, mapLatest ports.LatestMapRiskReader,
+	detail ports.RiskDetailReader,
 	registry *Registry, clock ports.Clock,
 ) (*Service, error) {
-	if nilDependency(latest) || nilDependency(detail) || registry == nil || nilDependency(clock) {
+	if nilDependency(latest) || nilDependency(mapLatest) || nilDependency(detail) ||
+		registry == nil || nilDependency(clock) {
 		return nil, fmt.Errorf("%w: 风险预警服务依赖为空", domain.ErrInvalidInput)
 	}
-	return &Service{latest: latest, detail: detail, registry: registry, clock: clock}, nil
+	return &Service{latest: latest, mapLatest: mapLatest, detail: detail,
+		registry: registry, clock: clock}, nil
 }
 
 // Latest 返回某灾种最新完整分析及当前时刻的确定性研判。
@@ -60,6 +72,31 @@ func (s *Service) Latest(ctx context.Context, hazardType hazarddomain.Type) (Ris
 		return RiskResult{}, fmt.Errorf("读取灾种 %s 最新风险: %w", hazardType, err)
 	}
 	return s.buildResult(provider, hazardType, snapshot, zones)
+}
+
+// LatestMap 返回经过仓储前置数量限制的最新地图风险分析。
+func (s *Service) LatestMap(ctx context.Context, hazardType hazarddomain.Type,
+	maxZones int,
+) (MapRiskResult, error) {
+	if maxZones <= 0 {
+		return MapRiskResult{}, fmt.Errorf("%w: 地图风险区上限无效", domain.ErrInvalidInput)
+	}
+	provider, err := s.registry.Resolve(hazardType)
+	if err != nil {
+		return MapRiskResult{}, err
+	}
+	read, err := s.mapLatest.LatestMapRisk(ctx, hazardType, maxZones)
+	if err != nil {
+		return MapRiskResult{}, fmt.Errorf("读取灾种 %s 地图风险: %w", hazardType, err)
+	}
+	if read.TotalZoneCount != len(read.Zones) || read.TotalZoneCount > maxZones {
+		return MapRiskResult{}, fmt.Errorf("%w: 地图风险读取结果不完整", domain.ErrInsufficientData)
+	}
+	result, err := s.buildResult(provider, hazardType, read.Snapshot, read.Zones)
+	if err != nil {
+		return MapRiskResult{}, err
+	}
+	return MapRiskResult{RiskResult: result, TotalZoneCount: read.TotalZoneCount}, nil
 }
 
 // Get 返回指定灾种和快照的完整风险详情。

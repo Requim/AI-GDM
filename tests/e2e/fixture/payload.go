@@ -1,9 +1,6 @@
 package main
 
-import (
-	"fmt"
-	"math"
-)
+import "fmt"
 
 const (
 	shortValidTo   = "2026-08-28T00:00:02Z"
@@ -34,7 +31,7 @@ type riskSnapshot struct {
 	ModelName    string     `json:"modelName"`
 	ModelVersion string     `json:"modelVersion"`
 	Status       string     `json:"status"`
-	ValidTo      string     `json:"validTo,omitempty"`
+	ValidTo      any        `json:"validTo,omitempty"`
 	Source       riskSource `json:"source"`
 	Limitations  []string   `json:"limitations"`
 }
@@ -44,7 +41,7 @@ type riskSource struct {
 	Dataset        string   `json:"dataset"`
 	DatasetVersion string   `json:"datasetVersion"`
 	FetchedAt      string   `json:"fetchedAt"`
-	ValidTo        string   `json:"validTo,omitempty"`
+	ValidTo        any      `json:"validTo,omitempty"`
 	CRS            string   `json:"crs"`
 	Stale          bool     `json:"stale"`
 	Limitations    []string `json:"limitations"`
@@ -96,18 +93,51 @@ func envelopeFor(name string) riskEnvelope {
 	value := validEnvelope(defaultValidTo)
 	switch name {
 	case "missing_valid_to":
-		value.Data.Snapshot.ValidTo, value.Data.Snapshot.Source.ValidTo = "", ""
+		value.Data.Snapshot.ValidTo, value.Data.Snapshot.Source.ValidTo = nil, nil
+	case "missing_snapshot_valid_to":
+		value.Data.Snapshot.ValidTo = nil
+	case "missing_source_valid_to":
+		value.Data.Snapshot.Source.ValidTo = nil
 	case "invalid_valid_to":
 		value.Data.Snapshot.ValidTo, value.Data.Snapshot.Source.ValidTo = "not-a-time", ""
+	case "non_string_snapshot_valid_to":
+		value.Data.Snapshot.ValidTo = []string{"2099-01-01T00:00:00Z"}
+	case "non_string_source_valid_to":
+		value.Data.Snapshot.Source.ValidTo = []string{"2099-01-01T00:00:00Z"}
+	case "non_strict_valid_to":
+		value.Data.Snapshot.ValidTo = "2099-01-01T00:00:00+00:00"
+		value.Data.Snapshot.Source.ValidTo = "2099-01-01T00:00:00+00:00"
+	case "invalid_calendar_valid_to":
+		value.Data.Snapshot.ValidTo, value.Data.Snapshot.Source.ValidTo =
+			"2099-02-30T00:00:00Z", "2099-02-30T00:00:00Z"
+	case "source_valid_to_mismatch":
+		value.Data.Snapshot.Source.ValidTo = "2099-01-01T00:00:01Z"
 	case "short_validity":
 		value = validEnvelope(shortValidTo)
+	case "fallback_unexpired":
+		markFallback(&value)
+	case "fallback_then_expiry":
+		value = validEnvelope(shortValidTo)
+		markFallback(&value)
+	case "all_zones_omitted":
+		value.Data.Zones = []riskZone{}
+		value.Data.TotalZoneCount, value.Data.VisibleZoneCount = 1, 0
+		value.Data.OmittedZoneCount = 1
+		value.Data.OmittedComplexZoneCount, value.Data.OmittedPayloadZoneCount = 1, 0
+		value.Data.MapLimitations = []string{"全部风险区因地图安全上限被省略"}
 	case "too_many_zones":
 		value.Data.Zones = repeatedZones(3001)
 		value.Data.TotalZoneCount, value.Data.VisibleZoneCount = 3001, 3001
-	case "complex_geometry":
-		value.Data.Zones = []riskZone{zone("zone-complex", complexPolygon(5001))}
 	}
 	return value
+}
+
+func markFallback(value *riskEnvelope) {
+	value.Data.Snapshot.Status = "stale"
+	value.Data.Snapshot.Source.Stale = true
+	value.Data.Assessment.Status = "degraded"
+	value.Data.Assessment.DataStatus = "fallback"
+	value.Data.Assessment.Confidence.Level = "medium"
 }
 
 func validEnvelope(validTo string) riskEnvelope {
@@ -145,14 +175,4 @@ func zone(id string, coordinates any) riskZone {
 
 func simplePolygon() [][][]float64 {
 	return [][][]float64{{{104, 30}, {105, 30}, {105, 31}, {104, 30}}}
-}
-
-func complexPolygon(count int) [][][]float64 {
-	ring := make([][]float64, count)
-	for index := 0; index < count-1; index++ {
-		angle := 2 * math.Pi * float64(index) / float64(count-1)
-		ring[index] = []float64{104 + math.Cos(angle), 30 + math.Sin(angle)}
-	}
-	ring[count-1] = append([]float64(nil), ring[0]...)
-	return [][][]float64{ring}
 }

@@ -61,7 +61,7 @@ func newHazardRuntime(cfg config.Config, dependencies *resources.Resources,
 	if err != nil {
 		return nil, fmt.Errorf("创建灾种注册表: %w", err)
 	}
-	service, err := hazardapp.NewService(repository, repository, registry, utcClock{})
+	service, err := hazardapp.NewService(repository, repository, repository, registry, utcClock{})
 	if err != nil {
 		return nil, fmt.Errorf("创建风险预警用例: %w", err)
 	}

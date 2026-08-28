@@ -52,7 +52,7 @@ type mapSuccessResponse struct {
 }
 
 func (h *Handler) writeMapResult(w http.ResponseWriter, r *http.Request,
-	result applicationhazard.RiskResult, resultErr error,
+	result applicationhazard.MapRiskResult, resultErr error,
 ) {
 	if resultErr != nil {
 		h.writeError(w, r, resultErr)
@@ -71,12 +71,12 @@ func (h *Handler) writeMapResult(w http.ResponseWriter, r *http.Request,
 	writeMapPayload(w, r, payload, value)
 }
 
-func projectMapRisk(result applicationhazard.RiskResult) (mapRiskResult, error) {
+func projectMapRisk(result applicationhazard.MapRiskResult) (mapRiskResult, error) {
 	if result.Snapshot.ValidTo.IsZero() {
 		return mapRiskResult{}, fmt.Errorf("%w: 风险快照缺少有效期", domain.ErrInsufficientData)
 	}
-	if len(result.Zones) > maxMapSourceZones {
-		return mapRiskResult{}, fmt.Errorf("%w: 风险区总数超过地图投影上限", domain.ErrInsufficientData)
+	if result.TotalZoneCount != len(result.Zones) || result.TotalZoneCount > maxMapSourceZones {
+		return mapRiskResult{}, fmt.Errorf("%w: 地图风险读取结果不完整", domain.ErrInsufficientData)
 	}
 	zones := append([]hazard.RiskZone(nil), result.Zones...)
 	sort.SliceStable(zones, func(left, right int) bool { return higherPriority(zones[left], zones[right]) })
@@ -85,8 +85,8 @@ func projectMapRisk(result applicationhazard.RiskResult) (mapRiskResult, error) 
 		return mapRiskResult{}, err
 	}
 	value := mapRiskResult{Snapshot: result.Snapshot, Zones: selected, Assessment: result.Assessment,
-		TotalZoneCount: len(zones), VisibleZoneCount: len(selected),
-		OmittedZoneCount: len(zones) - len(selected), OmittedComplexZoneCount: complexCount,
+		TotalZoneCount: result.TotalZoneCount, VisibleZoneCount: len(selected),
+		OmittedZoneCount: result.TotalZoneCount - len(selected), OmittedComplexZoneCount: complexCount,
 		OmittedPayloadZoneCount: payloadCount, Limits: defaultMapLimits()}
 	value.Limitations = mapLimitations(value)
 	return value, nil

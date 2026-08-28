@@ -52,6 +52,12 @@ func TestRiskReadersRejectInvalidInputsBeforeDatabaseAccess(t *testing.T) {
 		if !errors.Is(err, domain.ErrInvalidInput) {
 			t.Fatalf("LatestRisk(%q) error = %v", value, err)
 		}
+		if _, err = repository.LatestMapRisk(context.Background(), value, 100000); !errors.Is(err, domain.ErrInvalidInput) {
+			t.Fatalf("LatestMapRisk(%q) error = %v", value, err)
+		}
+	}
+	if _, err := repository.LatestMapRisk(context.Background(), hazard.TypeLandslide, 0); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("LatestMapRisk(max=0) error = %v", err)
 	}
 	for _, value := range []string{"", " snapshot", "snapshot ", strings.Repeat("x", 257)} {
 		_, _, err := repository.RiskDetail(context.Background(), value)
@@ -82,4 +88,49 @@ func TestCompleteRiskReadsUseReadOnlyRepeatableReadTransaction(t *testing.T) {
 	if completeRiskReadOptions.AccessMode != pgx.ReadOnly {
 		t.Fatalf("AccessMode = %v", completeRiskReadOptions.AccessMode)
 	}
+}
+
+func TestBoundedMapReadStopsBeforeLoadingOverLimitZones(t *testing.T) {
+	queryer := &mapCountOnlyQueryer{total: 100001}
+	zones, total, err := boundedZonesBySnapshot(context.Background(), queryer,
+		"snapshot-map", 100000)
+	if !errors.Is(err, domain.ErrInsufficientData) || total != 100001 || zones != nil {
+		t.Fatalf("boundedZonesBySnapshot() zones=%v total=%d error=%v", zones, total, err)
+	}
+	if queryer.zoneQueryCalled {
+		t.Fatal("超过上限后仍加载了风险区明细")
+	}
+}
+
+func TestMapRiskSQLCountsThenOrdersAndLimits(t *testing.T) {
+	if !strings.Contains(countZonesSQL, "COUNT(*)") ||
+		!strings.Contains(selectMapZonesSQL, "CASE risk_level") ||
+		!strings.Contains(selectMapZonesSQL, "LIMIT $2") {
+		t.Fatalf("地图风险 SQL 缺少计数、优先级或限制: %s / %s", countZonesSQL, selectMapZonesSQL)
+	}
+}
+
+type mapCountOnlyQueryer struct {
+	total           int
+	zoneQueryCalled bool
+}
+
+func (q *mapCountOnlyQueryer) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	q.zoneQueryCalled = true
+	return nil, errors.New("不应执行风险区查询")
+}
+
+func (q *mapCountOnlyQueryer) QueryRow(context.Context, string, ...any) pgx.Row {
+	return integerRow{value: q.total}
+}
+
+type integerRow struct{ value int }
+
+func (r integerRow) Scan(dest ...any) error {
+	value, ok := dest[0].(*int)
+	if !ok {
+		return errors.New("计数目标类型错误")
+	}
+	*value = r.value
+	return nil
 }

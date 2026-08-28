@@ -25,6 +25,7 @@ var (
 // RiskService 是预警 HTTP 适配器使用的最小应用服务接口。
 type RiskService interface {
 	Latest(context.Context, domainhazard.Type) (applicationhazard.RiskResult, error)
+	LatestMap(context.Context, domainhazard.Type, int) (applicationhazard.MapRiskResult, error)
 	Get(context.Context, domainhazard.Type, string) (applicationhazard.RiskResult, error)
 	Refresh(context.Context, domainhazard.Type) (applicationhazard.RiskResult, error)
 }
@@ -67,7 +68,7 @@ func (h *Handler) latestMap(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, err)
 		return
 	}
-	result, err := h.service.Latest(r.Context(), hazardType)
+	result, err := h.service.LatestMap(r.Context(), hazardType, maxMapSourceZones)
 	h.writeMapResult(w, r, result, err)
 }
 

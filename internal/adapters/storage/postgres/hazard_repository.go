@@ -14,6 +14,7 @@ import (
 
 	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
+	"github.com/Requim/AI-GDM/internal/ports"
 )
 
 // HazardRepository 使用 PostGIS 持久化灾害快照和风险区。
@@ -86,6 +87,35 @@ func (r *HazardRepository) LatestRisk(ctx context.Context,
 		return hazard.Snapshot{}, nil, err
 	}
 	return r.readRisk(ctx, latestSnapshotWhere, hazardType)
+}
+
+// LatestMapRisk 先在数据库计数，再有界读取地图用例所需的完整风险区。
+func (r *HazardRepository) LatestMapRisk(ctx context.Context, hazardType hazard.Type,
+	maxZones int,
+) (ports.MapRiskRead, error) {
+	if err := validateRiskHazardType(hazardType); err != nil {
+		return ports.MapRiskRead{}, err
+	}
+	if maxZones <= 0 {
+		return ports.MapRiskRead{}, fmt.Errorf("%w: 地图风险区上限无效", domain.ErrInvalidInput)
+	}
+	tx, err := r.pool.BeginTx(ctx, completeRiskReadOptions)
+	if err != nil {
+		return ports.MapRiskRead{}, fmt.Errorf("开始读取地图风险事务: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	snapshot, err := scanSnapshot(tx.QueryRow(ctx, selectSnapshotSQL+latestSnapshotWhere, hazardType))
+	if err != nil {
+		return ports.MapRiskRead{}, fmt.Errorf("读取地图风险快照: %w", err)
+	}
+	zones, total, err := boundedZonesBySnapshot(ctx, tx, snapshot.ID, maxZones)
+	if err != nil {
+		return ports.MapRiskRead{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return ports.MapRiskRead{}, fmt.Errorf("提交地图风险读取事务: %w", err)
+	}
+	return ports.MapRiskRead{Snapshot: snapshot, Zones: zones, TotalZoneCount: total}, nil
 }
 
 // RiskDetail 返回指定快照的完整风险分析。
@@ -291,7 +321,34 @@ func (r *HazardRepository) ZonesBySnapshot(ctx context.Context, snapshotID strin
 }
 
 func zonesBySnapshot(ctx context.Context, queryer sqlQueryer, snapshotID string) ([]hazard.RiskZone, error) {
-	rows, err := queryer.Query(ctx, selectZonesSQL, snapshotID)
+	return queryZones(ctx, queryer, selectZonesSQL, snapshotID)
+}
+
+func boundedZonesBySnapshot(ctx context.Context, queryer riskMapQueryer, snapshotID string,
+	maxZones int,
+) ([]hazard.RiskZone, int, error) {
+	var total int
+	if err := queryer.QueryRow(ctx, countZonesSQL, snapshotID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("统计地图风险区: %w", err)
+	}
+	if total > maxZones {
+		return nil, total, fmt.Errorf("%w: 风险区总数 %d 超过地图读取上限 %d",
+			domain.ErrInsufficientData, total, maxZones)
+	}
+	zones, err := queryZones(ctx, queryer, selectMapZonesSQL, snapshotID, maxZones)
+	if err != nil {
+		return nil, total, err
+	}
+	if len(zones) != total {
+		return nil, total, fmt.Errorf("%w: 地图风险区计数与读取结果不一致", domain.ErrInsufficientData)
+	}
+	return zones, total, nil
+}
+
+func queryZones(ctx context.Context, queryer sqlQueryer, query string,
+	args ...any,
+) ([]hazard.RiskZone, error) {
+	rows, err := queryer.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("查询风险区: %w", err)
 	}
@@ -336,6 +393,11 @@ type sqlExecutor interface {
 
 type sqlQueryer interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+type riskMapQueryer interface {
+	sqlQueryer
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func scanSnapshot(row rowScanner) (hazard.Snapshot, error) {
@@ -442,6 +504,17 @@ const selectZonesSQL = `SELECT id,snapshot_id,ST_AsGeoJSON(geometry)::jsonb,
     probability_minimum,probability_mean,probability_maximum,risk_level,area_square_meters,
     area_calculated,admin_codes,input_references,limitations
     FROM risk_zones WHERE snapshot_id=$1 ORDER BY id`
+
+const countZonesSQL = `SELECT COUNT(*) FROM risk_zones WHERE snapshot_id=$1`
+
+const selectMapZonesSQL = `SELECT id,snapshot_id,ST_AsGeoJSON(geometry)::jsonb,
+    probability_minimum,probability_mean,probability_maximum,risk_level,area_square_meters,
+    area_calculated,admin_codes,input_references,limitations
+    FROM risk_zones WHERE snapshot_id=$1
+    ORDER BY CASE risk_level WHEN 'very_high' THEN 4 WHEN 'high' THEN 3
+        WHEN 'moderate' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC,
+        probability_maximum DESC,probability_mean DESC,id
+    LIMIT $2`
 
 var completeRiskReadOptions = pgx.TxOptions{
 	IsoLevel:   pgx.RepeatableRead,

@@ -86,9 +86,18 @@ func (h *Handler) asset(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", assetCacheControl(clean))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(payload)
+}
+
+func assetCacheControl(name string) string {
+	switch path.Ext(name) {
+	case ".js", ".css":
+		return "no-cache"
+	default:
+		return "public, max-age=3600"
+	}
 }
 
 func (h *Handler) notFound(w http.ResponseWriter, _ *http.Request) {

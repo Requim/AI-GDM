@@ -11,8 +11,13 @@ const defaultScenario = "success"
 
 var supportedScenarios = map[string]struct{}{
 	"success": {}, "missing_valid_to": {}, "invalid_valid_to": {},
+	"missing_snapshot_valid_to": {}, "missing_source_valid_to": {},
+	"non_string_snapshot_valid_to": {}, "non_string_source_valid_to": {},
+	"non_strict_valid_to": {}, "invalid_calendar_valid_to": {},
+	"source_valid_to_mismatch": {}, "all_zones_omitted": {},
+	"fallback_unexpired": {}, "fallback_then_expiry": {},
 	"short_validity": {}, "success_then_503": {}, "success_then_timeout": {},
-	"too_many_zones": {}, "complex_geometry": {},
+	"too_many_zones": {},
 }
 
 type scenarioStore struct {

@@ -172,12 +172,14 @@ func riskResult(snapshotID string) applicationhazard.RiskResult {
 }
 
 type riskServiceStub struct {
-	result     applicationhazard.RiskResult
-	err        error
-	operation  string
-	hazardType domainhazard.Type
-	snapshotID string
-	calls      int
+	result      applicationhazard.RiskResult
+	mapResult   *applicationhazard.MapRiskResult
+	err         error
+	operation   string
+	hazardType  domainhazard.Type
+	snapshotID  string
+	mapMaxZones int
+	calls       int
 }
 
 func (s *riskServiceStub) Latest(_ context.Context,
@@ -185,6 +187,21 @@ func (s *riskServiceStub) Latest(_ context.Context,
 ) (applicationhazard.RiskResult, error) {
 	s.record("latest", hazardType, "")
 	return s.result, s.err
+}
+
+func (s *riskServiceStub) LatestMap(_ context.Context, hazardType domainhazard.Type,
+	maxZones int,
+) (applicationhazard.MapRiskResult, error) {
+	s.record("latest-map", hazardType, "")
+	s.mapMaxZones = maxZones
+	if s.mapResult != nil {
+		return *s.mapResult, s.err
+	}
+	total := len(s.result.Zones)
+	if total > maxZones {
+		return applicationhazard.MapRiskResult{}, domain.ErrInsufficientData
+	}
+	return applicationhazard.MapRiskResult{RiskResult: s.result, TotalZoneCount: total}, s.err
 }
 
 func (s *riskServiceStub) Get(_ context.Context, hazardType domainhazard.Type,

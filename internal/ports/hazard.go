@@ -14,6 +14,19 @@ type LatestRiskReader interface {
 		hazard.Snapshot, []hazard.RiskZone, error)
 }
 
+// MapRiskRead 保存地图用例在仓储读取边界内获得的有界完整分析。
+type MapRiskRead struct {
+	Snapshot       hazard.Snapshot
+	Zones          []hazard.RiskZone
+	TotalZoneCount int
+}
+
+// LatestMapRiskReader 读取地图所需的最新风险分析，并在加载风险区前执行数量上限。
+type LatestMapRiskReader interface {
+	// LatestMapRisk 必须先计数；超过 maxZones 时不得加载风险区明细。
+	LatestMapRisk(ctx context.Context, hazardType hazard.Type, maxZones int) (MapRiskRead, error)
+}
+
 // RiskDetailReader 读取指定快照的完整风险分析。
 type RiskDetailReader interface {
 	// RiskDetail 在一致性视图中返回快照及其全部风险区。
