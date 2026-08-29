@@ -2,17 +2,23 @@ package httpserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
+
+const maxRequestIDBytes = 128
+
+var rejectedRequestSequence atomic.Uint64
 
 // Server 管理 HTTP 路由和进程生命周期。
 type Server struct {
@@ -85,12 +91,99 @@ func (s *Server) shutdown() error {
 
 func routes(logger *slog.Logger, readiness *Readiness) *chi.Mux {
 	router := chi.NewRouter()
-	router.Use(middleware.RequestID)
+	router.Use(requestIDMiddleware(logger))
 	router.Use(middleware.Recoverer)
 	router.Use(accessLog(logger))
 	router.Get("/healthz", healthHandler)
 	router.Get("/readyz", readinessHandler(readiness))
 	return router
+}
+
+func requestIDMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		withGeneratedID := normalizedGeneratedRequestID(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			reason, lengthCategory, invalid := requestIDRejection(r.Header.Values(middleware.RequestIDHeader))
+			if !invalid {
+				withGeneratedID.ServeHTTP(w, r)
+				return
+			}
+			r.Header.Del(middleware.RequestIDHeader)
+			requestID := rejectedRequestID()
+			logger.WarnContext(r.Context(), "拒绝无效请求标识", "request_id", requestID,
+				"reason", reason, "length_category", lengthCategory)
+			writeInvalidRequestID(w, requestID)
+		})
+	}
+}
+
+func normalizedGeneratedRequestID(next http.Handler) http.Handler {
+	return middleware.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		value := middleware.GetReqID(r.Context())
+		if !validRequestID(value) {
+			value = generatedRequestID(value)
+		}
+		ctx := context.WithValue(r.Context(), middleware.RequestIDKey, value)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	}))
+}
+
+func requestIDRejection(values []string) (string, string, bool) {
+	if len(values) == 0 {
+		return "", "", false
+	}
+	if len(values) != 1 {
+		return "multiple_values", "multiple", true
+	}
+	value := values[0]
+	if len(value) > maxRequestIDBytes {
+		return "too_long", "over_limit", true
+	}
+	if value == "" {
+		return "empty", "empty", true
+	}
+	if !validRequestID(value) {
+		return "invalid_character", "within_limit", true
+	}
+	return "", "", false
+}
+
+func validRequestID(value string) bool {
+	if value == "" || len(value) > maxRequestIDBytes {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if !requestIDCharacter(character) {
+			return false
+		}
+	}
+	return true
+}
+
+func requestIDCharacter(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' || strings.ContainsRune("-_.:", rune(value))
+}
+
+func generatedRequestID(seed string) string {
+	digest := sha256.Sum256([]byte(seed))
+	return fmt.Sprintf("req-%x", digest[:16])
+}
+
+func rejectedRequestID() string {
+	sequence := rejectedRequestSequence.Add(1)
+	return generatedRequestID(fmt.Sprintf("rejected-%d-%d", time.Now().UnixNano(), sequence))
+}
+
+func writeInvalidRequestID(w http.ResponseWriter, requestID string) {
+	w.Header().Set("X-Request-ID", requestID)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+		"code": "invalid_request_id", "message": "请求标识无效", "requestId": requestID,
+	}})
 }
 
 func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {

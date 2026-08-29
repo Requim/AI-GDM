@@ -64,6 +64,13 @@ func TestRiskReadersRejectInvalidInputsBeforeDatabaseAccess(t *testing.T) {
 		if !errors.Is(err, domain.ErrInvalidInput) {
 			t.Fatalf("RiskDetail(%q) error = %v", value, err)
 		}
+		_, _, _, err = repository.RiskDetailBounded(context.Background(), value, 500)
+		if !errors.Is(err, domain.ErrInvalidInput) {
+			t.Fatalf("RiskDetailBounded(%q) error = %v", value, err)
+		}
+	}
+	if _, _, _, err := repository.RiskDetailBounded(context.Background(), "snapshot", 0); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("RiskDetailBounded(max=0) error = %v", err)
 	}
 }
 

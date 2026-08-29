@@ -21,6 +21,9 @@ type Evidence struct {
 	Source    provenance.Provenance `json:"source"`
 }
 
+// TrustedDomainQualityFlagPrefix 标识搜索适配器已验证的配置可信基域。
+const TrustedDomainQualityFlagPrefix = "trusted_domain="
+
 // NarrativeInput 是提供给大模型的去标识化、不可变分析输入。
 type NarrativeInput struct {
 	AnalysisJSON    json.RawMessage `json:"analysis"`
@@ -37,13 +40,16 @@ type Narrative struct {
 	GeneratedAt time.Time             `json:"generatedAt"`
 	Model       string                `json:"model"`
 	Available   bool                  `json:"available"`
-	Source      provenance.Provenance `json:"source"`
+	Source      provenance.Provenance `json:"source,omitempty,omitzero"`
 }
 
 const (
 	maxEvidenceTitle   = 512
+	maxEvidenceURL     = 2048
 	maxEvidenceSummary = 4096
+	maxEvidenceSite    = 256
 	maxNarrativeText   = 4096
+	maxNarrativeModel  = 256
 	maxNarrativeItems  = 16
 )
 
@@ -55,9 +61,16 @@ func (e Evidence) Validate() error {
 	if strings.TrimSpace(e.Summary) == "" || len([]rune(e.Summary)) > maxEvidenceSummary {
 		return fmt.Errorf("%w: 搜索证据摘要无效", domain.ErrInvalidInput)
 	}
-	parsed, err := url.Parse(strings.TrimSpace(e.URL))
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
-		return fmt.Errorf("%w: 搜索证据地址必须是无用户信息的 HTTPS 地址", domain.ErrInvalidInput)
+	if e.SiteName != "" && (strings.TrimSpace(e.SiteName) == "" || len([]rune(e.SiteName)) > maxEvidenceSite) {
+		return fmt.Errorf("%w: 搜索证据站点名称无效", domain.ErrInvalidInput)
+	}
+	rawURL := strings.TrimSpace(e.URL)
+	if len([]rune(rawURL)) > maxEvidenceURL {
+		return fmt.Errorf("%w: 搜索证据地址过长", domain.ErrInvalidInput)
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || !publicEvidenceURL(parsed) {
+		return fmt.Errorf("%w: 搜索证据地址必须是公开、无用户信息的 HTTPS 地址", domain.ErrInvalidInput)
 	}
 	if err = e.Source.Validate(); err != nil {
 		return fmt.Errorf("搜索证据来源: %w", err)
@@ -70,33 +83,40 @@ func (e Evidence) Validate() error {
 	return nil
 }
 
-// Validate 检查交给大模型的输入是合法 JSON，且不可变字段没有重复。
+// Validate 检查交给大模型的输入是合法对象，且不可变字段真实存在。
 func (i NarrativeInput) Validate() error {
-	if len(i.AnalysisJSON) == 0 || !json.Valid(i.AnalysisJSON) {
-		return fmt.Errorf("%w: 大模型分析输入不是合法 JSON", domain.ErrInvalidInput)
-	}
 	var object map[string]json.RawMessage
-	if err := json.Unmarshal(i.AnalysisJSON, &object); err != nil || object == nil {
+	err := json.Unmarshal(i.AnalysisJSON, &object)
+	if err != nil || object == nil {
 		return fmt.Errorf("%w: 大模型分析输入必须是 JSON 对象", domain.ErrInvalidInput)
 	}
-	if len(i.ImmutableFields) == 0 {
-		return fmt.Errorf("%w: 大模型输入缺少不可变字段清单", domain.ErrInvalidInput)
-	}
-	seen := make(map[string]struct{}, len(i.ImmutableFields))
-	for _, field := range i.ImmutableFields {
-		field = strings.TrimSpace(field)
-		if field == "" {
-			return fmt.Errorf("%w: 大模型不可变字段不能为空", domain.ErrInvalidInput)
-		}
-		if _, exists := seen[field]; exists {
-			return fmt.Errorf("%w: 大模型不可变字段重复", domain.ErrInvalidInput)
-		}
-		seen[field] = struct{}{}
+	if err := validateNarrativeImmutableFields(i.ImmutableFields, object); err != nil {
+		return err
 	}
 	for index, evidence := range i.Evidence {
 		if err := evidence.Validate(); err != nil {
 			return fmt.Errorf("第 %d 条搜索证据: %w", index+1, err)
 		}
+	}
+	return nil
+}
+
+func validateNarrativeImmutableFields(fields []string, object map[string]json.RawMessage) error {
+	if len(fields) == 0 {
+		return fmt.Errorf("%w: 大模型输入缺少不可变字段清单", domain.ErrInvalidInput)
+	}
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		if field == "" || field != strings.TrimSpace(field) {
+			return fmt.Errorf("%w: 大模型不可变字段必须使用规范名称", domain.ErrInvalidInput)
+		}
+		if _, exists := object[field]; !exists {
+			return fmt.Errorf("%w: 大模型分析缺少不可变字段 %q", domain.ErrInvalidInput, field)
+		}
+		if _, exists := seen[field]; exists {
+			return fmt.Errorf("%w: 大模型不可变字段重复", domain.ErrInvalidInput)
+		}
+		seen[field] = struct{}{}
 	}
 	return nil
 }
@@ -116,6 +136,9 @@ func (n Narrative) Validate() error {
 	}
 	if len([]rune(n.Summary)) > maxNarrativeText {
 		return fmt.Errorf("%w: 大模型说明摘要过长", domain.ErrInvalidInput)
+	}
+	if len([]rune(n.Model)) > maxNarrativeModel {
+		return fmt.Errorf("%w: 大模型说明模型名过长", domain.ErrInvalidInput)
 	}
 	if len(n.KeyFindings) > maxNarrativeItems || len(n.Actions) > maxNarrativeItems ||
 		len(n.Caveats) > maxNarrativeItems {

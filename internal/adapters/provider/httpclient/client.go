@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -25,6 +26,18 @@ const (
 	defaultUserAgent   = "AI-GDM/0.1"
 )
 
+// RedirectPolicy 约束单次供应商请求的重定向边界。
+type RedirectPolicy string
+
+const (
+	// RedirectDefault 沿用调用方 HTTP 客户端的既有策略。
+	RedirectDefault RedirectPolicy = ""
+	// RedirectDeny 拒绝任何重定向，适用于不可重放的创建请求。
+	RedirectDeny RedirectPolicy = "deny"
+	// RedirectSameOriginHTTPS 仅允许最多五跳、同源、公开 HTTPS 地址。
+	RedirectSameOriginHTTPS RedirectPolicy = "same_origin_https"
+)
+
 // Request 描述一次受控的外部 HTTP 请求。
 type Request struct {
 	Method             string
@@ -34,6 +47,8 @@ type Request struct {
 	CacheKey           string
 	CacheTTL           time.Duration
 	MaxBodyBytes       int64
+	MaxAttempts        int
+	RedirectPolicy     RedirectPolicy
 	SensitiveQueryKeys []string
 }
 
@@ -115,13 +130,14 @@ func (c *Client) Open(ctx context.Context, request Request) (*http.Response, err
 		return nil, err
 	}
 	var last error
-	for attempt := 1; attempt <= c.maxAttempts; attempt++ {
+	maxAttempts := c.requestAttempts(request)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		response, retry, err := c.attempt(ctx, request)
 		if err == nil {
 			return response, nil
 		}
 		last = err
-		if !retry || attempt == c.maxAttempts {
+		if !retry || attempt == maxAttempts {
 			break
 		}
 		if err = c.waitRetry(ctx, request, attempt, response); err != nil {
@@ -169,6 +185,11 @@ func (c *Client) validate(request Request) error {
 	if request.Method == "" {
 		return fmt.Errorf("%w: HTTP 方法为空", domain.ErrInvalidInput)
 	}
+	if request.MaxAttempts < 0 || request.MaxAttempts > c.maxAttempts ||
+		(request.RedirectPolicy != RedirectDefault && request.RedirectPolicy != RedirectDeny &&
+			request.RedirectPolicy != RedirectSameOriginHTTPS) {
+		return fmt.Errorf("%w: 外部请求重试或重定向策略无效", domain.ErrInvalidInput)
+	}
 	return nil
 }
 
@@ -187,8 +208,11 @@ func (c *Client) attempt(ctx context.Context, request Request) (*http.Response, 
 		httpRequest.Header = make(http.Header)
 	}
 	httpRequest.Header.Set("User-Agent", c.userAgent)
-	response, err := c.httpClient.Do(httpRequest)
+	response, err := c.requestHTTPClient(request).Do(httpRequest)
 	if err != nil {
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
 		return nil, true, &ProviderError{Cause: redactRequestError(err, request), Retryable: true}
 	}
 	if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
@@ -200,6 +224,72 @@ func (c *Client) attempt(ctx context.Context, request Request) (*http.Response, 
 		Retryable: retryableStatus(response.StatusCode),
 	}
 	return response, errorValue.Retryable, errorValue
+}
+
+func (c *Client) requestAttempts(request Request) int {
+	if request.MaxAttempts > 0 {
+		return request.MaxAttempts
+	}
+	return c.maxAttempts
+}
+
+func (c *Client) requestHTTPClient(request Request) *http.Client {
+	if request.RedirectPolicy == RedirectDefault {
+		return c.httpClient
+	}
+	client := *c.httpClient
+	original := c.httpClient.CheckRedirect
+	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if request.RedirectPolicy == RedirectDeny {
+			return fmt.Errorf("%w: 当前供应商请求禁止重定向", domain.ErrProviderUnavailable)
+		}
+		if err := validateSameOriginRedirect(next, via); err != nil {
+			return err
+		}
+		if original != nil {
+			return original(next, via)
+		}
+		return nil
+	}
+	return &client
+}
+
+func validateSameOriginRedirect(next *http.Request, via []*http.Request) error {
+	if next == nil || next.URL == nil || len(via) == 0 || len(via) > 5 {
+		return fmt.Errorf("%w: 供应商重定向跳数或目标无效", domain.ErrProviderUnavailable)
+	}
+	previous := via[len(via)-1]
+	if previous == nil || previous.URL == nil || next.URL.Scheme != "https" || next.URL.User != nil ||
+		!sameOrigin(previous.URL, next.URL) || !publicRedirectHost(next.URL.Hostname()) {
+		return fmt.Errorf("%w: 供应商重定向必须是同源公开 HTTPS 地址", domain.ErrProviderUnavailable)
+	}
+	return nil
+}
+
+func sameOrigin(left, right *url.URL) bool {
+	return strings.EqualFold(left.Scheme, right.Scheme) &&
+		strings.EqualFold(left.Hostname(), right.Hostname()) && effectivePort(left) == effectivePort(right)
+}
+
+func effectivePort(value *url.URL) string {
+	if value.Port() != "" {
+		return value.Port()
+	}
+	if strings.EqualFold(value.Scheme, "https") {
+		return "443"
+	}
+	return "80"
+}
+
+func publicRedirectHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") ||
+		strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !(ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast())
 }
 
 func (c *Client) waitRetry(ctx context.Context, request Request, attempt int, response *http.Response) error {
@@ -369,6 +459,7 @@ func sanitizedURLError(value *url.Error, request Request) error {
 func redactErrorMessage(message string, request Request) string {
 	message = strings.ReplaceAll(message, request.URL,
 		RedactURL(request.URL, request.SensitiveQueryKeys...))
+	message = redactSensitiveHeaders(message, request.Headers)
 	parsed, parseErr := url.Parse(request.URL)
 	if parseErr != nil {
 		return message
@@ -380,6 +471,19 @@ func redactErrorMessage(message string, request Request) string {
 		}
 		for _, value := range values {
 			message = redactSensitiveValue(message, value)
+		}
+	}
+	return message
+}
+
+func redactSensitiveHeaders(message string, headers http.Header) string {
+	for _, name := range []string{"Authorization", "Proxy-Authorization", "X-API-Key", "API-Key"} {
+		for _, value := range headers.Values(name) {
+			message = redactSensitiveValue(message, value)
+			parts := strings.Fields(value)
+			for index := 1; index < len(parts); index++ {
+				message = redactSensitiveValue(message, parts[index])
+			}
 		}
 	}
 	return message

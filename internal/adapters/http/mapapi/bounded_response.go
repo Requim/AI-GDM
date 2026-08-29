@@ -9,6 +9,7 @@ import (
 	applicationevacuation "github.com/Requim/AI-GDM/internal/application/evacuation"
 	"github.com/Requim/AI-GDM/internal/domain/evacuation"
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
+	"github.com/Requim/AI-GDM/internal/domain/report"
 )
 
 const (
@@ -79,15 +80,17 @@ type safeRouteResult struct {
 	TotalExcludedRouteCount   int                    `json:"totalExcludedRouteCount"`
 	VisibleExcludedRouteCount int                    `json:"visibleExcludedRouteCount"`
 	OmittedExcludedRouteCount int                    `json:"omittedExcludedRouteCount"`
+	RuleVersion               string                 `json:"ruleVersion"`
 	RiskScoreAvailable        bool                   `json:"riskScoreAvailable"`
 	Limits                    routeLimits            `json:"limits"`
 }
 
 type boundedRoute struct {
 	evacuation.Route
-	RiskScore         *float64 `json:"riskScore"`
-	GeometryByteCount int      `json:"geometryByteCount"`
-	OmittedStepCount  int      `json:"omittedStepCount"`
+	AnalysisRef       *report.AnalysisReference `json:"analysisRef,omitempty"`
+	RiskScore         *float64                  `json:"riskScore"`
+	GeometryByteCount int                       `json:"geometryByteCount"`
+	OmittedStepCount  int                       `json:"omittedStepCount"`
 }
 
 type boundedExcludedRoute struct {
@@ -211,6 +214,9 @@ func buildSafeRouteResult(source applicationevacuation.RouteSearchResult) (safeR
 		len(source.Routes) > maxSourceRouteResults-len(source.Excluded) {
 		return safeRouteResult{}, unsafeMapResult("路线源结果超过 %d 条", maxSourceRouteResults)
 	}
+	if source.RuleVersion != "" && source.RuleVersion != applicationevacuation.RouteSafetyRuleVersion {
+		return safeRouteResult{}, unsafeMapResult("路线安全规则版本不受支持")
+	}
 	result := newSafeRouteResult(source)
 	state := &routeProjectionState{}
 	if err := addVisibleRoutes(&result, source.Routes, state); err != nil {
@@ -233,8 +239,16 @@ func newSafeRouteResult(source applicationevacuation.RouteSearchResult) safeRout
 		Excluded:        make([]boundedExcludedRoute, 0, maxExcludedRoutes),
 		Limitations:     cloneSlice(source.Limitations),
 		TotalRouteCount: len(source.Routes), TotalExcludedRouteCount: len(source.Excluded),
+		RuleVersion:        routeRuleVersion(source.RuleVersion),
 		RiskScoreAvailable: source.RiskScoreAvailable, Limits: defaultRouteLimits(),
 	}
+}
+
+func routeRuleVersion(value string) string {
+	if value == "" {
+		return applicationevacuation.RouteSafetyRuleVersion
+	}
+	return value
 }
 
 func addVisibleRoutes(result *safeRouteResult, source []evacuation.Route,

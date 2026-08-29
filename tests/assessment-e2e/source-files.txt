@@ -1,0 +1,14 @@
+# assessment-e2e-source-v1
+go.mod
+go.sum
+internal/
+scripts/
+tests/assessment-e2e/Dockerfile
+tests/assessment-e2e/expected-tests.json
+tests/assessment-e2e/fixture/
+tests/assessment-e2e/package-lock.json
+tests/assessment-e2e/package.json
+tests/assessment-e2e/playwright.config.js
+tests/assessment-e2e/source-files.txt
+tests/assessment-e2e/specs/
+tests/assessment-e2e/validate-results.mjs

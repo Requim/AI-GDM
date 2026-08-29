@@ -10,8 +10,13 @@ import (
 	applicationsurvival "github.com/Requim/AI-GDM/internal/application/survival"
 )
 
-// newSurvivalAPIHandler 创建公开历史回放和合成场景评估接口。
-func newSurvivalAPIHandler(logger *slog.Logger) (http.Handler, error) {
+type survivalRuntime struct {
+	handler    http.Handler
+	catalog    applicationsurvival.CatalogService
+	assessment applicationsurvival.AssessmentService
+}
+
+func newSurvivalRuntime(logger *slog.Logger) (*survivalRuntime, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("生还回放日志器为空")
 	}
@@ -31,5 +36,14 @@ func newSurvivalAPIHandler(logger *slog.Logger) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("创建生还回放 HTTP 适配器: %w", err)
 	}
-	return handler, nil
+	return &survivalRuntime{handler: handler, catalog: cases, assessment: assessment}, nil
+}
+
+// newSurvivalAPIHandler 创建公开历史回放和合成场景评估接口。
+func newSurvivalAPIHandler(logger *slog.Logger) (http.Handler, error) {
+	runtime, err := newSurvivalRuntime(logger)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.handler, nil
 }

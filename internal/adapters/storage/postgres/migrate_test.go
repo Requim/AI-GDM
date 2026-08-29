@@ -56,6 +56,7 @@ func TestSpatialAnalysisMigrationContract(t *testing.T) {
 		"area_input_references jsonb not null",
 		"input_references jsonb not null",
 		"limitations jsonb not null",
+		"jsonb_typeof(limitations) = 'array'",
 		"admin_matches jsonb not null",
 		"exposures jsonb not null",
 		"jsonb_typeof(exposures) = 'object'",

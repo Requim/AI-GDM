@@ -3,6 +3,8 @@ package httpclient
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -85,8 +87,10 @@ func TestIsStrongETag(t *testing.T) {
 
 func TestClientRedactsSensitiveTransportError(t *testing.T) {
 	sentinel := errors.New("dial unavailable")
-	transport := roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return nil, sentinel
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		authorization := request.Header.Get("Authorization")
+		return nil, fmt.Errorf("authorization=%s token=%s: %w", authorization,
+			strings.TrimPrefix(authorization, "Bearer "), sentinel)
 	})
 	client := New(Options{
 		HTTPClient: &http.Client{Transport: transport}, MaxAttempts: 1,
@@ -94,6 +98,7 @@ func TestClientRedactsSensitiveTransportError(t *testing.T) {
 	request := Request{
 		Method:             http.MethodGet,
 		URL:                "https://example.test/weather?apikey=secret%2Fvalue&query=rain",
+		Headers:            http.Header{"Authorization": {"Bearer header-secret"}},
 		SensitiveQueryKeys: []string{"apikey"},
 	}
 	_, err := client.Do(context.Background(), request)
@@ -113,6 +118,81 @@ func TestClientRedactsSensitiveTransportError(t *testing.T) {
 	if !strings.Contains(urlError.Error(), "REDACTED") {
 		t.Fatalf("url.Error 未显示脱敏标记: %v", urlError)
 	}
+}
+
+func TestClientRequestMaxAttemptsPreventsPostReplay(t *testing.T) {
+	attempts := 0
+	sentinel := errors.New("connection dropped")
+	client := New(Options{HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		return nil, sentinel
+	})}, MaxAttempts: 3, Sleep: func(context.Context, time.Duration) error { return nil }})
+	_, err := client.Do(context.Background(), Request{Method: http.MethodPost,
+		URL: "https://provider.example/tasks", MaxAttempts: 1})
+	if !errors.Is(err, sentinel) || attempts != 1 {
+		t.Fatalf("Do() error=%v attempts=%d", err, attempts)
+	}
+}
+
+func TestClientSameOriginHTTPSRedirectPolicy(t *testing.T) {
+	requests := make([]string, 0, 2)
+	client := New(Options{HTTPClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		requests = append(requests, request.URL.String())
+		if request.URL.Path == "/start" {
+			return redirectResponse(request, "/result"), nil
+		}
+		return successResponse(request), nil
+	})}, MaxAttempts: 1})
+	_, err := client.Do(context.Background(), Request{Method: http.MethodGet,
+		URL: "https://provider.example/start", RedirectPolicy: RedirectSameOriginHTTPS})
+	if err != nil || len(requests) != 2 || requests[1] != "https://provider.example/result" {
+		t.Fatalf("Do() error=%v requests=%v", err, requests)
+	}
+}
+
+func TestClientRejectsUnsafeRedirectBeforeNextRequest(t *testing.T) {
+	for _, target := range []string{"https://other.example/result", "https://127.0.0.1/metadata",
+		"https://localhost/metadata", "http://provider.example/result"} {
+		t.Run(target, func(t *testing.T) {
+			requests := 0
+			client := New(Options{HTTPClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				requests++
+				return redirectResponse(request, target), nil
+			})}, MaxAttempts: 1})
+			_, err := client.Do(context.Background(), Request{Method: http.MethodGet,
+				URL: "https://provider.example/start", RedirectPolicy: RedirectSameOriginHTTPS})
+			if !errors.Is(err, domain.ErrProviderUnavailable) || requests != 1 {
+				t.Fatalf("Do() error=%v requests=%d", err, requests)
+			}
+		})
+	}
+}
+
+func TestClientDenyRedirectStopsBeforeSecondRequest(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		requests := 0
+		client := New(Options{HTTPClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			requests++
+			response := redirectResponse(request, "/second")
+			response.StatusCode = status
+			return response, nil
+		})}, MaxAttempts: 1})
+		_, err := client.Do(context.Background(), Request{Method: http.MethodPost,
+			URL: "https://provider.example/create", RedirectPolicy: RedirectDeny})
+		if !errors.Is(err, domain.ErrProviderUnavailable) || requests != 1 {
+			t.Fatalf("status=%d error=%v requests=%d", status, err, requests)
+		}
+	}
+}
+
+func redirectResponse(request *http.Request, location string) *http.Response {
+	return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {location}},
+		Body: io.NopCloser(strings.NewReader("redirect")), Request: request}
+}
+
+func successResponse(request *http.Request) *http.Response {
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`{"status":"ok"}`)), Request: request}
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

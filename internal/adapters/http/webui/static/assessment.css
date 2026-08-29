@@ -1,0 +1,209 @@
+.assessment-section { margin-top: 34px; border-top: 1px solid var(--line); }
+.assessment-heading { align-items: center; }
+
+.assessment-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  background: #0d1311;
+}
+
+.assessment-tabs button {
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.assessment-tabs button:last-child { border-right: 0; }
+.assessment-tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--cyan); background: #14201d; }
+.assessment-tabs button:hover, .assessment-tabs button:focus-visible { color: var(--ink); background: #15211e; }
+
+.assessment-workspace { border: 1px solid var(--line); background: var(--panel); }
+.assessment-panel { min-height: 520px; display: grid; grid-template-columns: 330px minmax(0, 1fr) 340px; }
+.assessment-panel[hidden] { display: none; }
+.assessment-panel > * { min-width: 0; }
+
+.assessment-control-column,
+.assessment-result-column,
+.assessment-audit-column {
+  padding: 18px;
+  border-right: 1px solid var(--line);
+}
+
+.assessment-control-column { margin: 0; background: #0d1311; }
+.assessment-result-column { background: var(--panel); }
+.assessment-audit-column { border-right: 0; background: #0d1311; }
+
+.assessment-panel-heading {
+  min-height: 45px;
+  margin-bottom: 18px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.assessment-panel-heading > span {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--cyan);
+  color: var(--cyan);
+  font: 11px Consolas, monospace;
+}
+
+.assessment-panel-heading div { min-width: 0; }
+.assessment-panel-heading strong, .assessment-panel-heading small { display: block; }
+.assessment-panel-heading strong { font-size: 13px; }
+.assessment-panel-heading small { margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+
+.assessment-control-column label {
+  display: block;
+  margin-bottom: 16px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.assessment-control-column input,
+.assessment-control-column select,
+.assessment-control-column textarea {
+  width: 100%;
+  min-height: 40px;
+  margin-top: 6px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--ink);
+  background: #111816;
+  font: 12px/1.5 Consolas, monospace;
+  resize: vertical;
+}
+
+.assessment-control-column input:focus,
+.assessment-control-column select:focus,
+.assessment-control-column textarea:focus { border-color: var(--cyan); outline: 1px solid var(--cyan); }
+.assessment-control-column .primary-command { width: 100%; }
+
+.assessment-control-note {
+  margin: 0 0 18px;
+  padding: 12px;
+  border-left: 3px solid var(--amber);
+  color: var(--muted);
+  background: #211c12;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.assessment-state {
+  min-height: 40px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: #101714;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.assessment-state-loading { color: var(--cyan); }
+.assessment-state-current { color: var(--green); }
+.assessment-state-replay { color: var(--cyan); background: #112328; }
+.assessment-state-warning { color: var(--amber); background: #211c12; }
+.assessment-state-unavailable, .assessment-state-error { color: var(--red); background: #261411; }
+
+.loss-amount-grid,
+.survival-score-band {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.loss-amount-grid div,
+.survival-score-band div { min-width: 0; padding: 16px 12px; border-right: 1px solid var(--line); }
+.loss-amount-grid div:last-child, .survival-score-band div:last-child { border-right: 0; }
+.loss-amount-grid span, .survival-score-band span { display: block; color: var(--muted); font-size: 10px; }
+.loss-amount-grid strong, .survival-score-band strong {
+  display: block;
+  margin-top: 7px;
+  color: var(--amber);
+  font: 650 15px/1.35 Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.assessment-metrics,
+.assessment-audit-meta { margin: 16px 0 0; }
+.assessment-metrics div,
+.assessment-audit-meta div {
+  min-height: 48px;
+  padding: 9px 0;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 12px;
+  border-bottom: 1px solid rgba(52, 65, 60, .7);
+}
+
+.assessment-metrics dt, .assessment-audit-meta dt { color: var(--muted); font-size: 10px; }
+.assessment-metrics dd, .assessment-audit-meta dd { margin: 0; color: var(--ink); font: 12px/1.5 Consolas, monospace; overflow-wrap: anywhere; }
+
+.assessment-source-list { display: grid; gap: 8px; }
+.assessment-source-list p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.assessment-source-item { min-width: 0; padding: 10px 0; border-bottom: 1px solid rgba(52, 65, 60, .7); }
+.assessment-source-item:last-child { border-bottom: 0; }
+.assessment-source-item strong, .assessment-source-item span, .assessment-source-item code {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.assessment-source-item strong { font-size: 11px; }
+.assessment-source-item span { margin-top: 4px; color: var(--muted); font: 10px/1.5 Consolas, monospace; overflow-wrap: anywhere; }
+.assessment-source-item code { margin-top: 4px; color: var(--muted); font: 10px/1.5 Consolas, monospace; white-space: normal; word-break: break-all; }
+.assessment-source-item a { display: inline-block; max-width: 100%; margin-top: 6px; color: var(--cyan); font-size: 11px; overflow-wrap: anywhere; }
+
+.assessment-limitations,
+.assessment-factor-list { margin: 18px 0 0; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.assessment-factor-list { color: var(--ink); }
+
+.scenario-summary { margin-bottom: 18px; border-top: 1px solid var(--line); }
+.scenario-summary p { margin: 0; padding: 12px 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.scenario-summary dl { margin: 0; }
+.scenario-summary dl div { padding: 8px 0; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; border-bottom: 1px solid rgba(52, 65, 60, .7); }
+.scenario-summary dt { color: var(--muted); font-size: 10px; }
+.scenario-summary dd { margin: 0; color: var(--ink); font: 11px/1.5 Consolas, monospace; overflow-wrap: anywhere; }
+
+.ai-narrative { border-left: 3px solid var(--cyan); padding: 16px 18px; background: #101a18; }
+.ai-narrative h3 { margin: 0 0 10px; font-size: 15px; }
+.ai-narrative p { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.65; white-space: pre-wrap; }
+.ai-narrative ul { margin: 0 0 14px; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.ai-narrative-label { display: block; margin-bottom: 6px; color: var(--cyan); font: 10px Consolas, monospace; }
+
+@media (max-width: 1180px) {
+  .assessment-panel { grid-template-columns: 310px minmax(0, 1fr); }
+  .assessment-audit-column { grid-column: 1 / -1; border-top: 1px solid var(--line); }
+  .assessment-source-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 780px) {
+  .assessment-panel { grid-template-columns: 1fr; }
+  .assessment-control-column, .assessment-result-column { border-right: 0; border-bottom: 1px solid var(--line); }
+  .assessment-audit-column { grid-column: auto; }
+  .assessment-source-list { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 520px) {
+  .assessment-tabs { grid-template-columns: 1fr; }
+  .assessment-tabs button { border-right: 0; border-bottom: 1px solid var(--line); }
+  .assessment-tabs button:last-child { border-bottom: 0; }
+  .assessment-tabs button[aria-selected="true"] { border-bottom-color: var(--cyan); }
+  .loss-amount-grid, .survival-score-band { grid-template-columns: 1fr; }
+  .loss-amount-grid div, .survival-score-band div { border-right: 0; border-bottom: 1px solid var(--line); }
+  .loss-amount-grid div:last-child, .survival-score-band div:last-child { border-bottom: 0; }
+}

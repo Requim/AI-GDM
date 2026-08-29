@@ -24,6 +24,9 @@ const ModelVersion = "ai-gdm-survival-rules-v1"
 
 // Validate 校验辅助评估结果在概率和版本上的边界。
 func (a Assessment) Validate() error {
+	if err := a.validateBounds(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(a.ScenarioID) == "" || a.ModelVersion == "" ||
 		a.ModelVersion != ModelVersion || a.CalculatedAt.IsZero() || !isUTC(a.CalculatedAt) {
 		return fmt.Errorf("%w: 生还评估标识、版本或时间无效", domain.ErrInvalidInput)
@@ -39,8 +42,8 @@ func (a Assessment) Validate() error {
 	if a.ProbabilityBand != expectedBand {
 		return fmt.Errorf("%w: 生还评估概率等级不匹配", domain.ErrInvalidInput)
 	}
-	if strings.TrimSpace(a.HumanReviewStatus) == "" || len(a.Factors) == 0 {
-		return fmt.Errorf("%w: 生还评估缺少人工复核或解释因素", domain.ErrInvalidInput)
+	if a.HumanReviewStatus != "required" || len(a.Factors) == 0 {
+		return fmt.Errorf("%w: 生还评估必须要求人工复核并包含解释因素", domain.ErrInvalidInput)
 	}
 	switch a.Priority {
 	case PriorityRoutine, PriorityElevated, PriorityUrgent, PriorityImmediate:
@@ -55,13 +58,35 @@ func (a Assessment) Validate() error {
 	return nil
 }
 
+func (a Assessment) validateBounds() error {
+	fields := []struct {
+		name    string
+		value   string
+		maximum int
+	}{
+		{"生还评估场景标识", a.ScenarioID, maxIdentifierBytes},
+		{"生还评估分数等级", a.ScoreBand, 64},
+		{"生还评估模型版本", a.ModelVersion, 128},
+		{"生还评估人工复核状态", a.HumanReviewStatus, 64},
+	}
+	for _, field := range fields {
+		if err := validateOptionalText(field.name, field.value, field.maximum); err != nil {
+			return err
+		}
+	}
+	if err := validateTextList("生还评估因素", a.Factors, maxTextItems, maxLongTextBytes); err != nil {
+		return err
+	}
+	return validateTextList("生还评估限制", a.Limitations, maxTextItems, maxLongTextBytes)
+}
+
 // Evaluate 使用固定规则生成可解释的匿名场景评估。
 func Evaluate(s Scenario, calculatedAt time.Time) (Assessment, error) {
 	if err := s.Validate(); err != nil {
 		return Assessment{}, err
 	}
-	if calculatedAt.IsZero() || !isUTC(calculatedAt) {
-		return Assessment{}, fmt.Errorf("%w: 生还评估时间必须使用 UTC", domain.ErrInvalidInput)
+	if calculatedAt.IsZero() || !isUTC(calculatedAt) || calculatedAt.Before(s.AsOf) {
+		return Assessment{}, fmt.Errorf("%w: 生还评估时间必须使用 UTC 且不早于场景时刻", domain.ErrInvalidInput)
 	}
 	score := 50
 	factors := make([]string, 0, 6)
@@ -117,37 +142,27 @@ func applyCompleteness(score *int, factors *[]string, completeness float64) {
 	}
 }
 
-func applySignals(score *int, factors *[]string, environment, entrapment map[string]string) {
-	if signal(environment, "air_pocket", "yes", "true") {
+func applySignals(score *int, factors *[]string, environment EnvironmentSignals, entrapment EntrapmentSignals) {
+	if environment.AirPocket == SignalYes {
 		*score += 15
 		*factors = append(*factors, "记录有可呼吸空间")
 	}
-	if signal(environment, "water_available", "yes", "true") {
+	if environment.WaterAvailable == SignalYes {
 		*score += 8
 		*factors = append(*factors, "记录有可用饮水")
 	}
-	if signal(environment, "hazard_stable", "yes", "true") {
+	if environment.HazardStable == SignalYes {
 		*score += 8
 		*factors = append(*factors, "现场危险源暂时稳定")
 	}
-	if signal(environment, "hazard_stable", "no", "false") || signal(entrapment, "injury", "severe", "critical") {
+	if environment.HazardStable == SignalNo || entrapment.Injury == InjurySevere || entrapment.Injury == InjuryCritical {
 		*score -= 20
 		*factors = append(*factors, "存在持续危险或重伤信号")
 	}
-	if signal(entrapment, "communication", "yes", "true") {
+	if entrapment.Communication == SignalYes {
 		*score += 10
 		*factors = append(*factors, "仍可建立通信")
 	}
-}
-
-func signal(values map[string]string, key string, accepted ...string) bool {
-	value := strings.ToLower(strings.TrimSpace(values[key]))
-	for _, candidate := range accepted {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
 }
 
 func clampScore(score int) int {

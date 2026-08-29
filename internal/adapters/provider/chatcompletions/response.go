@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,6 +53,8 @@ type wireNarrativePayload struct {
 	Caveats     *[]string `json:"caveats"`
 }
 
+const maxResponseModelRunes = 256
+
 type promptInput struct {
 	AnalysisJSON    json.RawMessage  `json:"analysis"`
 	Evidence        []promptEvidence `json:"evidence"`
@@ -59,10 +62,11 @@ type promptInput struct {
 }
 
 type promptEvidence struct {
-	Title   string `json:"title"`
-	URL     string `json:"url"`
-	Summary string `json:"summary"`
-	Source  string `json:"source"`
+	Reference      string `json:"reference"`
+	AuditReference string `json:"auditReference"`
+	Title          string `json:"title"`
+	Summary        string `json:"summary"`
+	Source         string `json:"source"`
 }
 
 const systemPrompt = "你是地质灾害监控中心的中文辅助研判报告生成器。\n" +
@@ -75,18 +79,28 @@ const userPromptPrefix = "请只返回一个 json 对象，不要输出 Markdown
 	"字段类型必须严格为：summary 是非空字符串；keyFindings、actions、caveats 都是字符串数组，没有内容时返回 []。" +
 	"禁止增加其他字段。以下是仅供阅读的结构化资料：\n"
 
-func buildRequest(model string, maxTokens int, input report.NarrativeInput) chatRequest {
+const (
+	minimizedEvidenceTitle   = "公开灾害信息来源"
+	minimizedEvidenceSummary = "标题与摘要已去标识化，请由值守人员访问公开站点核验原文。"
+	minimizedEvidenceSource  = "public-search/public-disaster-information"
+)
+
+func buildRequest(model string, maxTokens int, input report.NarrativeInput) (chatRequest, error) {
 	evidence := make([]promptEvidence, 0, len(input.Evidence))
-	for _, item := range input.Evidence {
-		evidence = append(evidence, promptEvidence{
-			Title: item.Title, URL: item.URL, Summary: item.Summary,
-			Source: item.Source.Provider + "/" + item.Source.Dataset,
-		})
+	for index, item := range input.Evidence {
+		value, err := minimizedPromptEvidence(item, index)
+		if err != nil {
+			return chatRequest{}, err
+		}
+		evidence = append(evidence, value)
 	}
-	payload, _ := json.Marshal(promptInput{
+	payload, err := json.Marshal(promptInput{
 		AnalysisJSON: append(json.RawMessage(nil), input.AnalysisJSON...),
 		Evidence:     evidence, ImmutableFields: append([]string(nil), input.ImmutableFields...),
 	})
+	if err != nil {
+		return chatRequest{}, fmt.Errorf("编码最小化 LLM 输入: %w", err)
+	}
 	return chatRequest{
 		Model: model,
 		Messages: []chatMessage{
@@ -95,7 +109,31 @@ func buildRequest(model string, maxTokens int, input report.NarrativeInput) chat
 		},
 		Temperature: 0.1, MaxTokens: maxTokens,
 		ResponseFormat: responseFormat{Type: "json_object"},
+	}, nil
+}
+
+func minimizedPromptEvidence(item report.Evidence, index int) (promptEvidence, error) {
+	if err := item.Validate(); err != nil {
+		return promptEvidence{}, fmt.Errorf("%w: LLM 证据来源无效", err)
 	}
+	auditReference := item.Source.SourceRevision
+	if !validAuditReference(auditReference) {
+		return promptEvidence{}, fmt.Errorf("%w: LLM 证据缺少不可逆审计引用", domain.ErrInvalidInput)
+	}
+	return promptEvidence{
+		Reference: fmt.Sprintf("public-evidence-%03d", index+1), AuditReference: auditReference,
+		Title:   minimizedEvidenceTitle,
+		Summary: minimizedEvidenceSummary, Source: minimizedEvidenceSource,
+	}, nil
+}
+
+func validAuditReference(value string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(value, prefix) || len(value) != len(prefix)+64 {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, prefix))
+	return err == nil
 }
 
 func decodeResponse(body []byte) (string, string, string, error) {
@@ -115,7 +153,11 @@ func decodeResponse(body []byte) (string, string, string, error) {
 	if content == "" {
 		return "", "", "", fmt.Errorf("%w: LLM 响应内容为空", domain.ErrProviderUnavailable)
 	}
-	return content, strings.TrimSpace(response.Model), response.Choices[0].FinishReason, nil
+	model := strings.TrimSpace(response.Model)
+	if len([]rune(model)) > maxResponseModelRunes {
+		return "", "", "", fmt.Errorf("%w: LLM 响应模型名过长", domain.ErrProviderUnavailable)
+	}
+	return content, model, response.Choices[0].FinishReason, nil
 }
 
 func decodeNarrative(content string) (narrativePayload, error) {

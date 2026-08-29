@@ -21,6 +21,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/application/collection"
 	hazardapp "github.com/Requim/AI-GDM/internal/application/hazard"
 	spatialapp "github.com/Requim/AI-GDM/internal/application/spatialanalysis"
+	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/domain/risk"
 	"github.com/Requim/AI-GDM/internal/domain/spatialanalysis"
@@ -36,6 +37,7 @@ type hazardRuntime struct {
 	latestRisk      ports.LatestRiskReader
 	riskDetail      ports.RiskDetailReader
 	spatialAnalysis ports.SpatialAnalysisReader
+	hazardAuthority ports.HazardAuthorityReader
 	database        *pgxpool.Pool
 }
 
@@ -49,11 +51,15 @@ func newHazardRuntime(cfg config.Config, dependencies *resources.Resources,
 		return nil, nil
 	}
 	repository := postgres.NewHazardRepository(dependencies.Database)
+	exposures, err := newExposureCollector(dependencies, logger, repository)
+	if err != nil {
+		return nil, err
+	}
 	collector, err := newLHASACollector(cfg, dependencies, logger, repository)
 	if err != nil {
 		return nil, err
 	}
-	provider, err := newLandslideProvider(dependencies, logger, repository, collector)
+	provider, err := newLandslideProvider(dependencies, logger, repository, collector, exposures)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +73,7 @@ func newHazardRuntime(cfg config.Config, dependencies *resources.Resources,
 	}
 	return &hazardRuntime{service: service, landslide: provider, latestRisk: repository,
 		riskDetail: repository, spatialAnalysis: spatialpg.New(dependencies.Database),
-		database: dependencies.Database}, nil
+		hazardAuthority: repository, database: dependencies.Database}, nil
 }
 
 func newLHASACollector(cfg config.Config, dependencies *resources.Resources,
@@ -140,7 +146,14 @@ func newLHASADownloader(cfg config.Config, logger *slog.Logger, client *httpclie
 
 func newLandslideProvider(dependencies *resources.Resources, logger *slog.Logger,
 	repository *postgres.HazardRepository, collector *collection.LHASACollector,
+	exposures exposureCollector,
 ) (*hazardapp.HazardProvider, error) {
+	engine, err := risk.NewEngine(risk.ModelCapability{
+		HazardType: hazard.TypeLandslide, ModelName: gdal.ModelName, Dataset: lhasa.DatasetName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("创建滑坡风险引擎: %w", err)
+	}
 	spatialExecutor := spatialpg.New(dependencies.Database)
 	spatialService, err := spatialapp.New(spatialExecutor, utcClock{})
 	if err != nil {
@@ -148,13 +161,8 @@ func newLandslideProvider(dependencies *resources.Resources, logger *slog.Logger
 	}
 	refresher := &spatialRefresh{
 		upstream: hazardapp.RefreshFunc(collector.Collect), analyzer: spatialService,
-		zones: repository, logger: logger,
-	}
-	engine, err := risk.NewEngine(risk.ModelCapability{
-		HazardType: hazard.TypeLandslide, ModelName: gdal.ModelName, Dataset: lhasa.DatasetName,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("创建滑坡风险引擎: %w", err)
+		analyses: spatialExecutor, zones: repository, evaluator: engine, assessments: repository, authority: repository,
+		exposureState: repository, exposures: exposures, clock: utcClock{}, logger: logger,
 	}
 	provider, err := hazardapp.NewHazardProvider(hazard.TypeLandslide, refresher, engine)
 	if err != nil {
@@ -168,10 +176,17 @@ type spatialAnalyzer interface {
 }
 
 type spatialRefresh struct {
-	upstream ports.HazardRefresher
-	analyzer spatialAnalyzer
-	zones    ports.RiskZoneReader
-	logger   *slog.Logger
+	upstream      ports.HazardRefresher
+	analyzer      spatialAnalyzer
+	analyses      ports.SpatialAnalysisReader
+	zones         ports.RiskZoneReader
+	evaluator     ports.RiskEvaluator
+	assessments   ports.RiskAssessmentWriter
+	authority     ports.RiskAuthorityReuser
+	exposureState exposureProjectionChecker
+	exposures     exposureCollector
+	clock         ports.Clock
+	logger        *slog.Logger
 }
 
 func (r *spatialRefresh) Refresh(ctx context.Context) (
@@ -181,7 +196,26 @@ func (r *spatialRefresh) Refresh(ctx context.Context) (
 	if err != nil {
 		return hazard.Snapshot{}, nil, err
 	}
-	if _, err = r.analyzer.Analyze(ctx, snapshot.ID); err != nil {
+	reused, err := r.authority.ReuseRiskAuthority(ctx, snapshot, zones)
+	if err != nil {
+		return hazard.Snapshot{}, nil, fmt.Errorf("复用风险快照 %s 权威评估: %w", snapshot.ID, err)
+	}
+	if reused {
+		calculated, readErr := r.zones.ZonesBySnapshot(ctx, snapshot.ID)
+		if readErr != nil {
+			return hazard.Snapshot{}, nil, fmt.Errorf("读取风险快照 %s 已固化空间结果: %w", snapshot.ID, readErr)
+		}
+		analysis, analysisErr := r.latestSpatialAnalysis(ctx, snapshot.ID)
+		if analysisErr != nil {
+			return hazard.Snapshot{}, nil, analysisErr
+		}
+		if err = r.ensureExposure(ctx, snapshot.ID, analysis.ID); err != nil {
+			return hazard.Snapshot{}, nil, err
+		}
+		return snapshot, calculated, nil
+	}
+	analysis, err := r.analyzer.Analyze(ctx, snapshot.ID)
+	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return hazard.Snapshot{}, nil, err
 		}
@@ -195,7 +229,77 @@ func (r *spatialRefresh) Refresh(ctx context.Context) (
 			"snapshot_id", snapshot.ID, "error", err)
 		return spatialUnavailable(snapshot, zones), zones, nil
 	}
+	if err = r.persistAssessment(ctx, snapshot, calculated); err != nil {
+		return hazard.Snapshot{}, nil, err
+	}
+	if err = r.ensureExposure(ctx, snapshot.ID, analysis.ID); err != nil {
+		return hazard.Snapshot{}, nil, err
+	}
 	return snapshot, calculated, nil
+}
+
+func (r *spatialRefresh) latestSpatialAnalysis(ctx context.Context,
+	snapshotID string,
+) (spatialanalysis.Analysis, error) {
+	if r.analyses == nil {
+		return spatialanalysis.Analysis{}, fmt.Errorf("%w: 空间分析读取依赖为空", domain.ErrInvalidInput)
+	}
+	value, err := r.analyses.LatestBySnapshot(ctx, snapshotID)
+	if err != nil {
+		return spatialanalysis.Analysis{}, fmt.Errorf("读取快照 %s 最新空间分析: %w", snapshotID, err)
+	}
+	if value.ID == "" || value.SnapshotID != snapshotID {
+		return spatialanalysis.Analysis{}, fmt.Errorf("%w: 最新空间分析身份无效", domain.ErrInsufficientData)
+	}
+	return value, nil
+}
+
+func (r *spatialRefresh) ensureExposure(ctx context.Context, snapshotID, analysisID string) error {
+	if r.exposureState == nil || r.exposures == nil || r.clock == nil || r.logger == nil {
+		return fmt.Errorf("%w: 真实暴露投影刷新依赖为空", domain.ErrInvalidInput)
+	}
+	now := r.clock.Now()
+	exists, err := r.exposureState.HasCurrentExposureProjection(ctx, snapshotID, analysisID, now)
+	if err != nil {
+		return r.handleExposureFailure(ctx, snapshotID, "检查当前暴露投影", err)
+	}
+	if exists {
+		return nil
+	}
+	if _, err = r.exposures.Collect(ctx, snapshotID, analysisID); err != nil {
+		return r.handleExposureFailure(ctx, snapshotID, "采集真实暴露投影", err)
+	}
+	return nil
+}
+
+func (r *spatialRefresh) handleExposureFailure(ctx context.Context, snapshotID, operation string,
+	err error,
+) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	r.logger.ErrorContext(ctx, operation+"失败，损失评估保持不可用",
+		"snapshot_id", snapshotID, "error", err)
+	return nil
+}
+
+func (r *spatialRefresh) persistAssessment(ctx context.Context, snapshot hazard.Snapshot,
+	zones []hazard.RiskZone,
+) error {
+	if r.evaluator == nil || r.assessments == nil || r.clock == nil {
+		return fmt.Errorf("%w: 风险评估持久化依赖为空", domain.ErrInvalidInput)
+	}
+	evaluatedAt := r.clock.Now()
+	assessment, err := r.evaluator.Evaluate(risk.Input{
+		Snapshot: snapshot, Zones: zones, EvaluatedAt: evaluatedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("生成风险快照 %s 固化评估: %w", snapshot.ID, err)
+	}
+	if err = r.assessments.SaveRiskAssessment(ctx, snapshot, assessment); err != nil {
+		return fmt.Errorf("固化风险快照 %s 评估: %w", snapshot.ID, err)
+	}
+	return nil
 }
 
 func spatialUnavailable(snapshot hazard.Snapshot, _ []hazard.RiskZone) hazard.Snapshot {

@@ -55,11 +55,20 @@ func run() error {
 		return fmt.Errorf("初始化数据刷新: %w", err)
 	}
 	server := httpserver.New(cfg.HTTPAddr, cfg.ShutdownTimeout, logger)
-	aiHandler, err := newAIHandler(cfg, dependencies, logger)
+	survival, err := newSurvivalRuntime(logger)
+	if err != nil {
+		return fmt.Errorf("初始化生还历史回放: %w", err)
+	}
+	authorityResolver, err := newAuthorityResolver(hazards, survival, dependencies)
+	if err != nil {
+		return fmt.Errorf("初始化权威分析解析器: %w", err)
+	}
+	aiHandler, err := newAIHandler(cfg, dependencies, authorityResolver, logger)
 	if err != nil {
 		return fmt.Errorf("初始化智能研判: %w", err)
 	}
-	if err = mountApplicationAPI(server, hazards, cfg, dependencies, logger, aiHandler); err != nil {
+	if err = mountApplicationAPI(server, hazards, cfg, dependencies, logger,
+		aiHandler, survival.handler, authorityResolver); err != nil {
 		return err
 	}
 	if err = mountWebConsole(server, hazards, cfg, dependencies, logger); err != nil {

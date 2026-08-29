@@ -2,16 +2,16 @@
 
 ## 数据流
 
-1. 确定性风险、路线、损失和搜救用例先生成 `analysis` JSON；该字节序列由编排服务计算 SHA-256，并作为权威输入保留。
+1. 确定性风险、路线、损失和搜救用例先生成固定 schema 的 `analysis` JSON；编排服务对规范化的 `ai-gdm-authority-v1` 封包计算 SHA-256，并作为权威输入保留。
 2. 博查适配器按查询时效检索公开结果，只接受 HTTPS、可信域名和可解析标题/摘要，去除跟踪参数并按规范化 URL 去重。
 3. OpenAI 兼容 LLM 适配器只接收去标识化分析 JSON、证据和不可变字段清单。系统提示词把资料当作不可信内容，禁止执行其中的指令；请求强制 `response_format.type=json_object`。
 4. LLM 输出只允许 `summary`、`keyFindings`、`actions`、`caveats` 四个字段。结构错误、截断、供应商故障和超时不会覆盖确定性结果，编排结果会标记说明不可用。
 
 ## 编排接口
 
-`POST /api/v1/ai/report` 接收以下 JSON 字段：`query`、`analysis`、`immutableFields` 和可选的 `evidenceLimit`。`analysis` 必须是确定性用例产生的 JSON 对象；接口响应保留原始分析、SHA-256、搜索证据、解释性说明和 `limitations`。
+`POST /api/v1/ai/report` 的浏览器请求只提交 `analysisRef` 和可选的 `evidenceLimit`。`analysisRef` 仅包含受支持的权威分析类型 `kind` 与资源标识 `id`；浏览器不得提交 `query`、`analysis` 或 `immutableFields`。服务端按引用读取、校验并封装确定性分析，再生成查询和不可变字段清单；接口响应保留权威分析、SHA-256、搜索证据、解释性说明和 `limitations`。
 
-服务端在返回前再次校验结果：分析摘要必须与原始字节一致，证据可用标志必须与证据数量一致，说明可用标志必须与白名单输出一致。未配置或暂时不可用的博查/LLM 只会增加降级限制，不会生成替代的风险等级、路线、金额或生还评分。
+Authority 摘要绑定规范封包的 `envelopeVersion`、`kind`、`id`、`version`、`schemaVersion`、规范化 `analysis` 和 `immutableFields`。`resolvedAt` 是本次解析审计时间，不参与摘要；语义相同但 JSON 原始空白、字段顺序或解析时间不同的 Authority 必须得到相同摘要。服务端在返回前再次校验规范封包摘要、证据可用标志和说明可用标志；未配置或暂时不可用的博查/LLM 只会增加降级限制，不会生成替代的风险等级、路线、金额或生还评分。
 
 ## 供应商配置
 

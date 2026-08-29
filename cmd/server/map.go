@@ -65,6 +65,12 @@ func newMapProvider(cfg config.Config, dependencies *resources.Resources,
 func newMapAPIHandler(cfg config.Config, dependencies *resources.Resources,
 	logger *slog.Logger,
 ) (http.Handler, error) {
+	return newMapAPIHandlerWithAuthority(cfg, dependencies, nil, logger)
+}
+
+func newMapAPIHandlerWithAuthority(cfg config.Config, dependencies *resources.Resources,
+	authority mapapi.RouteAuthorityRecorder, logger *slog.Logger,
+) (http.Handler, error) {
 	provider, err := newMapProvider(cfg, dependencies, logger)
 	if err != nil {
 		return nil, fmt.Errorf("初始化高德地图: %w", err)
@@ -84,7 +90,9 @@ func newMapAPIHandler(cfg config.Config, dependencies *resources.Resources,
 	if err != nil {
 		return nil, fmt.Errorf("创建路线安全评估用例: %w", err)
 	}
-	handler, err := mapapi.NewWithTransitAndSafety(facilities, provider, provider, routeSafety, logger)
+	handler, err := mapapi.NewWithTransitSafetyAndAuthority(
+		facilities, provider, provider, routeSafety, authority, logger,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("创建地图 HTTP 适配器: %w", err)
 	}

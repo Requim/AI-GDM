@@ -6,6 +6,7 @@ import (
 
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/domain/loss"
+	"github.com/Requim/AI-GDM/internal/domain/risk"
 	"github.com/Requim/AI-GDM/internal/domain/spatial"
 	"github.com/Requim/AI-GDM/internal/domain/survival"
 )
@@ -57,6 +58,12 @@ type HazardAnalysisReader interface {
 	// LatestAnalysis 返回指定灾种、模型和处理版本的最新完整分析。
 	LatestAnalysis(ctx context.Context, selector hazard.AnalysisSelector) (
 		hazard.Snapshot, []hazard.RiskZone, error)
+}
+
+// RiskAssessmentWriter 固化与风险快照绑定的确定性研判。
+type RiskAssessmentWriter interface {
+	// SaveRiskAssessment 首次写入指定快照和规则版本的不可变研判。
+	SaveRiskAssessment(ctx context.Context, snapshot hazard.Snapshot, assessment risk.Assessment) error
 }
 
 // WeatherSnapshotWriter 持久化完整监测点天气批次。

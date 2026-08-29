@@ -9,6 +9,10 @@
 bin/
 dist/
 coverage/
+**/node_modules/
+**/test-results/
+**/playwright-report/
+**/blob-report/
 *.cover
 *.out
 *.exe

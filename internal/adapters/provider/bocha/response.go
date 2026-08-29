@@ -51,6 +51,16 @@ type webPages struct {
 	Value []searchItem `json:"value"`
 }
 
+const (
+	maxItemURLRunes       = 2048
+	maxItemTitleRunes     = 512
+	maxItemSummaryRunes   = 4096
+	maxItemSiteRunes      = 256
+	maxItemTimestampRunes = 64
+	maxItemMetadataBytes  = 32 << 10
+	maxResponseItems      = 200
+)
+
 func decodeResponse(body []byte) ([]searchItem, string, error) {
 	var response searchResponse
 	decoder := json.NewDecoder(bytes.NewReader(body))
@@ -74,7 +84,30 @@ func decodeResponse(body []byte) ([]searchItem, string, error) {
 	if len(items) == 0 {
 		items = response.Value
 	}
+	if len(items) > maxResponseItems {
+		return nil, response.LogID, fmt.Errorf("%w: 博查搜索结果条目超过上限", domain.ErrProviderUnavailable)
+	}
 	return items, response.LogID, nil
+}
+
+func validItemMetadata(value searchItem) bool {
+	fields := []struct {
+		value string
+		max   int
+	}{
+		{value.URL, maxItemURLRunes}, {value.Name, maxItemTitleRunes}, {value.Title, maxItemTitleRunes},
+		{value.Snippet, maxItemSummaryRunes}, {value.Summary, maxItemSummaryRunes},
+		{value.Description, maxItemSummaryRunes}, {value.SiteName, maxItemSiteRunes},
+		{value.DatePublished, maxItemTimestampRunes}, {value.DateLastCrawled, maxItemTimestampRunes},
+		{value.PublishedAt, maxItemTimestampRunes}, {value.CrawledAt, maxItemTimestampRunes},
+	}
+	for _, field := range fields {
+		if field.value != "" && (strings.TrimSpace(field.value) == "" || len([]rune(field.value)) > field.max) {
+			return false
+		}
+	}
+	payload, err := json.Marshal(value)
+	return err == nil && len(payload) <= maxItemMetadataBytes
 }
 
 func canonicalHTTPS(raw string) (string, string, bool) {

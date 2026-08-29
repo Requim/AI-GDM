@@ -29,6 +29,7 @@ const (
 	maxResults     = 50
 	maxQueryRunes  = 512
 	maxBodyBytes   = 2 << 20
+	itemRevisionV1 = "bocha-search-item-v1"
 )
 
 var defaultTrustedDomains = []string{
@@ -119,7 +120,8 @@ func (p *Provider) Search(ctx context.Context, query string, limit int) ([]repor
 		Headers: http.Header{
 			"Accept": {"application/json"}, "Authorization": {"Bearer " + p.apiKey},
 			"Content-Type": {"application/json"},
-		}, MaxBodyBytes: maxBodyBytes,
+		}, MaxBodyBytes: maxBodyBytes, MaxAttempts: 1,
+		RedirectPolicy: httpclient.RedirectDeny,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("请求博查搜索: %w", err)
@@ -172,8 +174,12 @@ func (p *Provider) toEvidence(items []searchItem, response httpclient.Response,
 func (p *Provider) itemEvidence(item searchItem, now time.Time, sourceURI string,
 	response httpclient.Response, responseSHA string,
 ) (report.Evidence, string, bool) {
+	if !validItemMetadata(item) {
+		return report.Evidence{}, "", false
+	}
 	link, key, ok := canonicalHTTPS(item.URL)
-	if !ok || !p.isTrusted(link) {
+	trustedDomain, trusted := p.trustedDomain(link)
+	if !ok || !trusted {
 		return report.Evidence{}, "", false
 	}
 	title := strings.TrimSpace(firstNonEmpty(item.Name, item.Title))
@@ -187,19 +193,40 @@ func (p *Provider) itemEvidence(item searchItem, now time.Time, sourceURI string
 		return report.Evidence{}, "", false
 	}
 	fetched := response.FetchedAt.UTC()
-	return report.Evidence{
+	evidence := report.Evidence{
 		Title: title, URL: link, Summary: summary, SiteName: strings.TrimSpace(item.SiteName),
 		CrawledAt: crawled,
 		Source: provenance.Provenance{
 			Provider: ProviderName, Dataset: DatasetName, DatasetVersion: "v1",
-			SourceRevision: responseSHA, SourceURI: sourceURI,
+			SourceRevision: itemRevision(link, title, summary, published), SourceURI: sourceURI,
 			Citation: "博查开放平台 Web Search API", License: "遵循供应商服务条款",
 			DataKind: provenance.DataKindObservation, PublishedAt: published,
 			FetchedAt: fetched, ValidFrom: fetched, ValidTo: fetched.Add(p.maxAge),
-			TemporalResolution: "按需搜索", ProviderRequestID: response.RequestID,
-			QualityFlags: []string{"trusted_domain", "deduplicated", "freshness_filtered"},
+			TemporalResolution: "按需搜索", SHA256: responseSHA, ProviderRequestID: response.RequestID,
+			QualityFlags: []string{"trusted_domain", report.TrustedDomainQualityFlagPrefix + trustedDomain,
+				"deduplicated", "freshness_filtered"},
 		},
-	}, key, true
+	}
+	if evidence.Validate() != nil {
+		return report.Evidence{}, "", false
+	}
+	return evidence, key, true
+}
+
+func itemRevision(link, title, summary string, published time.Time) string {
+	identity := strings.Join([]string{
+		itemRevisionV1, link, utcItemTime(published),
+		strings.Join(strings.Fields(title), " "), strings.Join(strings.Fields(summary), " "),
+	}, "\n")
+	digest := sha256.Sum256([]byte(identity))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func utcItemTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func validateEndpoint(raw string) (string, error) {
@@ -237,18 +264,19 @@ func normalizeTrustedDomains(values []string) ([]string, error) {
 	return result, nil
 }
 
-func (p *Provider) isTrusted(rawURL string) bool {
+func (p *Provider) trustedDomain(rawURL string) (string, bool) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return false
+		return "", false
 	}
 	host := strings.ToLower(parsed.Hostname())
+	matched := ""
 	for _, domainName := range p.trustedDomains {
-		if host == domainName || strings.HasSuffix(host, "."+domainName) {
-			return true
+		if (host == domainName || strings.HasSuffix(host, "."+domainName)) && len(domainName) > len(matched) {
+			matched = domainName
 		}
 	}
-	return false
+	return matched, matched != ""
 }
 
 func freshness(maxAge time.Duration) string {

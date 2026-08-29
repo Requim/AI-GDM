@@ -1,7 +1,9 @@
 package survival
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +28,34 @@ func TestHistoricalEventCatalogRequiresHistoricalProvenance(t *testing.T) {
 	event.Source.DataKind = provenance.DataKindObservation
 	if !errors.Is(event.Validate(), domain.ErrInvalidInput) {
 		t.Fatal("历史事件未拒绝非 historical 来源")
+	}
+}
+
+func TestHistoricalEventDistinguishesUnknownFromReportedZero(t *testing.T) {
+	zero := 0
+	event := HistoricalEvent{
+		ID: "case-counts", DatasetEventID: "catalog:case-counts",
+		EventDate: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		Category:  "landslide", Country: "United States", LocationAccuracy: "approximate",
+		Location: spatial.Point{Longitude: -120, Latitude: 35}, Fatalities: &zero,
+		Source: provenance.Provenance{Provider: "USGS", Dataset: "history",
+			SourceURI: "https://example.test/case-counts", DataKind: provenance.DataKindHistorical,
+			FetchedAt: time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)},
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(payload); !strings.Contains(text, `"fatalities":0`) || !strings.Contains(text, `"injuries":null`) {
+		t.Fatalf("伤亡已报告和未知 wire 语义未区分: %s", text)
+	}
+	negative := -1
+	event.Injuries = &negative
+	if !errors.Is(event.Validate(), domain.ErrInvalidInput) {
+		t.Fatal("历史事件未拒绝负数伤亡")
 	}
 }
 

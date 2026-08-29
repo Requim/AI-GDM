@@ -2,8 +2,8 @@ package loss
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -14,224 +14,562 @@ import (
 	hazarddomain "github.com/Requim/AI-GDM/internal/domain/hazard"
 	lossdomain "github.com/Requim/AI-GDM/internal/domain/loss"
 	"github.com/Requim/AI-GDM/internal/domain/provenance"
-	spatialdomain "github.com/Requim/AI-GDM/internal/domain/spatial"
-	analysisdomain "github.com/Requim/AI-GDM/internal/domain/spatialanalysis"
-	"github.com/Requim/AI-GDM/internal/ports"
+	spatialdomain "github.com/Requim/AI-GDM/internal/domain/spatialanalysis"
 )
-
-var _ ports.Clock = fixedClock{}
 
 type fixedClock struct{ now time.Time }
 
 func (c fixedClock) Now() time.Time { return c.now }
 
-type riskReaderStub struct {
-	snapshot hazarddomain.Snapshot
-	zones    []hazarddomain.RiskZone
-	err      error
+type inputReaderStub struct {
+	value  LossInputProjection
+	err    error
+	limits *RiskProjectionLimits
+	readAt *time.Time
 }
 
-func (r riskReaderStub) RiskDetail(context.Context, string) (hazarddomain.Snapshot, []hazarddomain.RiskZone, error) {
-	return r.snapshot, r.zones, r.err
-}
-
-type analysisReaderStub struct {
-	value analysisdomain.Analysis
-	err   error
-}
-
-func (r analysisReaderStub) Get(context.Context, string) (analysisdomain.Analysis, error) {
-	return r.value, r.err
-}
-
-func (r analysisReaderStub) LatestBySnapshot(context.Context, string) (analysisdomain.Analysis, error) {
+func (r inputReaderStub) ReadLossInput(_ context.Context, _ string, now time.Time,
+	limits RiskProjectionLimits,
+) (LossInputProjection, error) {
+	if r.limits != nil {
+		*r.limits = limits
+	}
+	if r.readAt != nil {
+		*r.readAt = now
+	}
 	return r.value, r.err
 }
 
 type baselineReaderStub struct {
-	costs           []lossdomain.CostBaseline
-	vulnerabilities []lossdomain.Vulnerability
-	err             error
+	set     lossdomain.BaselineSet
+	err     error
+	queries []BaselineQuery
 }
 
-func (r baselineReaderStub) CostBaselines(context.Context, string) ([]lossdomain.CostBaseline, error) {
-	if r.err != nil {
-		return nil, r.err
-	}
-	return r.costs, nil
+func (r *baselineReaderStub) BaselineSet(_ context.Context,
+	query BaselineQuery,
+) (lossdomain.BaselineSet, error) {
+	r.queries = append(r.queries, query)
+	return r.set, r.err
 }
 
-func (r baselineReaderStub) Vulnerabilities(context.Context, string) ([]lossdomain.Vulnerability, error) {
-	if r.err != nil {
-		return nil, r.err
-	}
-	return r.vulnerabilities, nil
-}
-
-func (r baselineReaderStub) ExposureBaselines(context.Context, string, lossdomain.ExposureKind) ([]lossdomain.ExposureBaseline, error) {
-	if r.err != nil {
-		return nil, r.err
-	}
-	return nil, domain.ErrNotFound
-}
-
-func TestServiceEstimateCalculatesScenariosAndIsDeterministic(t *testing.T) {
-	now := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
-	snapshot, zones := lossRiskFixture(now, hazarddomain.SnapshotAvailable)
-	analysis := lossAnalysisFixture(t, snapshot.ID)
-	service, err := NewService(riskReaderStub{snapshot: snapshot, zones: zones}, analysisReaderStub{value: analysis}, lossBaselineReaderStub(), fixedClock{now: now})
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := EstimateInput{SnapshotID: snapshot.ID, RegionCode: "CN", HazardType: hazarddomain.TypeLandslide, IntensityBand: "high", Exposures: []lossdomain.Exposure{lossExposure(zones[0].ID, lossdomain.AssetBuilding, 100, 1, now)}}
-	first, err := service.Estimate(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := service.Estimate(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestServiceSupportsGloballyDeduplicatedMultiZoneInputs(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	projection := validLossProjection(now)
+	first := estimateFixture(t, now, projection, approvedBaselineSet(now, "v2026"))
+	second := estimateFixture(t, now.Add(time.Hour), projection, approvedBaselineSet(now, "v2026"))
 	if !reflect.DeepEqual(first, second) {
-		t.Fatalf("重复计算结果不稳定: first=%+v second=%+v", first, second)
+		t.Fatalf("跨时间重试结果不稳定: first=%+v second=%+v", first, second)
 	}
-	if first.ConditionalLowCents != 20000 || first.ConditionalMidCents != 240000 || first.ConditionalHighCents != 900000 {
-		t.Fatalf("情景金额 = %d/%d/%d，结果不符合公式", first.ConditionalLowCents, first.ConditionalMidCents, first.ConditionalHighCents)
+	if first.AffectedPopulation != 70 || first.AffectedRoadMeters != 15 || first.AffectedFacilities != 2 {
+		t.Fatalf("全局 feature 去重统计异常: %+v", first)
 	}
-	if first.FormulaVersion != lossdomain.FormulaVersion || first.Status != lossdomain.AssessmentAvailable || first.ConfidenceBand != "low" {
-		t.Fatalf("评估元数据不完整: %+v", first)
+	if first.ConditionalLowCents != 3500 || first.ConditionalMidCents != 7000 || first.ConditionalHighCents != 10500 {
+		t.Fatalf("多区去重金额 = %d/%d/%d", first.ConditionalLowCents, first.ConditionalMidCents, first.ConditionalHighCents)
 	}
-	if len(first.InputReferences) < 3 || first.ImpactAreaSquareM != 100 {
-		t.Fatalf("输入依据或影响面积异常: %+v", first)
+	assertSelectedBaselineLevels(t, first)
+}
+
+func TestServiceRejectsDuplicateGlobalFeatureBeforeBaseline(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	projection := validLossProjection(now)
+	projection.Analysis.Features[1].FeatureID = projection.Analysis.Features[0].FeatureID
+	baselines := &baselineReaderStub{set: approvedBaselineSet(now, "v2026")}
+	assertEstimateError(t, now, projection, baselines, domain.ErrInsufficientData)
+	if len(baselines.queries) != 0 {
+		t.Fatalf("featureId 重复时不应读取基线: %v", baselines.queries)
 	}
 }
 
-func TestServiceEstimateMatchesVulnerabilityPerAsset(t *testing.T) {
-	now := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
-	snapshot, zones := lossRiskFixture(now, hazarddomain.SnapshotAvailable)
-	analysis := lossAnalysisFixture(t, snapshot.ID)
-	base := lossBaselineReaderStub()
-	base.costs = append(base.costs, costBaseline(lossdomain.AssetRoad, 5000, 8000, 12000, now))
-	base.vulnerabilities = append(base.vulnerabilities, vulnerability(lossdomain.AssetRoad, now))
-	service, err := NewService(riskReaderStub{snapshot: snapshot, zones: zones}, analysisReaderStub{value: analysis}, base, fixedClock{now: now})
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := EstimateInput{SnapshotID: snapshot.ID, RegionCode: "CN", HazardType: hazarddomain.TypeLandslide, IntensityBand: "high", Exposures: []lossdomain.Exposure{
-		lossExposure(zones[0].ID, lossdomain.AssetBuilding, 100, 1, now), lossExposure(zones[0].ID, lossdomain.AssetRoad, 50, 0.5, now),
-	}}
-	assessment, err := service.Estimate(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if assessment.ConditionalLowCents != 30000 || assessment.ConditionalMidCents != 336000 || assessment.ConditionalHighCents != 1260000 {
-		t.Fatalf("多资产情景金额 = %d/%d/%d", assessment.ConditionalLowCents, assessment.ConditionalMidCents, assessment.ConditionalHighCents)
-	}
-	if len(assessment.IncludedAssets) != 2 {
-		t.Fatalf("IncludedAssets = %+v", assessment.IncludedAssets)
+func TestServiceUsesBoundedAtomicProjectionReader(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	projection, limits, readAt := validLossProjection(now), RiskProjectionLimits{}, time.Time{}
+	projection.Stats.ZoneCount = maxLossZones + 1
+	baselines := &baselineReaderStub{set: approvedBaselineSet(now, "v2026")}
+	service := mustService(t, inputReaderStub{value: projection, limits: &limits, readAt: &readAt}, baselines, now)
+	_, err := service.Estimate(context.Background(), EstimateInput{SnapshotID: projection.Snapshot.ID})
+	if !errors.Is(err, domain.ErrInsufficientData) || limits != lossRiskProjectionLimits() || readAt != now || len(baselines.queries) != 0 {
+		t.Fatalf("有界原子读取未生效: now=%s limits=%+v baselines=%v error=%v", readAt, limits, baselines.queries, err)
 	}
 }
 
-func TestServiceEstimateRejectsMissingInputsWithErrorChain(t *testing.T) {
-	now := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
-	snapshot, zones := lossRiskFixture(now, hazarddomain.SnapshotAvailable)
-	analysis := lossAnalysisFixture(t, snapshot.ID)
-	service, err := NewService(riskReaderStub{snapshot: snapshot, zones: zones}, analysisReaderStub{value: analysis}, baselineReaderStub{err: domain.ErrNotFound}, fixedClock{now: now})
-	if err != nil {
-		t.Fatal(err)
+func TestServiceRejectsProjectionBudgetsBeforeBaseline(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	limits := lossRiskProjectionLimits()
+	cases := []func(*RiskProjectionStats){
+		func(value *RiskProjectionStats) { value.MaxGeometryPoints = limits.MaxGeometryPointsPerZone + 1 },
+		func(value *RiskProjectionStats) { value.MaxGeometryBytes = limits.MaxGeometryBytesPerZone + 1 },
+		func(value *RiskProjectionStats) { value.TotalGeometryPoints = limits.MaxTotalGeometryPoints + 1 },
+		func(value *RiskProjectionStats) { value.TotalGeometryBytes = limits.MaxTotalGeometryBytes + 1 },
+		func(value *RiskProjectionStats) { value.SpatialJSONBytes = limits.MaxSpatialJSONBytes + 1 },
+		func(value *RiskProjectionStats) { value.FeatureCount = limits.MaxFeatures + 1 },
+		func(value *RiskProjectionStats) { value.ProjectionBytes = limits.MaxProjectionBytes + 1 },
+		func(value *RiskProjectionStats) {
+			value.ProjectionLimitationCount = limits.MaxProjectionLimitations + 1
+		},
+		func(value *RiskProjectionStats) {
+			value.MaxProjectionLimitationBytes = limits.MaxProjectionLimitationBytes + 1
+		},
+		func(value *RiskProjectionStats) {
+			value.ProjectionLimitationBytes = limits.MaxProjectionLimitationTotalBytes + 1
+		},
 	}
-	input := EstimateInput{SnapshotID: snapshot.ID, RegionCode: "CN", HazardType: hazarddomain.TypeLandslide, IntensityBand: "high", Exposures: []lossdomain.Exposure{lossExposure(zones[0].ID, lossdomain.AssetBuilding, 100, 1, now)}}
-	_, err = service.Estimate(context.Background(), input)
-	if !errors.Is(err, domain.ErrInsufficientData) || !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("错误链 = %v", err)
-	}
-}
-
-func TestServiceEstimateRejectsUnknownZoneAndInvalidNumbers(t *testing.T) {
-	now := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
-	snapshot, zones := lossRiskFixture(now, hazarddomain.SnapshotAvailable)
-	analysis := lossAnalysisFixture(t, snapshot.ID)
-	service, err := NewService(riskReaderStub{snapshot: snapshot, zones: zones}, analysisReaderStub{value: analysis}, lossBaselineReaderStub(), fixedClock{now: now})
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := EstimateInput{SnapshotID: snapshot.ID, RegionCode: "CN", HazardType: hazarddomain.TypeLandslide, IntensityBand: "high", Exposures: []lossdomain.Exposure{lossExposure("missing-zone", lossdomain.AssetBuilding, 100, 1, now)}}
-	_, err = service.Estimate(context.Background(), input)
-	if !errors.Is(err, domain.ErrInsufficientData) {
-		t.Fatalf("未知风险区错误 = %v", err)
-	}
-	input.Exposures[0].Quantity = math.NaN()
-	_, err = service.Estimate(context.Background(), input)
-	if !errors.Is(err, domain.ErrInvalidInput) {
-		t.Fatalf("非法暴露数值错误 = %v", err)
-	}
-}
-
-func TestServiceEstimateMarksStaleSnapshotInConfidence(t *testing.T) {
-	now := time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC)
-	snapshot, zones := lossRiskFixture(now, hazarddomain.SnapshotStale)
-	analysis := lossAnalysisFixture(t, snapshot.ID)
-	service, err := NewService(riskReaderStub{snapshot: snapshot, zones: zones}, analysisReaderStub{value: analysis}, lossBaselineReaderStub(), fixedClock{now: now})
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := EstimateInput{SnapshotID: snapshot.ID, RegionCode: "CN", HazardType: hazarddomain.TypeLandslide, IntensityBand: "high", Exposures: []lossdomain.Exposure{lossExposure(zones[0].ID, lossdomain.AssetBuilding, 100, 1, now)}}
-	assessment, err := service.Estimate(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if assessment.Confidence >= 0.56 || !contains(assessment.InputReferences, "snapshot:stale") {
-		t.Fatalf("过期状态未降级: %+v", assessment)
-	}
-}
-
-func lossBaselineReaderStub() baselineReaderStub {
-	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	return baselineReaderStub{costs: []lossdomain.CostBaseline{costBaseline(lossdomain.AssetBuilding, 10000, 20000, 30000, now)}, vulnerabilities: []lossdomain.Vulnerability{vulnerability(lossdomain.AssetBuilding, now)}}
-}
-
-func costBaseline(asset lossdomain.AssetType, low, central, high int64, now time.Time) lossdomain.CostBaseline {
-	return lossdomain.CostBaseline{ID: "cost-" + string(asset), AssetType: asset, RegionCode: "CN", Unit: "平方米", LowCents: low, CentralCents: central, HighCents: high, Currency: "CNY", PriceBaseDate: now, Status: lossdomain.BaselineDemoOnly, Source: baselineSource(now)}
-}
-
-func vulnerability(asset lossdomain.AssetType, now time.Time) lossdomain.Vulnerability {
-	return lossdomain.Vulnerability{ID: "vulnerability-" + string(asset), AssetType: asset, HazardType: string(hazarddomain.TypeLandslide), IntensityBand: "high", ImpactFractionLow: 0.1, ImpactFractionMid: 0.3, ImpactFractionHigh: 0.5, DamageRatioLow: 0.2, DamageRatioMid: 0.4, DamageRatioHigh: 0.6, CalibrationRegion: "CN", Status: lossdomain.BaselineDemoOnly, Source: baselineSource(now)}
-}
-
-func lossExposure(zoneID string, asset lossdomain.AssetType, quantity, coverage float64, now time.Time) lossdomain.Exposure {
-	return lossdomain.Exposure{ZoneID: zoneID, AssetType: string(asset), Quantity: quantity, Unit: "平方米", DataYear: 2025, CoverageRatio: coverage, Source: provenance.Provenance{Provider: "baseline-provider", Dataset: "exposure", DatasetVersion: "v1", SourceRevision: "rev-1", SourceURI: "https://example.test/exposure/" + zoneID, Citation: "公开统计基线", License: "CC-BY-4.0", DataKind: provenance.DataKindBaseline, FetchedAt: now, ValidFrom: now.Add(-24 * time.Hour), ValidTo: now.Add(365 * 24 * time.Hour), TransformVersion: "exposure-v1", QualityFlags: []string{"versioned"}}}
-}
-
-func baselineSource(now time.Time) provenance.Provenance {
-	return provenance.Provenance{Provider: "baseline-provider", Dataset: "loss-baseline", DatasetVersion: "v1", SourceRevision: "rev-1", SourceURI: "https://example.test/baseline/v1", Citation: "公开统计基线", License: "CC-BY-4.0", DataKind: provenance.DataKindBaseline, FetchedAt: now, ValidFrom: now, ValidTo: now.Add(365 * 24 * time.Hour), SHA256: strings.Repeat("a", 64), TransformVersion: "baseline-v1", QualityFlags: []string{"reviewed"}}
-}
-
-func lossRiskFixture(now time.Time, status hazarddomain.SnapshotStatus) (hazarddomain.Snapshot, []hazarddomain.RiskZone) {
-	source := provenance.Provenance{Provider: "NASA", Dataset: "LHASA", DatasetVersion: "2.1.1", SourceRevision: "rev-1", SourceURI: "https://example.test/lhasa.tif", Citation: "NASA LHASA", License: "NASA Open Data", DataKind: provenance.DataKindNowcast, FetchedAt: now, ValidFrom: now.Add(-time.Hour), ValidTo: now.Add(12 * time.Hour), TransformVersion: "gdal-v1", QualityFlags: []string{"checked"}}
-	snapshot := hazarddomain.Snapshot{ID: "snapshot-loss-1", HazardType: hazarddomain.TypeLandslide, ModelName: "LHASA", ModelVersion: "2.1.1", RunAt: now.Add(-time.Minute), ValidFrom: now.Add(-time.Hour), ValidTo: now.Add(12 * time.Hour), RasterReference: "https://example.test/lhasa.tif", ProbabilitySemantics: "模型概率", Thresholds: []hazarddomain.RiskThreshold{{Level: hazarddomain.RiskLow, Minimum: 0, Maximum: 1}}, Status: status, Source: source, Limitations: []string{"仅用于损失评估测试"}}
-	geometry := json.RawMessage(`[[[116,39],[116.01,39],[116.01,39.01],[116,39]]]`)
-	zone := hazarddomain.RiskZone{ID: "zone-loss-1", SnapshotID: snapshot.ID, Geometry: spatialdomain.Geometry{Type: "Polygon", Coordinates: geometry}, Minimum: 0.5, Mean: 0.6, Maximum: 0.7, Level: hazarddomain.RiskHigh, AreaSquareM: 100, AreaCalculated: true, InputReferences: []string{snapshot.RasterReference}, Limitations: []string{"仅用于损失评估测试"}}
-	return snapshot, []hazarddomain.RiskZone{zone}
-}
-
-func lossAnalysisFixture(t *testing.T, snapshotID string) analysisdomain.Analysis {
-	t.Helper()
-	analysis, err := analysisdomain.NewAnalysis(analysisdomain.AnalysisInput{SnapshotID: snapshotID, Area: analysisdomain.AreaCalculation{Method: analysisdomain.AreaMethod, TotalSquareMeters: 100, InputReferences: []string{"geometry://zone-loss-1"}}, Zones: []analysisdomain.ZoneResult{unavailableZone("zone-loss-1", 100)}, CalculatedAt: time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC), Limitations: []string{"人口、道路和 POI 数据尚未接入"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return analysis
-}
-
-func unavailableZone(id string, area float64) analysisdomain.ZoneResult {
-	return analysisdomain.ZoneResult{ZoneID: id, Area: analysisdomain.ZoneArea{SquareMeters: area, InputReferences: []string{"geometry://" + id}}, Population: analysisdomain.PopulationExposureMetric{Status: analysisdomain.MetricUnavailable, Unit: analysisdomain.PopulationUnit, Limitations: []string{"缺少人口基线"}}, Roads: analysisdomain.RoadExposureMetric{Status: analysisdomain.MetricUnavailable, Unit: analysisdomain.RoadUnit, Limitations: []string{"缺少道路基线"}}, POIs: analysisdomain.POIExposureMetric{Status: analysisdomain.MetricUnavailable, Unit: analysisdomain.POIUnit, Limitations: []string{"缺少 POI 基线"}}, Administration: analysisdomain.AdministrativeMatch{Status: analysisdomain.AdminMatchUnavailable, Limitations: []string{"缺少行政边界"}}}
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
+	for index, mutate := range cases {
+		projection := validLossProjection(now)
+		baselines := &baselineReaderStub{set: approvedBaselineSet(now, "v2026")}
+		mutate(&projection.Stats)
+		assertEstimateError(t, now, projection, baselines, domain.ErrInsufficientData)
+		if len(baselines.queries) != 0 {
+			t.Fatalf("边界用例 %d 在 fail-closed 前读取了基线", index)
 		}
 	}
-	return false
+}
+
+func TestServiceRejectsUnionAreaBelowLargestZone(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	projection := validLossProjection(now)
+	projection.Analysis.TotalAreaSquareMeters = 1
+	mustRebindLossProjection(t, &projection)
+	baselines := &baselineReaderStub{set: approvedBaselineSet(now, "v2026")}
+	assertEstimateError(t, now, projection, baselines, domain.ErrInsufficientData)
+	if len(baselines.queries) != 0 {
+		t.Fatalf("不可能的并集面积在 fail-closed 前读取了基线: %v", baselines.queries)
+	}
+}
+
+func TestServiceAccepts1000AndRejects1001Features(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	exact := projectionWithFeatureCount(now, maxLossFeatures)
+	if value := estimateFixture(t, now, exact, approvedBaselineSet(now, "v2026")); len(value.Evidence.Exposures) != 998 {
+		t.Fatalf("1000 个全局 feature 未完整进入证据: exposures=%d", len(value.Evidence.Exposures))
+	}
+	overflow := projectionWithFeatureCount(now, maxLossFeatures+1)
+	baselines := &baselineReaderStub{set: approvedBaselineSet(now, "v2026")}
+	assertEstimateError(t, now, overflow, baselines, domain.ErrInsufficientData)
+	if len(baselines.queries) != 0 {
+		t.Fatal("1001 个 feature 应在基线读取前 fail-closed")
+	}
+}
+
+func TestServicePreservesProvidedZeroAndRejectsPartial(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	projection := validLossProjection(now)
+	projection.Analysis.Features[0].Quantity = 0
+	projection.Analysis.Features[3].Quantity = 0
+	projection.Analysis.Features[4].Quantity = 0
+	mustRebindLossProjection(t, &projection)
+	value := estimateFixture(t, now, projection, approvedBaselineSet(now, "v2026"))
+	if value.ConditionalLowCents != 0 || value.AffectedRoadMeters != 0 || value.AffectedFacilities != 0 {
+		t.Fatalf("权威真实零值未保留: %+v", value)
+	}
+	projection.Analysis.Features[3].Status = spatialdomain.MetricPartial
+	assertEstimateError(t, now, projection, &baselineReaderStub{set: approvedBaselineSet(now, "v2026")}, domain.ErrInsufficientData)
+}
+
+func TestServiceChangesIdentityWhenFeatureInputChanges(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	firstProjection := validLossProjection(now)
+	first := estimateFixture(t, now, firstProjection, approvedBaselineSet(now, "v2026"))
+	secondProjection := validLossProjection(now)
+	secondProjection.Analysis.Features[3].Quantity++
+	mustRebindLossProjection(t, &secondProjection)
+	second := estimateFixture(t, now, secondProjection, approvedBaselineSet(now, "v2026"))
+	if first.ID == second.ID || first.InputDigest == second.InputDigest || first.ConditionalLowCents == second.ConditionalLowCents {
+		t.Fatalf("决定性 feature 输入变化未改变身份或金额")
+	}
+}
+
+func TestServiceRejectsFractionalFacilityAndInvalidProjectionTime(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	t.Run("设施数量小数", func(t *testing.T) {
+		projection := validLossProjection(now)
+		projection.Analysis.Features[0].Quantity = 1.5
+		mustRebindLossProjection(t, &projection)
+		assertEstimateError(t, now, projection,
+			&baselineReaderStub{set: approvedBaselineSet(now, "v2026")}, domain.ErrInsufficientData)
+	})
+	for name, mutate := range map[string]func(*LossInputProjection){
+		"采集时间在未来": func(value *LossInputProjection) {
+			value.Analysis.ProjectionCollectedAt = now.Add(time.Hour)
+			value.Analysis.ProjectionValidTo = now.Add(2 * time.Hour)
+		},
+		"投影已过期": func(value *LossInputProjection) {
+			value.Analysis.ProjectionCollectedAt = now.Add(-3 * time.Hour)
+			value.Analysis.ProjectionValidFrom = now.Add(-4 * time.Hour)
+			value.Analysis.ProjectionValidTo = now.Add(-time.Hour)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			projection := validLossProjection(now)
+			mutate(&projection)
+			mustRebindLossProjection(t, &projection)
+			assertEstimateError(t, now, projection,
+				&baselineReaderStub{set: approvedBaselineSet(now, "v2026")}, domain.ErrInsufficientData)
+		})
+	}
+}
+
+func TestServiceClassifiesCNBaselinesAsNational(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	projection := validLossProjection(now)
+	projection.Analysis.RegionCode = "CN"
+	for index := range projection.Zones {
+		projection.Zones[index].AdminCodes = []string{"CN"}
+	}
+	mustRebindLossProjection(t, &projection)
+	set := approvedBaselineSet(now, "v2026")
+	for index := range set.Population {
+		set.Population[index].RegionCode = "CN"
+	}
+	for index := range set.Roads {
+		set.Roads[index].RegionCode = "CN"
+	}
+	for index := range set.Costs {
+		set.Costs[index].RegionCode = "CN"
+	}
+	for index := range set.Vulnerabilities {
+		set.Vulnerabilities[index].CalibrationRegion = "CN"
+	}
+	value := estimateFixture(t, now, projection, set)
+	for _, cost := range value.Evidence.Costs {
+		if cost.BaselineLevel != lossdomain.BaselineNational {
+			t.Fatalf("CN 成本基线等级 = %s", cost.BaselineLevel)
+		}
+	}
+	for _, vulnerability := range value.Evidence.Vulnerabilities {
+		if vulnerability.BaselineLevel != lossdomain.BaselineNational {
+			t.Fatalf("CN 脆弱性基线等级 = %s", vulnerability.BaselineLevel)
+		}
+	}
+}
+
+func TestServicePublishesProjectionLimitationsAndCapsConfidence(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	projection := validLossProjection(now)
+	projection.Analysis.ProjectionLimitations = []string{"跳过非闭合设施 way 42", "道路查询结果不含私有道路", "跳过非闭合设施 way 42"}
+	mustRebindLossProjection(t, &projection)
+	value := estimateFixture(t, now, projection, approvedBaselineSet(now, "v2026"))
+	want := []string{"跳过非闭合设施 way 42", "道路查询结果不含私有道路"}
+	if !reflect.DeepEqual(value.Evidence.SpatialAnalysis.ProjectionLimitations, want) {
+		t.Fatalf("投影限制证据 = %v", value.Evidence.SpatialAnalysis.ProjectionLimitations)
+	}
+	for _, limitation := range want {
+		if !contains(value.Limitations, limitation) {
+			t.Fatalf("评估未公开投影限制 %q: %v", limitation, value.Limitations)
+		}
+	}
+	if value.Confidence != maxLimitedProjectionConfidence || value.ConfidenceBand != "moderate" {
+		t.Fatalf("有限投影置信度 = %v/%s", value.Confidence, value.ConfidenceBand)
+	}
+}
+
+func TestServiceCanonicalizesProjectionTimesAndUsesLatestAuthorityTime(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 999, time.UTC)
+	projection := validLossProjection(now)
+	projection.Analysis.ProjectionCollectedAt = now.Add(-5*time.Minute + 777*time.Nanosecond)
+	projection.Analysis.ProjectionValidFrom = now.Add(-time.Hour + 333*time.Nanosecond)
+	projection.Analysis.ProjectionValidTo = now.Add(time.Hour + 555*time.Nanosecond)
+	mustRebindLossProjection(t, &projection)
+	value := estimateFixture(t, now, projection, approvedBaselineSet(now, "v2026"))
+	if value.CalculatedAt.Before(projection.Analysis.ProjectionCollectedAt) ||
+		value.CalculatedAt.Nanosecond()%1_000 != 0 || projection.Analysis.ProjectionCollectedAt.Nanosecond()%1_000 != 0 {
+		t.Fatalf("时间未规范或存在因果倒置: assessment=%s projection=%s",
+			value.CalculatedAt, projection.Analysis.ProjectionCollectedAt)
+	}
+}
+
+func TestServiceCalculationTimeCoversEveryProvenanceAuthorityField(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		mutate func(*provenance.Provenance, time.Time)
+	}{
+		{"validFrom", func(value *provenance.Provenance, candidate time.Time) { value.ValidFrom = candidate }},
+		{"observedAt", func(value *provenance.Provenance, candidate time.Time) { value.ObservedAt = candidate }},
+		{"publishedAt", func(value *provenance.Provenance, candidate time.Time) { value.PublishedAt = candidate }},
+		{"revisionFirstSeenAt", func(value *provenance.Provenance, candidate time.Time) { value.RevisionFirstSeenAt = candidate }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			set := approvedBaselineSet(now, "v2026")
+			candidate := now.Add(-10 * time.Minute)
+			mutateBaselineSources(&set, func(value *provenance.Provenance) { test.mutate(value, candidate) })
+			assessment := estimateFixture(t, now, validLossProjection(now), set)
+			if !assessment.CalculatedAt.Equal(candidate) {
+				t.Fatalf("calculatedAt=%s want=%s", assessment.CalculatedAt, candidate)
+			}
+		})
+	}
+}
+
+func TestServiceRejectsFutureProvenanceAuthorityTime(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	set := approvedBaselineSet(now, "v2026")
+	mutateBaselineSources(&set, func(value *provenance.Provenance) {
+		value.PublishedAt = now.Add(time.Microsecond)
+	})
+	assertEstimateError(t, now, validLossProjection(now), &baselineReaderStub{set: set}, domain.ErrInsufficientData)
+}
+
+func TestServiceRejectsProjectionWindowOutsideSnapshot(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	for name, mutate := range map[string]func(*LossInputProjection){
+		"validFrom提前": func(value *LossInputProjection) {
+			value.Analysis.ProjectionValidFrom = value.Snapshot.ValidFrom.Add(-time.Microsecond)
+		},
+		"validTo延后": func(value *LossInputProjection) {
+			value.Analysis.ProjectionValidTo = value.Snapshot.ValidTo.Add(time.Microsecond)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			projection := validLossProjection(now)
+			mutate(&projection)
+			mustRebindLossProjection(t, &projection)
+			assertEstimateError(t, now, projection,
+				&baselineReaderStub{set: approvedBaselineSet(now, "v2026")}, domain.ErrInsufficientData)
+		})
+	}
+}
+
+func TestServiceFailsClosedForUntrustedInputs(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		mutate func(*LossInputProjection, *lossdomain.BaselineSet)
+	}{
+		{"快照来源过期", func(value *LossInputProjection, _ *lossdomain.BaselineSet) { value.Snapshot.Source.ValidTo = now }},
+		{"空间摘要损坏", func(value *LossInputProjection, _ *lossdomain.BaselineSet) { value.Analysis.Digest = "bad" }},
+		{"空间统计错绑", func(value *LossInputProjection, _ *lossdomain.BaselineSet) { value.Stats.AnalysisID = "other" }},
+		{"演示成本基线", func(_ *LossInputProjection, set *lossdomain.BaselineSet) {
+			set.Costs[0].Status, set.Costs[0].ApprovedBy = lossdomain.BaselineDemoOnly, ""
+		}},
+		{"成本单位错配", func(_ *LossInputProjection, set *lossdomain.BaselineSet) { set.Costs[0].Unit = "kilometers" }},
+		{"基线版本错配", func(_ *LossInputProjection, set *lossdomain.BaselineSet) {
+			set.Vulnerabilities[0].Source.DatasetVersion = "other"
+		}},
+		{"快照模型缺失", func(value *LossInputProjection, _ *lossdomain.BaselineSet) { value.Snapshot.ModelName = "" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			projection, set := validLossProjection(now), approvedBaselineSet(now, "v2026")
+			test.mutate(&projection, &set)
+			assertEstimateError(t, now, projection, &baselineReaderStub{set: set}, domain.ErrInsufficientData)
+		})
+	}
+}
+
+func TestServicePreservesPureNotFoundClassification(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	service := mustService(t, inputReaderStub{err: domain.ErrNotFound}, &baselineReaderStub{}, now)
+	_, err := service.Estimate(context.Background(), EstimateInput{SnapshotID: "missing"})
+	if !errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrInsufficientData) {
+		t.Fatalf("纯 not found 分类被污染: %v", err)
+	}
+}
+
+func TestDamageCentsUsesExactDecimalArithmetic(t *testing.T) {
+	exposure := lossdomain.Exposure{Quantity: 1, CoverageRatio: 1}
+	values := []int64{1<<53 - 1, 1 << 53, 1<<53 + 1, math.MaxInt64}
+	for _, value := range values {
+		got, err := damageCents(exposure, value, 1, 1)
+		if err != nil || got != value {
+			t.Fatalf("damageCents(%d) = %d, %v", value, got, err)
+		}
+	}
+	got, err := damageCents(exposure, 1, 0.5, 1)
+	if err != nil || got != 1 {
+		t.Fatalf("半分舍入 = %d, %v", got, err)
+	}
+	exposure.Quantity = 2
+	if _, err = damageCents(exposure, math.MaxInt64, 1, 1); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("近 MaxInt64 溢出未 fail-closed: %v", err)
+	}
+}
+
+func estimateFixture(t *testing.T, now time.Time, projection LossInputProjection, set lossdomain.BaselineSet) lossdomain.Assessment {
+	t.Helper()
+	baselines := &baselineReaderStub{set: set}
+	service := mustService(t, inputReaderStub{value: projection}, baselines, now)
+	value, err := service.Estimate(context.Background(), EstimateInput{SnapshotID: projection.Snapshot.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(baselines.queries) != 1 || baselines.queries[0].RegionCode != projection.Analysis.RegionCode ||
+		baselines.queries[0].HazardType != "landslide" {
+		t.Fatalf("基线查询未使用服务端派生条件: %+v", baselines.queries)
+	}
+	query := baselines.queries[0]
+	if !query.At.Equal(now.UTC().Truncate(time.Microsecond)) {
+		t.Fatalf("基线查询未复用服务时钟: %v", query.At)
+	}
+	wantRequirements, err := deriveBaselineRequirements(value.Evidence.Exposures)
+	if err != nil || !reflect.DeepEqual(query.Requirements, wantRequirements) {
+		t.Fatalf("基线查询未绑定实际资产、单位和强度: got=%+v want=%+v err=%v",
+			query.Requirements, wantRequirements, err)
+	}
+	return value
+}
+
+func assertEstimateError(t *testing.T, now time.Time, projection LossInputProjection, baselines *baselineReaderStub, wanted error) {
+	t.Helper()
+	service := mustService(t, inputReaderStub{value: projection}, baselines, now)
+	_, err := service.Estimate(context.Background(), EstimateInput{SnapshotID: projection.Snapshot.ID})
+	if !errors.Is(err, wanted) {
+		t.Fatalf("Estimate() error = %v, want %v", err, wanted)
+	}
+}
+
+func mustService(t *testing.T, reader LossInputProjectionReader, baselines BaselineSetReader, now time.Time) *Service {
+	t.Helper()
+	service, err := NewService(reader, baselines, fixedClock{now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+func assertSelectedBaselineLevels(t *testing.T, value lossdomain.Assessment) {
+	t.Helper()
+	if len(value.Evidence.Costs) != 2 || len(value.Evidence.Vulnerabilities) != 2 {
+		t.Fatalf("基线证据数量异常: %+v", value.Evidence)
+	}
+	levels := map[lossdomain.AssetType]lossdomain.BaselineLevel{}
+	for _, cost := range value.Evidence.Costs {
+		if !cost.Provided || cost.Status != lossdomain.BaselineApproved {
+			t.Fatalf("成本基线可用性未显式绑定: %+v", cost)
+		}
+		levels[cost.AssetType] = cost.BaselineLevel
+	}
+	if levels[lossdomain.AssetFacility] != lossdomain.BaselineNational || levels[lossdomain.AssetRoad] != lossdomain.BaselineNational {
+		t.Fatalf("成本基线级别异常: %v", levels)
+	}
+}
+
+func validLossProjection(now time.Time) LossInputProjection {
+	snapshot := lossSnapshot(now)
+	zones := []LossRiskZone{
+		{ID: "zone-1", SnapshotID: snapshot.ID, Level: hazarddomain.RiskLow, AreaSquareM: 100, AreaCalculated: true, AdminCodes: []string{"CN"}},
+		{ID: "zone-2", SnapshotID: snapshot.ID, Level: hazarddomain.RiskVeryHigh, AreaSquareM: 100, AreaCalculated: true, AdminCodes: []string{"CN"}},
+	}
+	analysis := LossSpatialProjection{ID: "analysis-loss-1", Version: "spatial-v2", Digest: strings.Repeat("b", 64),
+		ProjectionCollectedAt: now.Add(-30 * time.Minute), ProjectionValidFrom: now.Add(-time.Hour),
+		ProjectionValidTo: now.Add(12 * time.Hour), AdminBoundaryID: "CHN-ADM0-geoboundaries-v6",
+		AdminBoundaryDigest: strings.Repeat("c", 64), AdminBoundaryReference: "https://example.test/boundary/chn",
+		SnapshotID: snapshot.ID, Status: spatialdomain.AnalysisAvailable, RegionCode: "CN", TotalAreaSquareMeters: 150,
+		CalculatedAt: snapshot.RunAt.Add(30 * time.Minute), InputReferences: []string{"https://example.test/spatial/input"},
+		DatasetReferences: []string{"https://example.test/spatial/dataset"}, Features: lossFeatures()}
+	stats := RiskProjectionStats{ZoneCount: 2, MaxGeometryPoints: 5, MaxGeometryBytes: 100,
+		TotalGeometryPoints: 10, TotalGeometryBytes: 200, SpatialJSONBytes: 400,
+		FeatureCount: len(analysis.Features), ProjectionBytes: 4096,
+		AnalysisID: analysis.ID, AnalysisDigest: analysis.Digest}
+	result := LossInputProjection{Snapshot: snapshot, Zones: zones, Analysis: analysis, Stats: stats}
+	result.Stats.ReferenceCount = projectionReferenceCount(result)
+	result.Stats.UniqueReferenceCount = projectionUniqueReferenceCount(result)
+	if err := BindRiskProjectionIdentity(&result); err != nil {
+		panic(err)
+	}
+	return result
+}
+
+func projectionWithFeatureCount(now time.Time, count int) LossInputProjection {
+	value := validLossProjection(now)
+	for index := len(value.Analysis.Features); index < count; index++ {
+		value.Analysis.Features = append(value.Analysis.Features, LossExposureFeature{
+			FeatureID: fmt.Sprintf("road-zz-%04d", index), Kind: LossFeatureRoad, ZoneIDs: []string{"zone-2"},
+			Quantity: 0, Unit: "meters", CoverageRatio: 1, Status: spatialdomain.MetricAvailable,
+			Provided: true, InputReferences: []string{"https://example.test/road/bulk"}})
+	}
+	value.Stats.FeatureCount = len(value.Analysis.Features)
+	value.Stats.ReferenceCount = projectionReferenceCount(value)
+	value.Stats.UniqueReferenceCount = projectionUniqueReferenceCount(value)
+	value.Stats.ProjectionBytes = maxLossProjectionBytes - 1
+	if err := BindRiskProjectionIdentity(&value); err != nil {
+		panic(err)
+	}
+	return value
+}
+
+func mustRebindLossProjection(t *testing.T, value *LossInputProjection) {
+	t.Helper()
+	if err := BindRiskProjectionIdentity(value); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func lossFeatures() []LossExposureFeature {
+	available := spatialdomain.MetricAvailable
+	return []LossExposureFeature{
+		{FeatureID: "facility-shared", Kind: LossFeatureFacility, ZoneIDs: []string{"zone-1", "zone-2"}, Quantity: 2, Unit: "count", CoverageRatio: 1, Status: available, Provided: true, InputReferences: []string{"https://example.test/facility/shared"}},
+		{FeatureID: "population-shared", Kind: LossFeaturePopulation, ZoneIDs: []string{"zone-1", "zone-2"}, Quantity: 50, Unit: "people", CoverageRatio: 1, Status: available, Provided: true, InputReferences: []string{"https://example.test/population/shared"}},
+		{FeatureID: "population-unique", Kind: LossFeaturePopulation, ZoneIDs: []string{"zone-2"}, Quantity: 20, Unit: "people", CoverageRatio: 1, Status: available, Provided: true, InputReferences: []string{"https://example.test/population/unique"}},
+		{FeatureID: "road-shared", Kind: LossFeatureRoad, ZoneIDs: []string{"zone-1", "zone-2"}, Quantity: 10, Unit: "meters", CoverageRatio: 1, Status: available, Provided: true, InputReferences: []string{"https://example.test/road/shared"}},
+		{FeatureID: "road-unique", Kind: LossFeatureRoad, ZoneIDs: []string{"zone-2"}, Quantity: 5, Unit: "meters", CoverageRatio: 1, Status: available, Provided: true, InputReferences: []string{"https://example.test/road/unique"}},
+	}
+}
+
+func approvedBaselineSet(now time.Time, version string) lossdomain.BaselineSet {
+	source := baselineSource(now, version)
+	return lossdomain.BaselineSet{Version: version,
+		Population: []lossdomain.ExposureBaseline{{ID: "population-cn", RegionCode: "CN", Kind: lossdomain.ExposurePopulation,
+			Quantity: 1, Unit: "people", DataYear: 2026, CoverageRatio: 1, Source: source}},
+		Roads: []lossdomain.ExposureBaseline{{ID: "road-cn", RegionCode: "CN", Kind: lossdomain.ExposureRoad,
+			Quantity: 1, Unit: "meters", DataYear: 2026, CoverageRatio: 1, Source: source}},
+		Costs: []lossdomain.CostBaseline{
+			approvedCost(lossdomain.AssetFacility, "CN", "count", 1000, 2000, 3000, now, source),
+			approvedCost(lossdomain.AssetRoad, "CN", "meters", 100, 200, 300, now, source)},
+		Vulnerabilities: []lossdomain.Vulnerability{
+			approvedVulnerability(lossdomain.AssetFacility, "CN", source),
+			approvedVulnerability(lossdomain.AssetRoad, "CN", source)}}
+}
+
+func approvedCost(asset lossdomain.AssetType, region, unit string, low, mid, high int64, now time.Time,
+	source provenance.Provenance) lossdomain.CostBaseline {
+	return lossdomain.CostBaseline{ID: "cost-" + string(asset), AssetType: asset, RegionCode: region, Unit: unit,
+		LowCents: low, CentralCents: mid, HighCents: high, Currency: "CNY", PriceBaseDate: now.Add(-30 * 24 * time.Hour),
+		Status: lossdomain.BaselineApproved, ApprovedBy: "国家地质灾害监控中心", Source: source}
+}
+
+func approvedVulnerability(asset lossdomain.AssetType, region string, source provenance.Provenance) lossdomain.Vulnerability {
+	return lossdomain.Vulnerability{ID: "vulnerability-" + string(asset), AssetType: asset,
+		HazardType: string(hazarddomain.TypeLandslide), IntensityBand: string(hazarddomain.RiskVeryHigh),
+		ImpactFractionLow: 1, ImpactFractionMid: 1, ImpactFractionHigh: 1,
+		DamageRatioLow: 1, DamageRatioMid: 1, DamageRatioHigh: 1, CalibrationRegion: region,
+		Status: lossdomain.BaselineApproved, ApprovedBy: "国家地质灾害监控中心", Source: source}
+}
+
+func baselineSource(now time.Time, version string) provenance.Provenance {
+	return provenance.Provenance{Provider: "authority", Dataset: "loss-baseline", DatasetVersion: version,
+		SourceRevision: "revision-1", SourceURI: "https://example.test/baseline/" + version,
+		Citation: "已审核损失基线", License: "CC-BY-4.0", DataKind: provenance.DataKindBaseline,
+		FetchedAt: now.Add(-24 * time.Hour), ValidFrom: now.Add(-30 * 24 * time.Hour),
+		ValidTo: now.Add(365 * 24 * time.Hour), SHA256: strings.Repeat("a", 64),
+		TransformVersion: "baseline-import-v1", QualityFlags: []string{"approved"}}
+}
+
+func mutateBaselineSources(value *lossdomain.BaselineSet, mutate func(*provenance.Provenance)) {
+	for index := range value.Population {
+		mutate(&value.Population[index].Source)
+	}
+	for index := range value.Roads {
+		mutate(&value.Roads[index].Source)
+	}
+	for index := range value.Costs {
+		mutate(&value.Costs[index].Source)
+	}
+	for index := range value.Vulnerabilities {
+		mutate(&value.Vulnerabilities[index].Source)
+	}
+}
+
+func lossSnapshot(now time.Time) hazarddomain.Snapshot {
+	source := provenance.Provenance{Provider: "NASA", Dataset: "LHASA", DatasetVersion: "2.1.1",
+		SourceRevision: "revision-1", SourceURI: "https://example.test/lhasa.tif", Citation: "NASA LHASA",
+		License: "NASA Open Data", DataKind: provenance.DataKindNowcast, FetchedAt: now.Add(-2 * time.Hour),
+		ValidFrom: now.Add(-3 * time.Hour), ValidTo: now.Add(24 * time.Hour), TransformVersion: "gdal-v1",
+		QualityFlags: []string{"checked"}}
+	return hazarddomain.Snapshot{ID: "snapshot-loss-1", HazardType: hazarddomain.TypeLandslide,
+		ModelName: "LHASA", ModelVersion: "2.1.1", RunAt: now.Add(-time.Hour), ValidFrom: now.Add(-2 * time.Hour),
+		ValidTo: now.Add(12 * time.Hour), RasterReference: source.SourceURI, ProbabilitySemantics: "模型概率",
+		Thresholds: []hazarddomain.RiskThreshold{{Level: hazarddomain.RiskLow, Minimum: 0, Maximum: 1}},
+		Status:     hazarddomain.SnapshotAvailable, Source: source, Limitations: []string{"辅助研判"}}
 }

@@ -62,13 +62,14 @@ type TransitRoutePlanner interface {
 
 // EvidenceSearcher 搜索最新公开灾害证据。
 type EvidenceSearcher interface {
-	// Search 返回去重且保留来源的搜索结果。
+	// Search 必须响应 ctx；成功返回后，结果及其嵌套切片的所有权移交调用方，适配器不得继续修改。
 	Search(ctx context.Context, query string, limit int) ([]report.Evidence, error)
 }
 
 // NarrativeGenerator 根据不可变的结构化结论生成中文说明。
 type NarrativeGenerator interface {
-	// Generate 不得修改输入中的风险、路线、金额或搜救评分。
+	// Generate 必须响应 ctx，不得保留并异步修改 input；成功返回后输出所有权移交调用方，适配器不得继续修改。
+	// Generate 只能解释输入，不得修改风险、路线、金额或搜救评分。
 	Generate(ctx context.Context, input report.NarrativeInput) (report.Narrative, error)
 }
 

@@ -59,18 +59,43 @@ func (r *HazardRepository) SaveAnalysis(ctx context.Context, snapshot hazard.Sna
 func saveSnapshot(ctx context.Context, executor sqlExecutor, value hazard.Snapshot,
 	complete bool,
 ) error {
+	value = normalizeSnapshotForStorage(value)
 	thresholds, source, limitations, err := snapshotJSON(value)
 	if err != nil {
 		return err
 	}
-	_, err = executor.Exec(ctx, saveSnapshotSQL,
+	result, err := executor.Exec(ctx, saveSnapshotSQL,
 		value.ID, value.HazardType, value.ModelName, value.ModelVersion, value.RunAt,
 		value.ValidFrom, value.ValidTo, value.RasterReference, value.ProbabilitySemantics,
 		thresholds, value.Status, source, limitations, complete)
 	if err != nil {
 		return fmt.Errorf("保存灾害快照 %s: %w", value.ID, err)
 	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("%w: 灾害快照 %s 内容冲突或已绑定不可变风险评估",
+			domain.ErrInvalidInput, value.ID)
+	}
 	return nil
+}
+
+func normalizeSnapshotForStorage(value hazard.Snapshot) hazard.Snapshot {
+	value.RunAt = postgresTime(value.RunAt)
+	value.ValidFrom = postgresTime(value.ValidFrom)
+	value.ValidTo = postgresTime(value.ValidTo)
+	value.Source.ObservedAt = postgresTime(value.Source.ObservedAt)
+	value.Source.PublishedAt = postgresTime(value.Source.PublishedAt)
+	value.Source.RevisionFirstSeenAt = postgresTime(value.Source.RevisionFirstSeenAt)
+	value.Source.FetchedAt = postgresTime(value.Source.FetchedAt)
+	value.Source.ValidFrom = postgresTime(value.Source.ValidFrom)
+	value.Source.ValidTo = postgresTime(value.Source.ValidTo)
+	return value
+}
+
+func postgresTime(value time.Time) time.Time {
+	if value.IsZero() {
+		return value
+	}
+	return value.UTC().Truncate(time.Microsecond)
 }
 
 // Latest 返回指定灾种最新的可用快照。
@@ -126,6 +151,35 @@ func (r *HazardRepository) RiskDetail(ctx context.Context,
 		return hazard.Snapshot{}, nil, err
 	}
 	return r.readRisk(ctx, riskDetailWhere, snapshotID)
+}
+
+// RiskDetailBounded 先统计指定快照风险区数量，超过上限时不加载几何明细。
+func (r *HazardRepository) RiskDetailBounded(ctx context.Context, snapshotID string,
+	maxZones int,
+) (hazard.Snapshot, []hazard.RiskZone, int, error) {
+	if err := validateRiskSnapshotID(snapshotID); err != nil {
+		return hazard.Snapshot{}, nil, 0, err
+	}
+	if maxZones <= 0 {
+		return hazard.Snapshot{}, nil, 0, fmt.Errorf("%w: 风险详情读取上限无效", domain.ErrInvalidInput)
+	}
+	tx, err := r.pool.BeginTx(ctx, completeRiskReadOptions)
+	if err != nil {
+		return hazard.Snapshot{}, nil, 0, fmt.Errorf("开始读取有界风险详情事务: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	snapshot, err := scanSnapshot(tx.QueryRow(ctx, selectSnapshotSQL+riskDetailWhere, snapshotID))
+	if err != nil {
+		return hazard.Snapshot{}, nil, 0, fmt.Errorf("读取有界风险快照: %w", err)
+	}
+	zones, total, err := boundedZonesBySnapshot(ctx, tx, snapshot.ID, maxZones)
+	if err != nil {
+		return hazard.Snapshot{}, nil, total, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return hazard.Snapshot{}, nil, total, fmt.Errorf("提交有界风险详情事务: %w", err)
+	}
+	return snapshot, zones, total, nil
 }
 
 func (r *HazardRepository) readRisk(ctx context.Context, where string,
@@ -290,6 +344,25 @@ func validateZoneSet(snapshotID string, zones []hazard.RiskZone) error {
 }
 
 func replaceZones(ctx context.Context, tx pgx.Tx, snapshotID string, zones []hazard.RiskZone) error {
+	var assessmentExists bool
+	if err := tx.QueryRow(ctx, riskAssessmentExistsSQL, snapshotID).Scan(&assessmentExists); err != nil {
+		return fmt.Errorf("检查快照风险评估绑定: %w", err)
+	}
+	if assessmentExists {
+		stored, err := zonesBySnapshot(ctx, tx, snapshotID)
+		if err != nil {
+			return err
+		}
+		equal, err := sameCanonicalZoneInputs(stored, zones)
+		if err != nil {
+			return fmt.Errorf("规范化已固化风险区: %w", err)
+		}
+		if equal {
+			return nil
+		}
+		return fmt.Errorf("%w: 快照 %s 已生成权威评估且风险区内容发生变化",
+			domain.ErrInvalidInput, snapshotID)
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM spatial_analyses WHERE snapshot_id=$1`, snapshotID); err != nil {
 		return fmt.Errorf("使旧空间分析失效: %w", err)
 	}
@@ -478,7 +551,24 @@ const saveSnapshotSQL = `INSERT INTO hazard_snapshots (
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 ON CONFLICT (id) DO UPDATE SET
     status=EXCLUDED.status, source=EXCLUDED.source, limitations=EXCLUDED.limitations,
-    analysis_complete=hazard_snapshots.analysis_complete OR EXCLUDED.analysis_complete`
+    analysis_complete=hazard_snapshots.analysis_complete OR EXCLUDED.analysis_complete
+WHERE hazard_snapshots.hazard_type=EXCLUDED.hazard_type
+    AND hazard_snapshots.model_name=EXCLUDED.model_name
+    AND hazard_snapshots.model_version=EXCLUDED.model_version
+    AND hazard_snapshots.run_at=EXCLUDED.run_at
+    AND hazard_snapshots.valid_from=EXCLUDED.valid_from
+    AND hazard_snapshots.valid_to=EXCLUDED.valid_to
+    AND hazard_snapshots.raster_reference=EXCLUDED.raster_reference
+    AND hazard_snapshots.probability_semantics=EXCLUDED.probability_semantics
+    AND hazard_snapshots.thresholds=EXCLUDED.thresholds
+    AND (NOT EXISTS (SELECT 1 FROM risk_assessments WHERE snapshot_id=EXCLUDED.id)
+        OR (hazard_snapshots.status=EXCLUDED.status
+            AND hazard_snapshots.source=EXCLUDED.source
+            AND hazard_snapshots.limitations=EXCLUDED.limitations))`
+
+const riskAssessmentExistsSQL = `SELECT EXISTS(
+    SELECT 1 FROM risk_assessments WHERE snapshot_id=$1
+)`
 
 const selectSnapshotSQL = `SELECT id,hazard_type,model_name,model_version,run_at,valid_from,
     valid_to,raster_reference,probability_semantics,thresholds,status,source,limitations

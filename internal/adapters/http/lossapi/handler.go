@@ -2,12 +2,15 @@
 package lossapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"path"
 	"regexp"
 	"strings"
 
@@ -15,7 +18,6 @@ import (
 
 	applicationloss "github.com/Requim/AI-GDM/internal/application/loss"
 	"github.com/Requim/AI-GDM/internal/domain"
-	hazarddomain "github.com/Requim/AI-GDM/internal/domain/hazard"
 	lossdomain "github.com/Requim/AI-GDM/internal/domain/loss"
 	"github.com/Requim/AI-GDM/internal/ports"
 )
@@ -26,24 +28,30 @@ const BasePath = "/loss"
 const maxRequestBytes = 1 << 20
 
 var assessmentIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+var publicBasePathPattern = regexp.MustCompile(`^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]+$`)
 
 var errStoredAssessment = errors.New("已保存损失评估无效")
 
 // Handler 把损失计算用例和评估仓储暴露为 JSON API。
 type Handler struct {
-	estimator applicationloss.AssessmentService
-	writer    ports.LossAssessmentWriter
-	reader    ports.LossAssessmentReader
-	logger    *slog.Logger
+	estimator      applicationloss.AssessmentService
+	writer         ports.LossAssessmentWriter
+	reader         ports.LossAssessmentReader
+	logger         *slog.Logger
+	publicBasePath string
 }
 
 // New 创建相对于 BasePath 挂载的损失评估路由。
 func New(estimator applicationloss.AssessmentService, writer ports.LossAssessmentWriter,
-	reader ports.LossAssessmentReader, logger *slog.Logger) (http.Handler, error) {
+	reader ports.LossAssessmentReader, publicBasePath string, logger *slog.Logger) (http.Handler, error) {
 	if estimator == nil || writer == nil || reader == nil || logger == nil {
 		return nil, fmt.Errorf("损失评估 HTTP 服务、仓储或日志器不能为空")
 	}
-	handler := &Handler{estimator: estimator, writer: writer, reader: reader, logger: logger}
+	publicBasePath, err := validatePublicBasePath(publicBasePath)
+	if err != nil {
+		return nil, err
+	}
+	handler := &Handler{estimator: estimator, writer: writer, reader: reader, logger: logger, publicBasePath: publicBasePath}
 	router := chi.NewRouter()
 	router.Post("/assessments", handler.createAssessment)
 	router.Get("/assessments/{assessmentID}", handler.getAssessment)
@@ -54,16 +62,17 @@ func New(estimator applicationloss.AssessmentService, writer ports.LossAssessmen
 }
 
 type estimateRequest struct {
-	SnapshotID    string                `json:"snapshotId"`
-	RegionCode    string                `json:"regionCode"`
-	HazardType    string                `json:"hazardType"`
-	IntensityBand string                `json:"intensityBand"`
-	Exposures     []lossdomain.Exposure `json:"exposures"`
+	SnapshotID string `json:"snapshotId"`
 }
 
 func (h *Handler) createAssessment(w http.ResponseWriter, r *http.Request) {
+	responseID, err := normalizedRequestID(r)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
 	var request estimateRequest
-	if err := decode(r, &request); err != nil {
+	if err = decode(r, &request); err != nil {
 		h.writeError(w, r, err)
 		return
 	}
@@ -77,13 +86,24 @@ func (h *Handler) createAssessment(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, err)
 		return
 	}
-	if err = h.writer.SaveAssessment(r.Context(), value); err != nil {
-		h.writeError(w, r, fmt.Errorf("保存损失评估 %s: %w", value.ID, err))
+	response, err := newAssessmentResponse(value)
+	if err != nil {
+		h.writeError(w, r, storedAssessmentError(err))
 		return
 	}
-	location := BasePath + "/assessments/" + value.ID
+	payload, err := encodeResponse(successResponse{Data: response, RequestID: responseID})
+	if err != nil {
+		h.writeError(w, r, storedAssessmentError(err))
+		return
+	}
+	if err = h.writer.SaveAssessment(r.Context(), value); err != nil {
+		h.writeError(w, r, normalizeAssessmentStoreError(
+			fmt.Errorf("保存损失评估 %s: %w", value.ID, err)))
+		return
+	}
+	location := h.publicBasePath + "/assessments/" + url.PathEscape(value.ID)
 	w.Header().Set("Location", location)
-	h.writeJSON(w, r, http.StatusCreated, successResponse{Data: sanitizeAssessment(value), RequestID: requestID(r)})
+	h.writeEncodedJSON(w, http.StatusCreated, payload, responseID)
 }
 
 func (h *Handler) getAssessment(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +112,12 @@ func (h *Handler) getAssessment(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, err)
 		return
 	}
-	h.writeJSON(w, r, http.StatusOK, successResponse{Data: sanitizeAssessment(value), RequestID: requestID(r)})
+	response, err := newAssessmentResponse(value)
+	if err != nil {
+		h.writeError(w, r, storedAssessmentError(err))
+		return
+	}
+	h.writeJSON(w, r, http.StatusOK, successResponse{Data: response, RequestID: requestID(r)})
 }
 
 func (h *Handler) getSources(w http.ResponseWriter, r *http.Request) {
@@ -101,13 +126,12 @@ func (h *Handler) getSources(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, err)
 		return
 	}
-	sanitized := sanitizeAssessment(value)
-	audit := sourceAudit{
-		AssessmentID: sanitized.ID, SnapshotID: sanitized.SnapshotID, FormulaVersion: sanitized.FormulaVersion,
-		Status: sanitized.Status, CalculatedAt: sanitized.CalculatedAt, InputReferences: sanitized.InputReferences,
-		InputReferenceCount: len(sanitized.InputReferences), Scope: "评估记录中的输入引用",
-		Limitations: []string{"审计结果仅包含评估时保存的引用，不代表源文件内容已在本服务留存"},
+	sanitized, err := newAssessmentResponse(value)
+	if err != nil {
+		h.writeError(w, r, storedAssessmentError(err))
+		return
 	}
+	audit := newSourceAudit(sanitized)
 	h.writeJSON(w, r, http.StatusOK, successResponse{Data: audit, RequestID: requestID(r)})
 }
 
@@ -118,32 +142,50 @@ func (h *Handler) loadAssessment(r *http.Request) (lossdomain.Assessment, error)
 	}
 	value, err := h.reader.GetAssessment(r.Context(), id)
 	if err != nil {
-		return lossdomain.Assessment{}, fmt.Errorf("读取损失评估 %s: %w", id, err)
+		return lossdomain.Assessment{}, normalizeAssessmentStoreError(
+			fmt.Errorf("读取损失评估 %s: %w", id, err))
 	}
 	if err = value.Validate(); err != nil {
-		return lossdomain.Assessment{}, fmt.Errorf("%w: %v", errStoredAssessment, err)
+		return lossdomain.Assessment{}, storedAssessmentError(err)
 	}
 	return value, nil
 }
 
+func normalizeAssessmentStoreError(err error) error {
+	if errors.Is(err, ports.ErrStoredAssessmentIntegrity) || errors.Is(err, domain.ErrInvalidInput) {
+		return storedAssessmentError(err)
+	}
+	return err
+}
+
+func storedAssessmentError(err error) error {
+	if err == nil {
+		return errStoredAssessment
+	}
+	return fmt.Errorf("%w: %w", errStoredAssessment, err)
+}
+
 func (r estimateRequest) input() (applicationloss.EstimateInput, error) {
-	if strings.TrimSpace(r.HazardType) == "" {
-		return applicationloss.EstimateInput{}, fmt.Errorf("%w: 灾种不能为空", domain.ErrInvalidInput)
+	if strings.TrimSpace(r.SnapshotID) == "" || r.SnapshotID != strings.TrimSpace(r.SnapshotID) {
+		return applicationloss.EstimateInput{}, fmt.Errorf("%w: 风险快照标识无效", domain.ErrInvalidInput)
 	}
-	if len(r.Exposures) > 1000 {
-		return applicationloss.EstimateInput{}, fmt.Errorf("%w: 单次最多提交 1000 条资产暴露", domain.ErrInvalidInput)
-	}
-	return applicationloss.EstimateInput{SnapshotID: r.SnapshotID, RegionCode: r.RegionCode,
-		HazardType: hazardType(r.HazardType), IntensityBand: r.IntensityBand, Exposures: r.Exposures}, nil
+	return applicationloss.EstimateInput{SnapshotID: r.SnapshotID}, nil
 }
 
 func decode(request *http.Request, destination any) error {
 	if request.ContentLength > maxRequestBytes {
 		return fmt.Errorf("%w: 请求体超过 %d 字节", domain.ErrInvalidInput, maxRequestBytes)
 	}
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRequestBytes))
+	payload, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBytes+1))
+	if err != nil {
+		return fmt.Errorf("%w: 读取请求 JSON 失败", domain.ErrInvalidInput)
+	}
+	if len(payload) > maxRequestBytes {
+		return fmt.Errorf("%w: 请求体超过 %d 字节", domain.ErrInvalidInput, maxRequestBytes)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil {
+	if err = decoder.Decode(destination); err != nil {
 		return fmt.Errorf("%w: 请求 JSON 无效", domain.ErrInvalidInput)
 	}
 	var extra any
@@ -153,7 +195,16 @@ func decode(request *http.Request, destination any) error {
 	return nil
 }
 
-func hazardType(value string) hazarddomain.Type { return hazarddomain.Type(value) }
+func validatePublicBasePath(value string) (string, error) {
+	if !publicBasePathPattern.MatchString(value) || strings.ContainsAny(value, "?#") {
+		return "", fmt.Errorf("%w: 损失评估公开路径无效", domain.ErrInvalidInput)
+	}
+	cleaned := path.Clean(value)
+	if cleaned == "/" || cleaned != strings.TrimSuffix(value, "/") {
+		return "", fmt.Errorf("%w: 损失评估公开路径无效", domain.ErrInvalidInput)
+	}
+	return cleaned, nil
+}
 
 func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
 	h.writeAPIError(w, r, http.StatusNotFound, "route_not_found", "接口不存在", nil)

@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/provenance"
@@ -37,6 +38,14 @@ const (
 	BaselineApproved BaselineStatus = "approved"
 )
 
+// BaselineLevel 标识评估实际选用的是区域级还是国家级基线。
+type BaselineLevel string
+
+const (
+	BaselineRegional BaselineLevel = "regional"
+	BaselineNational BaselineLevel = "national"
+)
+
 // AssessmentStatus 表示损失评估是否具备完整输入。
 type AssessmentStatus string
 
@@ -47,13 +56,19 @@ const (
 
 // Exposure 描述风险区内暴露的资产或人口数量。
 type Exposure struct {
-	ZoneID        string                `json:"zoneId"`
-	AssetType     string                `json:"assetType"`
-	Quantity      float64               `json:"quantity"`
-	Unit          string                `json:"unit"`
-	DataYear      int                   `json:"dataYear"`
-	CoverageRatio float64               `json:"coverageRatio"`
-	Source        provenance.Provenance `json:"source"`
+	FeatureID       string    `json:"featureId"`
+	ZoneID          string    `json:"zoneId"`
+	ZoneIDs         []string  `json:"zoneIds"`
+	AssetType       AssetType `json:"assetType"`
+	Quantity        float64   `json:"quantity"`
+	Unit            string    `json:"unit"`
+	CoverageRatio   float64   `json:"coverageRatio"`
+	Provided        bool      `json:"provided"`
+	MetricStatus    string    `json:"metricStatus"`
+	IntensityBand   string    `json:"intensityBand"`
+	AnalysisID      string    `json:"analysisId"`
+	AnalysisVersion string    `json:"analysisVersion"`
+	InputReferences []string  `json:"inputReferences"`
 }
 
 // CostBaseline 保存直接物理损害所需的单位重置成本情景带，金额单位为人民币分。
@@ -68,6 +83,8 @@ type CostBaseline struct {
 	Currency      string                `json:"currency"`
 	PriceBaseDate time.Time             `json:"priceBaseDate"`
 	Status        BaselineStatus        `json:"status"`
+	Provided      bool                  `json:"provided"`
+	BaselineLevel BaselineLevel         `json:"baselineLevel"`
 	ApprovedBy    string                `json:"approvedBy,omitempty"`
 	Source        provenance.Provenance `json:"source"`
 }
@@ -86,6 +103,8 @@ type Vulnerability struct {
 	DamageRatioHigh    float64               `json:"damageRatioHigh"`
 	CalibrationRegion  string                `json:"calibrationRegion"`
 	Status             BaselineStatus        `json:"status"`
+	Provided           bool                  `json:"provided"`
+	BaselineLevel      BaselineLevel         `json:"baselineLevel"`
 	ApprovedBy         string                `json:"approvedBy,omitempty"`
 	Source             provenance.Provenance `json:"source"`
 }
@@ -113,52 +132,84 @@ type BaselineSet struct {
 
 // Assessment 保存低、中、高情景下的直接物理损害估算。
 type Assessment struct {
-	ID                   string           `json:"id"`
-	SnapshotID           string           `json:"snapshotId"`
-	FormulaVersion       string           `json:"formulaVersion"`
-	ScenarioMethod       string           `json:"scenarioMethod"`
-	HazardType           string           `json:"hazardType"`
-	RegionCode           string           `json:"regionCode"`
-	ConditionalLowCents  int64            `json:"conditionalLowCents"`
-	ConditionalMidCents  int64            `json:"conditionalCentralCents"`
-	ConditionalHighCents int64            `json:"conditionalHighCents"`
-	ExpectedLowCents     *int64           `json:"expectedLowCents,omitempty"`
-	ExpectedMidCents     *int64           `json:"expectedCentralCents,omitempty"`
-	ExpectedHighCents    *int64           `json:"expectedHighCents,omitempty"`
-	ImpactAreaSquareM    float64          `json:"impactAreaSquareMeters"`
-	AffectedPopulation   float64          `json:"affectedPopulation"`
-	AffectedRoadMeters   float64          `json:"affectedRoadMeters"`
-	AffectedFacilities   int              `json:"affectedFacilities"`
-	InputReferences      []string         `json:"inputReferences"`
-	IncludedAssets       []AssetType      `json:"includedAssets"`
-	ExcludedLosses       []string         `json:"excludedLosses"`
-	Status               AssessmentStatus `json:"status"`
-	Confidence           float64          `json:"confidence"`
-	ConfidenceBand       string           `json:"confidenceBand"`
-	Limitations          []string         `json:"limitations"`
-	CalculatedAt         time.Time        `json:"calculatedAt"`
+	ID                   string             `json:"id"`
+	SnapshotID           string             `json:"snapshotId"`
+	FormulaVersion       string             `json:"formulaVersion"`
+	ScenarioMethod       string             `json:"scenarioMethod"`
+	HazardType           string             `json:"hazardType"`
+	RegionCode           string             `json:"regionCode"`
+	ConditionalLowCents  int64              `json:"conditionalLowCents"`
+	ConditionalMidCents  int64              `json:"conditionalCentralCents"`
+	ConditionalHighCents int64              `json:"conditionalHighCents"`
+	ExpectedLowCents     *int64             `json:"expectedLowCents,omitempty"`
+	ExpectedMidCents     *int64             `json:"expectedCentralCents,omitempty"`
+	ExpectedHighCents    *int64             `json:"expectedHighCents,omitempty"`
+	ImpactAreaSquareM    float64            `json:"impactAreaSquareMeters"`
+	AffectedPopulation   float64            `json:"affectedPopulation"`
+	AffectedRoadMeters   float64            `json:"affectedRoadMeters"`
+	AffectedFacilities   int                `json:"affectedFacilities"`
+	InputReferences      []string           `json:"inputReferences"`
+	IncludedAssets       []AssetType        `json:"includedAssets"`
+	ExcludedLosses       []string           `json:"excludedLosses"`
+	Status               AssessmentStatus   `json:"status"`
+	Confidence           float64            `json:"confidence"`
+	ConfidenceBand       string             `json:"confidenceBand"`
+	Limitations          []string           `json:"limitations"`
+	CalculatedAt         time.Time          `json:"calculatedAt"`
+	InputDigest          string             `json:"inputDigest"`
+	Evidence             AssessmentEvidence `json:"evidence"`
 }
 
-// FormulaVersion 标识首版可回放损失计算公式。
-const FormulaVersion = "ai-gdm-loss-formula-v1"
+const (
+	// FormulaVersion 标识当前可回放损失计算公式。
+	FormulaVersion = "ai-gdm-loss-formula-v2"
+	// LimitationDirectPhysicalLoss 明确当前金额只覆盖道路和风险区内设施的直接物理损失。
+	LimitationDirectPhysicalLoss = "仅估算道路和风险区内 POI 设施的直接物理损失"
+	// LimitationAdvisoryOnly 明确评估不能替代法定灾损核定。
+	LimitationAdvisoryOnly = "结果用于辅助研判，不替代法定灾损核定"
+)
 
 // Validate 校验风险区暴露记录的数值、单位和来源。
 func (e Exposure) Validate() error {
-	if strings.TrimSpace(e.ZoneID) == "" || strings.TrimSpace(e.AssetType) == "" || !finite(e.Quantity) || e.Quantity <= 0 ||
-		e.DataYear < 1900 || e.DataYear > 9999 || !finite(e.CoverageRatio) || e.CoverageRatio <= 0 || e.CoverageRatio > 1 {
+	if !validEvidenceIdentifier(e.FeatureID) || strings.TrimSpace(e.IntensityBand) == "" ||
+		strings.TrimSpace(e.AnalysisID) == "" || strings.TrimSpace(e.AnalysisVersion) == "" ||
+		!finite(e.Quantity) || e.Quantity < 0 || !finite(e.CoverageRatio) || e.CoverageRatio <= 0 || e.CoverageRatio > 1 {
 		return fmt.Errorf("%w: 损失暴露字段或数值无效", domain.ErrInvalidInput)
 	}
-	if err := e.Source.Validate(); err != nil {
-		return fmt.Errorf("校验损失暴露来源: %w", err)
+	if e.AssetType != AssetRoad && e.AssetType != AssetFacility {
+		return fmt.Errorf("%w: 损失暴露资产类别无效", domain.ErrInvalidInput)
+	}
+	wantUnit := "meters"
+	if e.AssetType == AssetFacility {
+		wantUnit = "count"
+	}
+	if e.Unit != wantUnit || !e.Provided || e.MetricStatus != "available" {
+		return fmt.Errorf("%w: 损失暴露单位或状态无效", domain.ErrInvalidInput)
+	}
+	if err := validateStringList("损失暴露风险区", e.ZoneIDs, true); err != nil || e.ZoneID != e.ZoneIDs[0] {
+		return fmt.Errorf("%w: 损失暴露风险区绑定无效", domain.ErrInvalidInput)
+	}
+	if err := validateStringList("损失暴露输入引用", e.InputReferences, true); err != nil {
+		return err
 	}
 	return nil
 }
 
 // Validate 校验损失评估结果可回放且金额、置信度有界。
 func (a Assessment) Validate() error {
+	if err := validateAssessmentCore(a); err != nil {
+		return err
+	}
+	if err := a.Evidence.Validate(); err != nil {
+		return fmt.Errorf("校验损失评估证据: %w", err)
+	}
+	return validateAssessmentIdentity(a)
+}
+
+func validateAssessmentCore(a Assessment) error {
 	if strings.TrimSpace(a.ID) == "" || strings.TrimSpace(a.SnapshotID) == "" || strings.TrimSpace(a.HazardType) == "" ||
 		strings.TrimSpace(a.RegionCode) == "" || a.FormulaVersion != FormulaVersion || strings.TrimSpace(a.ScenarioMethod) == "" ||
-		a.CalculatedAt.IsZero() || !isUTC(a.CalculatedAt) {
+		a.CalculatedAt.IsZero() || !validIdentityTime(a.CalculatedAt) || !validSHA256(a.InputDigest) {
 		return fmt.Errorf("%w: 损失评估身份、公式或时间无效", domain.ErrInvalidInput)
 	}
 	if a.ConditionalLowCents < 0 || a.ConditionalLowCents > a.ConditionalMidCents || a.ConditionalMidCents > a.ConditionalHighCents {
@@ -178,6 +229,19 @@ func (a Assessment) Validate() error {
 	}
 	if a.Status == AssessmentAvailable && len(a.InputReferences) == 0 {
 		return fmt.Errorf("%w: 可用损失评估缺少输入依据", domain.ErrInvalidInput)
+	}
+	if err := validateStringList("损失评估输入引用", a.InputReferences, true); err != nil {
+		return err
+	}
+	if err := validateStringList("损失评估排除项", a.ExcludedLosses, false); err != nil {
+		return err
+	}
+	if err := validateStringList("损失评估限制", a.Limitations, true); err != nil {
+		return err
+	}
+	if !containsString(a.Limitations, LimitationDirectPhysicalLoss) ||
+		!containsString(a.Limitations, LimitationAdvisoryOnly) {
+		return fmt.Errorf("%w: 损失评估缺少强制适用范围说明", domain.ErrInvalidInput)
 	}
 	return nil
 }
@@ -199,11 +263,14 @@ func (b CostBaseline) Validate() error {
 	if err := validateBaselineSource(b.Source); err != nil {
 		return fmt.Errorf("校验成本基线来源: %w", err)
 	}
-	if b.Status == BaselineApproved && b.ApprovedBy == "" {
+	if b.Status == BaselineApproved && !validApprovedBy(b.ApprovedBy) {
 		return fmt.Errorf("%w: 已审核基线缺少审核人", domain.ErrInvalidInput)
 	}
 	if b.Status != BaselineDemoOnly && b.Status != BaselineApproved {
 		return fmt.Errorf("%w: 成本基线状态无效", domain.ErrInvalidInput)
+	}
+	if !validSelectionMetadata(b.Provided, b.BaselineLevel) {
+		return fmt.Errorf("%w: 成本基线选用状态无效", domain.ErrInvalidInput)
 	}
 	return nil
 }
@@ -227,11 +294,14 @@ func (v Vulnerability) Validate() error {
 	if v.Status != BaselineDemoOnly && v.Status != BaselineApproved {
 		return fmt.Errorf("%w: 脆弱性基线状态无效", domain.ErrInvalidInput)
 	}
-	if v.Status == BaselineApproved && strings.TrimSpace(v.ApprovedBy) == "" {
+	if v.Status == BaselineApproved && !validApprovedBy(v.ApprovedBy) {
 		return fmt.Errorf("%w: 已审核脆弱性基线缺少审核人", domain.ErrInvalidInput)
 	}
 	if err := validateBaselineSource(v.Source); err != nil {
 		return fmt.Errorf("校验脆弱性基线来源: %w", err)
+	}
+	if !validSelectionMetadata(v.Provided, v.BaselineLevel) {
+		return fmt.Errorf("%w: 脆弱性基线选用状态无效", domain.ErrInvalidInput)
 	}
 	return nil
 }
@@ -377,6 +447,37 @@ func validateFractionBand(low, mid, high float64) error {
 
 func finite(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func validApprovedBy(value string) bool {
+	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) {
+			return false
+		}
+	}
+	return true
+}
+
+func validSelectionMetadata(provided bool, level BaselineLevel) bool {
+	if !provided && level == "" {
+		return true
+	}
+	return provided && (level == BaselineRegional || level == BaselineNational)
+}
+
+func validEvidenceIdentifier(value string) bool {
+	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) {
+			return false
+		}
+	}
+	return true
 }
 
 func isUTC(value time.Time) bool {

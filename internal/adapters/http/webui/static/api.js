@@ -26,6 +26,9 @@
       if (!payload || typeof payload !== "object") {
         throw new APIError("接口返回的数据结构无效", response.status, "invalid_response", "");
       }
+      if (settings.includeResponseMetadata) {
+        return { payload: payload, status: response.status, location: response.headers.get("Location") || "" };
+      }
       return payload;
     } catch (error) {
       if (error && error.name === "AbortError") {
@@ -46,6 +49,9 @@
     if (!Number.isSafeInteger(settings.maxResponseBytes) || settings.maxResponseBytes <= 0 ||
       settings.maxResponseBytes > ABSOLUTE_MAX_RESPONSE_BYTES) {
       throw new APIError("响应字节上限配置无效", 0, "invalid_client_limit", "");
+    }
+    if (typeof settings.includeResponseMetadata !== "boolean" && settings.includeResponseMetadata !== undefined) {
+      throw new APIError("响应元数据配置无效", 0, "invalid_client_limit", "");
     }
     return settings;
   }

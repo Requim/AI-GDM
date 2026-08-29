@@ -19,17 +19,13 @@ import (
 // mountApplicationAPI 将风险和地图适配器合并到同一个 /api/v1 挂载点，避免通配路由互相遮蔽。
 func mountApplicationAPI(server *httpserver.Server, runtime *hazardRuntime,
 	cfg config.Config, dependencies *resources.Resources, logger *slog.Logger,
-	aiHandler http.Handler,
+	aiHandler http.Handler, survivalHandler http.Handler, authority mapapi.RouteAuthorityRecorder,
 ) error {
 	hazardHandler, err := newHazardAPIHandler(runtime, logger)
 	if err != nil {
 		return err
 	}
-	mapHandler, err := newMapAPIHandler(cfg, dependencies, logger)
-	if err != nil {
-		return err
-	}
-	survivalHandler, err := newSurvivalAPIHandler(logger)
+	mapHandler, err := newMapAPIHandlerWithAuthority(cfg, dependencies, authority, logger)
 	if err != nil {
 		return err
 	}

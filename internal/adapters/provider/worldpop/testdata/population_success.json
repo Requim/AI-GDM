@@ -1,0 +1,15 @@
+{
+  "error": null,
+  "progress": 100.0,
+  "result": {
+    "area_km2": 15.25,
+    "data_source": "WorldPop Global 2 Population Data",
+    "data_year": 2020,
+    "population_density": 8223.45,
+    "processing_time_ms": 1850,
+    "total_population": 125432.67
+  },
+  "stage": "Completed",
+  "status": "success",
+  "task_id": "123e4567-e89b-42d3-a456-426614174000"
+}

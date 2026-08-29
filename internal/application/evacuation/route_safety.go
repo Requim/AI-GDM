@@ -15,6 +15,9 @@ import (
 	"github.com/Requim/AI-GDM/internal/ports"
 )
 
+// RouteSafetyRuleVersion 标识路线风险区闸门和确定性排序规则版本。
+const RouteSafetyRuleVersion = "ai-gdm-route-safety-rules-v1"
+
 // RouteSearchInput 描述一次带风险区排除和安全排序的路线搜索。
 type RouteSearchInput struct {
 	HazardType      hazard.Type                 `json:"hazardType"`
@@ -37,6 +40,7 @@ type RouteSearchResult struct {
 	Snapshot           hazard.Snapshot          `json:"snapshot"`
 	Routes             []domainevacuation.Route `json:"routes"`
 	Excluded           []ExcludedRoute          `json:"excluded"`
+	RuleVersion        string                   `json:"ruleVersion"`
 	RiskScoreAvailable bool                     `json:"riskScoreAvailable"`
 	Limitations        []string                 `json:"limitations"`
 }
@@ -170,7 +174,7 @@ func evaluateRoutes(input RouteSearchInput, snapshot hazard.Snapshot, zones []ha
 ) (RouteSearchResult, error) {
 	result := RouteSearchResult{
 		Snapshot: snapshot, Routes: make([]domainevacuation.Route, 0, len(candidates)),
-		Excluded: make([]ExcludedRoute, 0), Limitations: []string{
+		Excluded: make([]ExcludedRoute, 0), RuleVersion: RouteSafetyRuleVersion, Limitations: []string{
 			"路线仅排除了穿越已知风险区的候选，不代表道路已获交管部门确认开放",
 		},
 	}

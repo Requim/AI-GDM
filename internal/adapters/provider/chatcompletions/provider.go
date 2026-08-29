@@ -33,6 +33,8 @@ const (
 	maxBodyBytes        = 2 << 20
 )
 
+var errInvalidStructuredOutput = errors.New("LLM 结构化输出无效")
+
 // Config 配置 OpenAI 兼容端点、供应商标识和严格输出边界。
 type Config struct {
 	ProviderName        string
@@ -126,7 +128,7 @@ func (p *Provider) Generate(ctx context.Context, input report.NarrativeInput) (r
 			return narrative, nil
 		}
 		last = err
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if !errors.Is(err, errInvalidStructuredOutput) {
 			break
 		}
 	}
@@ -134,7 +136,11 @@ func (p *Provider) Generate(ctx context.Context, input report.NarrativeInput) (r
 }
 
 func (p *Provider) generateOnce(ctx context.Context, input report.NarrativeInput) (report.Narrative, error) {
-	body, err := json.Marshal(buildRequest(p.model, p.maxCompletionTokens, input))
+	request, err := buildRequest(p.model, p.maxCompletionTokens, input)
+	if err != nil {
+		return report.Narrative{}, err
+	}
+	body, err := json.Marshal(request)
 	if err != nil {
 		return report.Narrative{}, fmt.Errorf("编码 LLM 请求: %w", err)
 	}
@@ -143,7 +149,8 @@ func (p *Provider) generateOnce(ctx context.Context, input report.NarrativeInput
 		Headers: http.Header{
 			"Accept": {"application/json"}, "Authorization": {"Bearer " + p.apiKey},
 			"Content-Type": {"application/json"},
-		}, MaxBodyBytes: maxBodyBytes,
+		}, MaxBodyBytes: maxBodyBytes, MaxAttempts: 1,
+		RedirectPolicy: httpclient.RedirectDeny,
 	})
 	if err != nil {
 		return report.Narrative{}, fmt.Errorf("请求 LLM: %w", err)
@@ -157,7 +164,8 @@ func (p *Provider) generateOnce(ctx context.Context, input report.NarrativeInput
 	}
 	payload, err := decodeNarrative(content)
 	if err != nil {
-		return report.Narrative{}, fmt.Errorf("%w: LLM 输出结构无效: %w", domain.ErrProviderUnavailable, err)
+		return report.Narrative{}, fmt.Errorf("%w: %w: %v", domain.ErrProviderUnavailable,
+			errInvalidStructuredOutput, err)
 	}
 	if model == "" {
 		model = p.model

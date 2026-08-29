@@ -19,6 +19,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/evacuation"
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
+	"github.com/Requim/AI-GDM/internal/domain/report"
 	"github.com/Requim/AI-GDM/internal/domain/spatial"
 	"github.com/Requim/AI-GDM/internal/ports"
 )
@@ -38,7 +39,13 @@ type Handler struct {
 	routes      ports.RoutePlanner
 	transit     ports.TransitRoutePlanner
 	routeSafety applicationevacuation.RouteSafetySearcher
+	authority   RouteAuthorityRecorder
 	logger      *slog.Logger
+}
+
+// RouteAuthorityRecorder 为可见安全路线生成短期、无位置数据的 AI 权威引用。
+type RouteAuthorityRecorder interface {
+	RecordRoute(context.Context, hazard.Snapshot, evacuation.Route, string) (*report.AnalysisReference, error)
 }
 
 // New 创建相对于 BasePath 挂载的地图代理路由。
@@ -67,11 +74,20 @@ func NewWithTransitAndSafety(facilities applicationevacuation.FacilitySearcher, 
 	transit ports.TransitRoutePlanner, routeSafety applicationevacuation.RouteSafetySearcher,
 	logger *slog.Logger,
 ) (http.Handler, error) {
+	return NewWithTransitSafetyAndAuthority(facilities, routes, transit, routeSafety, nil, logger)
+}
+
+// NewWithTransitSafetyAndAuthority 创建支持路线权威引用的完整地图代理路由。
+func NewWithTransitSafetyAndAuthority(facilities applicationevacuation.FacilitySearcher,
+	routes ports.RoutePlanner, transit ports.TransitRoutePlanner,
+	routeSafety applicationevacuation.RouteSafetySearcher, authority RouteAuthorityRecorder,
+	logger *slog.Logger,
+) (http.Handler, error) {
 	if facilities == nil || routes == nil || logger == nil {
 		return nil, fmt.Errorf("地图代理依赖不能为空")
 	}
 	handler := &Handler{facilities: facilities, routes: routes, transit: transit,
-		routeSafety: routeSafety, logger: logger}
+		routeSafety: routeSafety, authority: authority, logger: logger}
 	router := chi.NewRouter()
 	router.Post("/places/nearby", handler.nearby)
 	router.Post("/routes", handler.route)
@@ -151,6 +167,9 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		projected, err := buildSafeRouteResult(result)
+		if err == nil {
+			err = h.attachRouteAuthorities(r.Context(), &projected)
+		}
 		h.writeResult(w, r, projected, err)
 		return
 	}
@@ -171,6 +190,50 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request) {
 		result, err = h.routes.Plan(r.Context(), input.Origin, input.Destination, input.Mode)
 	}
 	h.writeResult(w, r, result, err)
+}
+
+func (h *Handler) attachRouteAuthorities(ctx context.Context, result *safeRouteResult) error {
+	if h.authority == nil {
+		return nil
+	}
+	cacheFailed, unavailable := false, false
+	for index := range result.Routes {
+		ref, err := h.authority.RecordRoute(ctx, result.Snapshot,
+			result.Routes[index].Route, result.RuleVersion)
+		if err != nil {
+			cacheFailed = true
+			h.logger.WarnContext(ctx, "路线权威引用记录失败", "route_id", result.Routes[index].ID, "error", err)
+			continue
+		}
+		if ref == nil {
+			unavailable = true
+			continue
+		}
+		if !validRouteAuthorityReference(*ref) {
+			cacheFailed = true
+			continue
+		}
+		copyValue := *ref
+		result.Routes[index].AnalysisRef = &copyValue
+	}
+	addAuthorityLimitations(result, cacheFailed, unavailable)
+	return fitRouteResponse(result)
+}
+
+func validRouteAuthorityReference(value report.AnalysisReference) bool {
+	normalized, err := value.Normalize()
+	return err == nil && normalized == value && value.Kind == report.AuthorityEvacuationRoute
+}
+
+func addAuthorityLimitations(result *safeRouteResult, cacheFailed, unavailable bool) {
+	if cacheFailed {
+		result.Limitations = appendUnique(result.Limitations,
+			"路线权威引用缓存失败；确定性路线仍可使用，但暂不能生成对应 AI 说明")
+	}
+	if unavailable {
+		result.Limitations = appendUnique(result.Limitations,
+			"路线权威缓存未配置或快照已过期，未生成对应 AI 说明引用")
+	}
 }
 
 func decode(request *http.Request, destination any) error {

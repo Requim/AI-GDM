@@ -2,7 +2,7 @@
 
 ## 用途
 
-`ai-gdm-survival-rules-v1` 只用于公开历史案例回放、演示和搜救指挥辅助。它根据匿名化场景的失联时长、输入完整度、环境信号和受困信号，生成可解释的宽概率区间与搜救优先级。
+`ai-gdm-survival-rules-v1` 只用于公开历史案例与合成匿名场景的回放、演示和搜救指挥辅助。它根据合成场景的失联时长、输入完整度、环境信号和受困信号，生成可解释的宽概率区间与搜救优先级，不提供真实人员入口或实时个案评估。
 
 ## 数据边界
 
@@ -26,6 +26,6 @@
 ## 回放接口
 
 - `GET /api/v1/survival/cases`：历史案例列表及其来源。
-- `GET /api/v1/survival/cases/{caseID}`：案例详情和回放场景标识。
-- `POST /api/v1/survival/scenarios/{scenarioID}/assess`：执行确定性回放评估。
-- `GET /api/v1/survival/model-card`：返回机器可读模型卡。
+- `GET /api/v1/survival/cases/{caseID}`：返回公开案例、唯一绑定的完整合成匿名场景、场景摘要和历史回放用途声明。
+- `POST /api/v1/survival/replays/cases/{caseID}/assessment`：对该案例唯一绑定的合成匿名场景执行确定性回放；请求体必须为空，浏览器不能提交人员信息或自定义场景。
+- `GET /api/v1/survival/model-card`：返回机器可读模型卡；页面仅在评估结果的 `modelVersion` 与模型卡版本完全一致且 `humanReviewStatus=required` 时展示可解释结果。
