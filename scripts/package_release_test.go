@@ -18,6 +18,8 @@ func TestReleasePackagingContracts(t *testing.T) {
 		"ai-gdm-images-linux-amd64.tar", "manifest.json", "SHA256SUMS", "security_verify_stability",
 		"cleanup_partial_output", "PACKAGE_REQUIRE_SOURCE_COMMIT", "PACKAGE_MIN_FREE_KB",
 		"ai.gdm.package.run", "BUILD_CONTAINER", "deploy/deploy.sh", "deploy/deploy.ps1",
+		"README.md", "docs/data-sources-v1.md", "docs/model-cards-v1.md",
+		"docs/limitations-v1.md", "docs/release-v0.1.0.md",
 	} {
 		if !strings.Contains(packageScript, value) {
 			t.Fatalf("发布打包脚本缺少 %q", value)
@@ -26,6 +28,8 @@ func TestReleasePackagingContracts(t *testing.T) {
 	for _, value := range []string{
 		"sha256sum -c", "ELF 64-bit", "PE32+", "go version -m", "expected-files",
 		"go run ./cmd/releasecheck", "ai.gdm.package.validation.run", "./deploy/deploy.sh", "./deploy/deploy.ps1",
+		"./README.md", "./docs/data-sources-v1.md", "./docs/model-cards-v1.md",
+		"./docs/limitations-v1.md", "./docs/release-v0.1.0.md",
 	} {
 		if !strings.Contains(validateScript, value) {
 			t.Fatalf("发布包门禁缺少 %q", value)

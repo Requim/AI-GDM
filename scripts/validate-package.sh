@@ -76,6 +76,7 @@ PACKAGE_CREATED_AT=$(sed -n 's/^PACKAGE_CREATED_AT=//p' "$LOG_FILE")
 }
 
 cat >"$WORK_DIR/expected-files" <<'EOF'
+./README.md
 ./SHA256SUMS
 ./bin/ai-gdm-healthcheck-linux-amd64
 ./bin/ai-gdm-server-linux-amd64
@@ -86,8 +87,12 @@ cat >"$WORK_DIR/expected-files" <<'EOF'
 ./deploy/deploy.sh
 ./deploy/release-images.env
 ./deploy/runtime.env.example
+./docs/data-sources-v1.md
 ./docs/deployment-v1.md
+./docs/limitations-v1.md
+./docs/model-cards-v1.md
 ./docs/package-v1.md
+./docs/release-v0.1.0.md
 ./images/IMAGE-SOURCES.txt
 ./images/ai-gdm-images-linux-amd64.tar
 ./manifest.json

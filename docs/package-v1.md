@@ -18,6 +18,7 @@ sudo env PACKAGE_VERSION=v0.1.0 PACKAGE_PULL_IMAGES=1 \
 ```text
 dist/
   ai-gdm-v0.1.0-linux-amd64/
+    README.md
     bin/
     images/ai-gdm-images-linux-amd64.tar
     deploy/deploy.sh
@@ -25,7 +26,12 @@ dist/
     deploy/compose.offline.yaml
     deploy/release-images.env
     deploy/runtime.env.example
-    docs/
+    docs/data-sources-v1.md
+    docs/deployment-v1.md
+    docs/limitations-v1.md
+    docs/model-cards-v1.md
+    docs/package-v1.md
+    docs/release-v0.1.0.md
     compose.yaml
     manifest.json
     SHA256SUMS

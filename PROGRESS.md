@@ -18,9 +18,9 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前阶段 | P10.4 正式交付进行中 |
-| 最近完成 | P10.3 一键部署验收 |
-| 下一步 | 补齐正式交付文档，从最终提交构建发布包，部署腾讯 Ubuntu，并推送 v0.1.0 标签与 Release |
+| 当前阶段 | P10.4 正式交付已完成 |
+| 最近完成 | P10.4 正式交付 |
+| 下一步 | 持续监控腾讯 Ubuntu 运行状态，并按已知限制补充真实批准基线、TLS、备份和高可用 |
 | 阻塞项 | 无；未导入真实已批准基线时损失评估按数据不足降级 |
 | 最后更新 | 2026-08-30 |
 
@@ -70,7 +70,7 @@
 | P10.1 容器部署 | 已完成 | `build(docker): 完成生产容器与编排配置` |
 | P10.2 二进制与原始镜像 | 已完成 | `build(package): 建立二进制与离线镜像打包流程` |
 | P10.3 一键部署验收 | 已完成 | `test(deploy): 验证离线一键部署流程` |
-| P10.4 正式交付 | 进行中 | `chore(release): 完成面试评估版本交付` |
+| P10.4 正式交付 | 已完成 | `chore(release): 完成面试评估版本交付` |
 
 ## 阶段记录
 
@@ -481,6 +481,17 @@
 - 关键决策：部署脚本只在首次运行生成运行密钥，既有 `runtime.env` 作为权威配置并显式覆盖宿主 Compose 插值；项目名通过 `--project-name` 固定，避免 `COMPOSE_PROJECT_NAME` 操作错误资源。P10.3 候选树没有真实 commit，manifest 使用 `sourceCommit=unknown`；P10.4 正式包必须绑定最终提交。
 - 已知风险：Shell 路径已在腾讯 Ubuntu 端到端验证；PowerShell 路径完成语法、严格键名、配置与打包合同测试，但未在 Windows Docker Desktop 空缓存环境完成真实容器验收。部署后的实时数据、地图和 LLM 仍依赖互联网与供应商状态。
 - 目标提交：`test(deploy): 验证离线一键部署流程`
+
+### P10.4 正式交付
+
+- 状态：已完成
+- 目标：补齐面试评估所需的 README、数据来源、模型卡、限制和发布说明，并从最终 commit 生成可审计发布包、Git 日志附件、`v0.1.0` 标签与 GitHub Release，部署到指定腾讯 Ubuntu。
+- 变更：新增根目录 README、数据来源、模型卡索引、MVP 限制和 `v0.1.0` 发布说明；同步损失 API/公式、空间暴露和后端架构文档到当前生产契约；正式发布包强制携带这些交付材料，manifest、精确文件清单和只读 releasecheck 均拒绝缺失或篡改。
+- 固定验收：提交前源码 tree 为 `d35e86c60489158856b8f6d4f70aef0aa581255e`，Git archive SHA-256 为 `d59edb7d6a64503761a015b00f6bb5cb219582fb70b4c96847a3fd6eff6305a6`，受审计 source SHA-256 为 `0e48c3733661ccca2015552d6b55401c4bd8f4be145f5b3ea2163dae048a3492`；腾讯 Ubuntu 解包后重建 tree 完全一致。
+- 验证：`validate-package.sh` 生成并校验新增文档、Linux/Windows 二进制、三镜像 tar、manifest 和内外层 SHA-256；`validate-deploy.sh` 在空镜像缓存中完成离线加载、一键部署、重复部署、保留卷停启和持久化验收；`validate-go.sh` 离线全仓测试、密钥门禁、`go vet` 和完整构建通过。
+- 正式发布：提交后仅从该真实 commit 以 `PACKAGE_REQUIRE_SOURCE_COMMIT=1` 重新构建，包内 manifest 是 commit、tree、source、镜像和 payload 的权威绑定；Git 日志在最终提交后动态导出并与发布包一起上传 Release，不提交静态或过时副本。常驻部署使用 `/opt/ai-gdm/releases/v0.1.0`、`/opt/ai-gdm/current` 和权限为 `0600` 的服务器私有运行配置。
+- 已知风险：默认公网入口为明文 HTTP `8080`，单节点 Compose 没有 TLS、高可用或自动备份；博查没有评估 Key 时保持未配置，外部 LLM 当前可能按供应商状态降级；未导入真实已批准损失基线时损失接口保持 `insufficient_data`；Windows Docker Desktop 空缓存端到端未在本阶段执行。
+- 目标提交：`chore(release): 完成面试评估版本交付`
 
 ## 关键决策与风险
 

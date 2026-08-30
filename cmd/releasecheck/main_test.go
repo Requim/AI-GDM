@@ -129,8 +129,8 @@ func TestPackageArtifactsMustMatchEveryFile(t *testing.T) {
 	})
 }
 
-func TestPackageRequiresBothDeploymentEntrypoints(t *testing.T) {
-	for _, filename := range requiredDeploymentArtifacts {
+func TestPackageRequiresEveryReleaseArtifact(t *testing.T) {
+	for _, filename := range requiredReleaseArtifacts {
 		t.Run(filename, func(t *testing.T) {
 			fixture := newReleaseFixture(t)
 			if err := os.Remove(filepath.Join(fixture.root, filepath.FromSlash(filename))); err != nil {
@@ -279,6 +279,7 @@ func writeFixtureFiles(t *testing.T, root string) {
 	writeFile(t, filepath.Join(root, "bin", "ai-gdm-server-linux-amd64"), []byte("linux"))
 	writeFile(t, filepath.Join(root, "bin", "ai-gdm-server-windows-amd64.exe"), []byte("windows"))
 	writeFile(t, filepath.Join(root, "bin", "ai-gdm-healthcheck-linux-amd64"), []byte("health"))
+	writeFile(t, filepath.Join(root, "README.md"), []byte("readme\n"))
 	writeFile(t, filepath.Join(root, "compose.yaml"), []byte("services: {}\n"))
 	writeFile(t, filepath.Join(root, "deploy", "compose.offline.yaml"), []byte("services: {}\n"))
 	writeFile(t, filepath.Join(root, "deploy", "deploy.sh"), []byte("#!/usr/bin/env sh\n"))
@@ -286,6 +287,11 @@ func writeFixtureFiles(t *testing.T, root string) {
 	writeFile(t, filepath.Join(root, "deploy", "release-images.env"), []byte(releaseImageEnvironment()))
 	writeFile(t, filepath.Join(root, "deploy", "runtime.env.example"), []byte(runtimeTemplate()))
 	writeFile(t, filepath.Join(root, "docs", "deployment-v1.md"), []byte("deployment\n"))
+	writeFile(t, filepath.Join(root, "docs", "data-sources-v1.md"), []byte("sources\n"))
+	writeFile(t, filepath.Join(root, "docs", "limitations-v1.md"), []byte("limitations\n"))
+	writeFile(t, filepath.Join(root, "docs", "model-cards-v1.md"), []byte("models\n"))
+	writeFile(t, filepath.Join(root, "docs", "package-v1.md"), []byte("package\n"))
+	writeFile(t, filepath.Join(root, "docs", "release-v0.1.0.md"), []byte("release\n"))
 	writeFile(t, filepath.Join(root, "images", "IMAGE-SOURCES.txt"), []byte("sources\n"))
 	writeFile(t, filepath.Join(root, "SHA256SUMS"), []byte("generated externally\n"))
 }

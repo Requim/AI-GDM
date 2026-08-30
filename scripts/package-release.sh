@@ -256,6 +256,7 @@ build_release_images() {
 }
 
 copy_release_files() {
+  cp "$SNAPSHOT_DIR/README.md" "$PACKAGE_DIR/README.md"
   cp "$BUILD_DIR/ai-gdm-server-linux-amd64" "$PACKAGE_DIR/bin/"
   cp "$BUILD_DIR/ai-gdm-server-windows-amd64.exe" "$PACKAGE_DIR/bin/"
   cp "$BUILD_DIR/ai-gdm-healthcheck-linux-amd64" "$PACKAGE_DIR/bin/"
@@ -265,7 +266,11 @@ copy_release_files() {
   cp "$SNAPSHOT_DIR/deploy/deploy.ps1" "$PACKAGE_DIR/deploy/deploy.ps1"
   cp "$SNAPSHOT_DIR/deploy/runtime.env.example" "$PACKAGE_DIR/deploy/runtime.env.example"
   cp "$SNAPSHOT_DIR/docs/deployment-v1.md" "$PACKAGE_DIR/docs/deployment-v1.md"
+  cp "$SNAPSHOT_DIR/docs/data-sources-v1.md" "$PACKAGE_DIR/docs/data-sources-v1.md"
+  cp "$SNAPSHOT_DIR/docs/limitations-v1.md" "$PACKAGE_DIR/docs/limitations-v1.md"
+  cp "$SNAPSHOT_DIR/docs/model-cards-v1.md" "$PACKAGE_DIR/docs/model-cards-v1.md"
   cp "$SNAPSHOT_DIR/docs/package-v1.md" "$PACKAGE_DIR/docs/package-v1.md"
+  cp "$SNAPSHOT_DIR/docs/release-v0.1.0.md" "$PACKAGE_DIR/docs/release-v0.1.0.md"
   chmod 0755 "$PACKAGE_DIR/bin/ai-gdm-server-linux-amd64" "$PACKAGE_DIR/bin/ai-gdm-healthcheck-linux-amd64" \
     "$PACKAGE_DIR/deploy/deploy.sh"
 }
@@ -309,6 +314,7 @@ write_manifest() {
     {"reference": "$REDIS_TAG", "source": "$REDIS_SOURCE", "id": "$REDIS_IMAGE_ID", "platform": "$REDIS_IMAGE_PLATFORM", "sizeBytes": $REDIS_IMAGE_SIZE}
   ],
   "artifacts": [
+    {"path": "README.md", "sha256": "$(artifact_sha README.md)", "sizeBytes": $(artifact_size README.md)},
     {"path": "bin/ai-gdm-server-linux-amd64", "sha256": "$(artifact_sha bin/ai-gdm-server-linux-amd64)", "sizeBytes": $(artifact_size bin/ai-gdm-server-linux-amd64)},
     {"path": "bin/ai-gdm-server-windows-amd64.exe", "sha256": "$(artifact_sha bin/ai-gdm-server-windows-amd64.exe)", "sizeBytes": $(artifact_size bin/ai-gdm-server-windows-amd64.exe)},
     {"path": "bin/ai-gdm-healthcheck-linux-amd64", "sha256": "$(artifact_sha bin/ai-gdm-healthcheck-linux-amd64)", "sizeBytes": $(artifact_size bin/ai-gdm-healthcheck-linux-amd64)},
@@ -319,8 +325,12 @@ write_manifest() {
     {"path": "deploy/deploy.ps1", "sha256": "$(artifact_sha deploy/deploy.ps1)", "sizeBytes": $(artifact_size deploy/deploy.ps1)},
     {"path": "deploy/release-images.env", "sha256": "$(artifact_sha deploy/release-images.env)", "sizeBytes": $(artifact_size deploy/release-images.env)},
     {"path": "deploy/runtime.env.example", "sha256": "$(artifact_sha deploy/runtime.env.example)", "sizeBytes": $(artifact_size deploy/runtime.env.example)},
+    {"path": "docs/data-sources-v1.md", "sha256": "$(artifact_sha docs/data-sources-v1.md)", "sizeBytes": $(artifact_size docs/data-sources-v1.md)},
     {"path": "docs/deployment-v1.md", "sha256": "$(artifact_sha docs/deployment-v1.md)", "sizeBytes": $(artifact_size docs/deployment-v1.md)},
+    {"path": "docs/limitations-v1.md", "sha256": "$(artifact_sha docs/limitations-v1.md)", "sizeBytes": $(artifact_size docs/limitations-v1.md)},
+    {"path": "docs/model-cards-v1.md", "sha256": "$(artifact_sha docs/model-cards-v1.md)", "sizeBytes": $(artifact_size docs/model-cards-v1.md)},
     {"path": "docs/package-v1.md", "sha256": "$(artifact_sha docs/package-v1.md)", "sizeBytes": $(artifact_size docs/package-v1.md)},
+    {"path": "docs/release-v0.1.0.md", "sha256": "$(artifact_sha docs/release-v0.1.0.md)", "sizeBytes": $(artifact_size docs/release-v0.1.0.md)},
     {"path": "compose.yaml", "sha256": "$(artifact_sha compose.yaml)", "sizeBytes": $(artifact_size compose.yaml)}
   ]
 }
