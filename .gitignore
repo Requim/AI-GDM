@@ -20,6 +20,8 @@ coverage/
 data/raw/
 data/cache/
 runtime/
+deploy/runtime.env
+deploy/*.local
 
 # 配置与密钥
 .env
