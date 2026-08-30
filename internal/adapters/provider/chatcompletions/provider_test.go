@@ -36,8 +36,12 @@ func TestGenerateSendsConstrainedJSONPrompt(t *testing.T) {
 		if err = json.Unmarshal(body, &request); err != nil {
 			t.Fatal(err)
 		}
-		if request.ResponseFormat.Type != "json_object" || request.MaxTokens != 800 {
+		if request.ResponseFormat.Type != "json_object" || request.MaxCompletionTokens != 800 {
 			t.Fatalf("请求约束 = %+v", request)
+		}
+		if bytes.Contains(body, []byte(`"max_tokens"`)) ||
+			!bytes.Contains(body, []byte(`"max_completion_tokens":800`)) {
+			t.Fatalf("请求使用了不兼容的输出 token 字段: %s", body)
 		}
 		if len(request.Messages) != 2 || !strings.Contains(request.Messages[0].Content, "不可信数据") ||
 			!strings.Contains(request.Messages[1].Content, "riskLevel") ||

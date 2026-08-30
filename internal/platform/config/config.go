@@ -89,7 +89,7 @@ type LHASAConfig struct {
 }
 
 // MapConfig 保存高德服务端代理的连接和安全配置。
-// APIKey 与 SecurityCode 只允许在服务端环境变量中提供，不会下发到浏览器。
+// APIKey 与可选 SecurityCode 只允许在服务端环境变量中提供，不会下发到浏览器。
 type MapConfig struct {
 	Enabled      bool
 	BaseURL      string
@@ -350,9 +350,6 @@ func validateMap(config MapConfig) error {
 	}
 	if config.APIKey == "" {
 		return configError("启用高德地图时必须配置 AMAP_API_KEY")
-	}
-	if config.SecurityCode == "" {
-		return configError("启用高德地图时必须配置 AMAP_JSCODE")
 	}
 	if config.Timeout <= 0 {
 		return configError("启用高德地图时 AMAP_TIMEOUT 必须为正数时长")

@@ -324,7 +324,8 @@ func TestGenerateDegradesProviderTimeoutsWhenRequestContextIsAlive(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.EvidenceAvailable || result.NarrativeAvailable || len(result.Limitations) != 2 {
+	if result.EvidenceAvailable || result.NarrativeAvailable || len(result.Limitations) != 2 ||
+		result.Evidence == nil || result.Authority.ID != "loss-1" || result.AuthoritySHA256 == "" {
 		t.Fatalf("供应商超时未降级: %+v", result)
 	}
 	assertNarrativeWire(t, result.Narrative, false)

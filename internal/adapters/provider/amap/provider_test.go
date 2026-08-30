@@ -43,6 +43,27 @@ func TestFindNearbyMapsPOIAndRedactsCredentials(t *testing.T) {
 	}
 }
 
+func TestFindNearbyOmitsOptionalJSCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		query := request.URL.Query()
+		if query.Get("key") != "test-key" || query.Has("jscode") {
+			t.Fatalf("可选安全密钥参数错误: %v", query)
+		}
+		_, _ = w.Write([]byte(`{"status":"1","pois":[]}`))
+	}))
+	defer server.Close()
+	client := httpclient.New(httpclient.Options{AllowHTTP: true, MaxAttempts: 1})
+	provider, err := New(client, Config{BaseURL: server.URL, APIKey: "test-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.FindNearby(context.Background(),
+		spatial.Point{Longitude: 116.397128, Latitude: 39.916527}, evacuation.FacilityHospital, 2_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPlanMapsDrivingRouteToWGS84(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v5/direction/driving" {
@@ -51,7 +72,7 @@ func TestPlanMapsDrivingRouteToWGS84(t *testing.T) {
 		if request.URL.Query().Get("show_fields") != "cost,polyline" {
 			t.Fatalf("路线字段参数错误: %s", request.URL.RawQuery)
 		}
-		_, _ = w.Write([]byte(`{"status":"1","route":{"paths":[{"distance":"1800","duration":"420","steps":[{"instruction":"向北行驶","road_name":"测试路","distance":"800","polyline":"116.410244,39.916404;116.411000,39.920000"},{"instruction":"到达终点","road_name":"终点路","distance":"1000","polyline":"116.411000,39.920000;116.420000,39.925000"}]}]}}`))
+		_, _ = w.Write([]byte(`{"status":"1","route":{"paths":[{"distance":"1800","cost":{"duration":"420"},"steps":[{"instruction":"向北行驶","road_name":"测试路","step_distance":"800","polyline":"116.410244,39.916404;116.411000,39.920000"},{"instruction":"到达终点","road_name":"终点路","step_distance":"1000","polyline":"116.411000,39.920000;116.420000,39.925000"}]}]}}`))
 	}))
 	defer server.Close()
 	provider := newTestProvider(t, server.URL)

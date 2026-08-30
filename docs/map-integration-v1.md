@@ -9,10 +9,10 @@
 | `AMAP_ENABLED` | 否 | 是否创建高德适配器，默认 `false` |
 | `AMAP_BASE_URL` | 否 | 高德 Web 服务基地址，默认 `https://restapi.amap.com` |
 | `AMAP_API_KEY` | 启用时是 | 高德 Web 服务 `key`，不写入日志或响应 |
-| `AMAP_JSCODE` | 启用时是 | 高德服务端安全密钥，作为 `jscode` 注入请求 |
+| `AMAP_JSCODE` | 否 | 可选兼容安全密钥；配置时作为 `jscode` 注入请求，普通 Web服务 Key 可留空 |
 | `AMAP_TIMEOUT` | 否 | 单次请求超时，默认 `15s` |
 
-`cmd/server` 只负责创建受控 HTTP 客户端、风险仓储和应用服务并注入密钥。候选设施由 `application/evacuation` 读取最新完整风险分析后筛选，驾车和步行路线依赖 `ports.RoutePlanner`，公交路线依赖独立的 `ports.TransitRoutePlanner`。客户端请求不能覆盖 `key`、`jscode` 或供应商地址。
+`cmd/server` 只负责创建受控 HTTP 客户端、风险仓储和应用服务并注入密钥。候选设施由 `application/evacuation` 读取最新完整风险分析后筛选，驾车和步行路线依赖 `ports.RoutePlanner`，公交路线依赖独立的 `ports.TransitRoutePlanner`。客户端请求不能覆盖 `key`、可选 `jscode` 或供应商地址。
 
 ## 服务端代理接口
 

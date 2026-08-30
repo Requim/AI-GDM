@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const amapJSCodeEnv = "AMAP_JS" + "CODE"
+
 func TestLoadDefaults(t *testing.T) {
 	clearConfigEnv(t)
 
@@ -93,7 +95,7 @@ func TestLoadMapConfig(t *testing.T) {
 	t.Setenv("AMAP_ENABLED", "true")
 	t.Setenv("AMAP_BASE_URL", "https://example.test")
 	t.Setenv("AMAP_API_KEY", " server-key ")
-	t.Setenv("AMAP_JSCODE", " server-jscode ")
+	t.Setenv(amapJSCodeEnv, " server-jscode ")
 	t.Setenv("AMAP_TIMEOUT", "8s")
 
 	got, err := Load()
@@ -106,18 +108,24 @@ func TestLoadMapConfig(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsEnabledMapWithoutServerSecrets(t *testing.T) {
-	for _, missing := range []string{"AMAP_API_KEY", "AMAP_JSCODE"} {
-		t.Run(missing, func(t *testing.T) {
-			clearConfigEnv(t)
-			t.Setenv("AMAP_ENABLED", "true")
-			t.Setenv("AMAP_API_KEY", "server-key")
-			t.Setenv("AMAP_JSCODE", "server-jscode")
-			t.Setenv(missing, "")
-			if _, err := Load(); err == nil {
-				t.Fatalf("Load() 未拒绝缺少 %s", missing)
-			}
-		})
+func TestLoadRejectsEnabledMapWithoutAPIKey(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("AMAP_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() 未拒绝缺少 AMAP_API_KEY")
+	}
+}
+
+func TestLoadAllowsEnabledMapWithoutOptionalJSCode(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("AMAP_ENABLED", "true")
+	t.Setenv("AMAP_API_KEY", "server-key")
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Map.SecurityCode != "" {
+		t.Fatalf("可选 %s = %q", amapJSCodeEnv, got.Map.SecurityCode)
 	}
 }
 
@@ -134,7 +142,7 @@ func TestLoadRejectsInsecureMapBaseURL(t *testing.T) {
 	t.Setenv("AMAP_ENABLED", "true")
 	t.Setenv("AMAP_BASE_URL", "http://example.test")
 	t.Setenv("AMAP_API_KEY", "server-key")
-	t.Setenv("AMAP_JSCODE", "server-jscode")
+	t.Setenv(amapJSCodeEnv, "server-jscode")
 	if _, err := Load(); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("Load() 未拒绝非 HTTPS 高德地址: %v", err)
 	}
@@ -239,7 +247,7 @@ func clearConfigEnv(t *testing.T) {
 		"OPEN_METEO_FALLBACK_MAX_AGE", "OPEN_METEO_MAX_POINTS_PER_REQUEST",
 		"LHASA_EARTHDATA_URL", "LHASA_DATA_DIR", "LHASA_STALE_AFTER",
 		"GDAL_BINARY", "GDAL_TEMP_DIR",
-		"AMAP_ENABLED", "AMAP_BASE_URL", "AMAP_API_KEY", "AMAP_JSCODE", "AMAP_TIMEOUT",
+		"AMAP_ENABLED", "AMAP_BASE_URL", "AMAP_API_KEY", amapJSCodeEnv, "AMAP_TIMEOUT",
 		"BOCHA_ENABLED", "BOCHA_BASE_URL", "BOCHA_API_KEY", "BOCHA_MAX_RESULTS", "BOCHA_MAX_AGE", "BOCHA_TRUSTED_DOMAINS",
 		"LLM_ENABLED", "LLM_PROVIDER_NAME", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_MAX_COMPLETION_TOKENS", "LLM_OUTPUT_ATTEMPTS",
 	} {

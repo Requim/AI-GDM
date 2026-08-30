@@ -35,7 +35,7 @@ const (
 	maxResponse    = 8 << 20
 )
 
-// Config 保存服务端注入的高德配置。APIKey 和 SecurityCode 不会写入日志或来源 URI。
+// Config 保存服务端注入的高德配置。APIKey 和可选 SecurityCode 不会写入日志或来源 URI。
 type Config struct {
 	BaseURL      string
 	APIKey       string
@@ -279,7 +279,11 @@ func (p *Provider) route(path directionPathValue, origin, destination spatial.Po
 	if err != nil {
 		return evacuation.Route{}, fmt.Errorf("距离无效: %w", err)
 	}
-	duration, err := parsePositiveInt(path.Duration)
+	durationText := string(path.Duration)
+	if strings.TrimSpace(durationText) == "" {
+		durationText = string(path.Cost.Duration)
+	}
+	duration, err := parsePositiveInt(durationText)
 	if err != nil {
 		return evacuation.Route{}, fmt.Errorf("时长无效: %w", err)
 	}
@@ -289,7 +293,11 @@ func (p *Provider) route(path directionPathValue, origin, destination spatial.Po
 	}
 	steps := make([]evacuation.RouteStep, 0, len(path.Steps))
 	for _, step := range path.Steps {
-		stepDistance, stepErr := parsePositiveNumber(step.Distance)
+		stepDistanceText := string(step.Distance)
+		if strings.TrimSpace(stepDistanceText) == "" {
+			stepDistanceText = string(step.StepDistance)
+		}
+		stepDistance, stepErr := parsePositiveNumber(stepDistanceText)
 		if stepErr != nil {
 			return evacuation.Route{}, fmt.Errorf("步骤距离无效: %w", stepErr)
 		}
@@ -783,13 +791,19 @@ func (value *stringValue) UnmarshalJSON(content []byte) error {
 
 type directionPathValue struct {
 	Distance string          `json:"distance"`
-	Duration string          `json:"duration"`
+	Duration stringValue     `json:"duration"`
+	Cost     directionCost   `json:"cost"`
 	Steps    []directionStep `json:"steps"`
 }
 
+type directionCost struct {
+	Duration stringValue `json:"duration"`
+}
+
 type directionStep struct {
-	Instruction string `json:"instruction"`
-	RoadName    string `json:"road_name"`
-	Distance    string `json:"distance"`
-	Polyline    string `json:"polyline"`
+	Instruction  string      `json:"instruction"`
+	RoadName     string      `json:"road_name"`
+	Distance     stringValue `json:"distance"`
+	StepDistance stringValue `json:"step_distance"`
+	Polyline     string      `json:"polyline"`
 }

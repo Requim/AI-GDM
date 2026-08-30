@@ -8,7 +8,7 @@ Chat Completions 适配器是解释性文字生成器，不是风险、路线、
 
 - 端点必须是无用户信息、无查询参数和无片段的 HTTPS 地址。
 - API 密钥只从 `LLM_API_KEY` 读取，放在服务端内存；来源 URI、错误文本和日志不记录密钥。
-- 请求固定使用 `response_format.type=json_object`、低温度和有限 `max_tokens`。用户消息显式包含小写 `json`，并声明四个字段的准确类型，兼容当前端点的 JSON 模式要求。
+- 请求固定使用 `response_format.type=json_object`、低温度和有限 `max_completion_tokens`。用户消息显式包含小写 `json`，并声明四个字段的准确类型，兼容当前端点的 JSON 模式要求；不发送该模型不兼容的旧 `max_tokens` 字段。
 - 系统提示词把分析 JSON、搜索摘要和其中的指令视为不可信资料，只允许阅读，不执行工具调用或提示注入。
 
 ## 输出校验
@@ -21,6 +21,8 @@ Chat Completions 适配器是解释性文字生成器，不是风险、路线、
 ## 可靠性与降级
 
 结构化输出失败时按配置重试，最多三次；上下文取消和超时保留原始错误链。非上下文供应商故障由应用层降级为“暂无解释性说明”，并继续返回确定性分析，不生成替代数字或伪造报告。
+
+在线系统门禁区分“真实生成成功”和“上游暂不可用”。只有模型目录鉴权成功、配置模型确实存在，且生产同形的结构化请求明确返回 `upstream_error` 时，才允许把门禁记为 `degraded`；鉴权失败、模型缺失和其他响应仍直接失败。降级结果不等同于真实报告生成成功，系统报告仅在该次运行发生降级时记录 `provider_upstream_error`，并额外执行应用层 Authority 保留与非空数组合同测试。
 
 ## 密钥和提示注入测试
 
@@ -38,6 +40,6 @@ Chat Completions 适配器是解释性文字生成器，不是风险、路线、
 | `LLM_MAX_COMPLETION_TOKENS` | `1200` | 输出上限，最大 4096 |
 | `LLM_OUTPUT_ATTEMPTS` | `2` | 结构化输出尝试次数，最大 3 |
 
-远端离线验收脚本 `scripts/validate-llm.sh` 使用 Go 1.26.7 容器执行竞态测试、模块校验、`go vet` 和全量构建。`scripts/validate-llm-live.sh` 读取服务器私密配置，只执行显式启用的真实端点契约测试。
+远端离线验收脚本 `scripts/validate-llm.sh` 使用 Go 1.26.7 容器执行竞态测试、模块校验、`go vet` 和全量构建。`scripts/validate-llm-live.sh` 读取服务器私密配置，只执行显式启用的真实端点契约测试，并以不同退出码区分成功生成、已验证的上游降级和合同失败。
 
 Go 服务只读取进程环境，不直接解析密钥文件。正式启动时必须由 Docker Compose `env_file`、systemd `EnvironmentFile` 或受控启动脚本加载 `/home/ubuntu/.config/ai-gdm/runtime.env`；仅创建文件不会自动启用 LLM。

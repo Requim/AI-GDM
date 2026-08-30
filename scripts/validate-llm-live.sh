@@ -29,6 +29,9 @@ if [ "$LLM_ENABLED" != "true" ]; then
   exit 1
 fi
 
+OUTPUT=$(mktemp)
+trap 'rm -f "$OUTPUT"' EXIT HUP INT TERM
+STATUS=0
 sh "$ROOT/scripts/run-validation-container.sh" \
   -v "$ROOT:/src:ro" \
   -w /src \
@@ -41,6 +44,39 @@ sh "$ROOT/scripts/run-validation-container.sh" \
   -e LLM_MAX_COMPLETION_TOKENS \
   -e LLM_OUTPUT_ATTEMPTS \
   "$IMAGE" \
-  go test ./internal/adapters/provider/chatcompletions -run '^TestLiveGenerate$' -count=1
+  go test ./internal/adapters/provider/chatcompletions ./internal/application/agent \
+  -run '^(TestLiveProviderState|TestGenerateDegradesProviderTimeoutsWhenRequestContextIsAlive)$' \
+  -count=1 -v \
+  >"$OUTPUT" 2>&1 || STATUS=$?
 
-printf '%s\n' '真实 OpenAI 兼容 LLM 结构化输出契约验证通过'
+cat "$OUTPUT"
+[ "$STATUS" -eq 0 ] || exit "$STATUS"
+require_test_passed_once() {
+  name=$1
+  run_count=$(grep -F -x -c -- "=== RUN   $name" "$OUTPUT" || true)
+  pass_count=$(grep -E -c -- "^--- PASS: $name \\([0-9]+(\\.[0-9]+)?s\\)$" "$OUTPUT" || true)
+  bad_count=$(grep -E -c -- "^--- (FAIL|SKIP): $name " "$OUTPUT" || true)
+  [ "$run_count" -eq 1 ] && [ "$pass_count" -eq 1 ] && [ "$bad_count" -eq 0 ]
+}
+
+require_test_passed_once TestLiveProviderState || {
+  printf '%s\n' 'LLM 在线供应商状态测试未精确执行并通过' >&2
+  exit 1
+}
+require_test_passed_once TestGenerateDegradesProviderTimeoutsWhenRequestContextIsAlive || {
+  printf '%s\n' 'LLM 应用降级合同测试未精确执行并通过' >&2
+  exit 1
+}
+RECOVERED=$(grep -E -c -e '(^|: )LLM_LIVE_RECOVERED$' "$OUTPUT" || true)
+DEGRADED=$(grep -E -c -e '(^|: )LLM_UPSTREAM_DEGRADED$' "$OUTPUT" || true)
+if [ "$RECOVERED" -eq 1 ] && [ "$DEGRADED" -eq 0 ]; then
+  printf '%s\n' '真实 OpenAI 兼容 LLM 结构化输出契约验证通过'
+  exit 0
+fi
+if [ "$RECOVERED" -eq 0 ] && [ "$DEGRADED" -eq 1 ]; then
+  printf '%s\n' '真实 LLM 上游暂不可用，模型目录与系统降级合同验证通过'
+  exit 75
+fi
+
+printf '%s\n' 'LLM 在线门禁未形成唯一供应商状态' >&2
+exit 1

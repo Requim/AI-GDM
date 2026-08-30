@@ -13,11 +13,11 @@ import (
 )
 
 type chatRequest struct {
-	Model          string         `json:"model"`
-	Messages       []chatMessage  `json:"messages"`
-	Temperature    float64        `json:"temperature"`
-	MaxTokens      int            `json:"max_tokens"`
-	ResponseFormat responseFormat `json:"response_format"`
+	Model               string         `json:"model"`
+	Messages            []chatMessage  `json:"messages"`
+	Temperature         float64        `json:"temperature"`
+	MaxCompletionTokens int            `json:"max_completion_tokens"`
+	ResponseFormat      responseFormat `json:"response_format"`
 }
 
 type chatMessage struct {
@@ -107,7 +107,7 @@ func buildRequest(model string, maxTokens int, input report.NarrativeInput) (cha
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPromptPrefix + string(payload)},
 		},
-		Temperature: 0.1, MaxTokens: maxTokens,
+		Temperature: 0.1, MaxCompletionTokens: maxTokens,
 		ResponseFormat: responseFormat{Type: "json_object"},
 	}, nil
 }
