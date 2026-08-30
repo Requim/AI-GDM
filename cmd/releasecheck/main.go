@@ -34,6 +34,8 @@ var (
 	pathPattern    = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 )
 
+var requiredDeploymentArtifacts = [...]string{"deploy/deploy.sh", "deploy/deploy.ps1"}
+
 type releaseManifest struct {
 	SchemaVersion int64             `json:"schemaVersion"`
 	Version       string            `json:"version"`
@@ -177,6 +179,11 @@ func validatePackageArtifacts(root string, artifacts []releaseArtifact) error {
 	for _, artifact := range artifacts {
 		if err = validateArtifact(root, artifact, files, seen); err != nil {
 			return err
+		}
+	}
+	for _, required := range requiredDeploymentArtifacts {
+		if _, exists := seen[required]; !exists {
+			return fmt.Errorf("发布包缺少一键部署制品: %s", required)
 		}
 	}
 	return nil

@@ -18,9 +18,9 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前阶段 | P10.3 一键部署验收进行中 |
-| 最近完成 | P10.2 二进制与原始镜像 |
-| 下一步 | 完成 Shell/PowerShell 一键部署脚本，并在无本地镜像缓存环境验证加载、启动和访问 |
+| 当前阶段 | P10.4 正式交付进行中 |
+| 最近完成 | P10.3 一键部署验收 |
+| 下一步 | 补齐正式交付文档，从最终提交构建发布包，部署腾讯 Ubuntu，并推送 v0.1.0 标签与 Release |
 | 阻塞项 | 无；未导入真实已批准基线时损失评估按数据不足降级 |
 | 最后更新 | 2026-08-30 |
 
@@ -69,8 +69,8 @@
 | P9.3 完整测试 | 已完成 | `test(system): 完成系统级自动化验证` |
 | P10.1 容器部署 | 已完成 | `build(docker): 完成生产容器与编排配置` |
 | P10.2 二进制与原始镜像 | 已完成 | `build(package): 建立二进制与离线镜像打包流程` |
-| P10.3 一键部署验收 | 进行中 | `test(deploy): 验证离线一键部署流程` |
-| P10.4 正式交付 | 未开始 | `chore(release): 完成面试评估版本交付` |
+| P10.3 一键部署验收 | 已完成 | `test(deploy): 验证离线一键部署流程` |
+| P10.4 正式交付 | 进行中 | `chore(release): 完成面试评估版本交付` |
 
 ## 阶段记录
 
@@ -470,6 +470,17 @@
 - 关键决策：提交前固定 tree 验证明确记录 `sourceCommit=unknown`；P10.4 正式发布必须从真实提交执行 `PACKAGE_REQUIRE_SOURCE_COMMIT=1`，使 commit、tree、source 和发布附件可相互验证。二进制、Docker tar 和外层发布包继续由 `.gitignore` 排除。
 - 已知风险：P10.2 只证明包的完整性和可加载结构，不等同于无缓存环境部署成功；该场景由 P10.3 验收。Windows 可执行文件已验证格式和 Go 构建信息，但 Windows Docker Desktop 端到端仍由具备 Windows 环境的评估方执行。
 - 目标提交：`build(package): 建立二进制与离线镜像打包流程`
+
+### P10.3 一键部署验收
+
+- 状态：已完成
+- 目标：提供 Shell 与 PowerShell 一键部署入口，并在无本地镜像缓存环境验证发布归档校验、镜像加载、服务启动、重复部署和持久化恢复。
+- 变更：发布包新增 `deploy/deploy.sh` 与 `deploy/deploy.ps1`；两个入口均先验证外层及包内 SHA-256、严格解析发布镜像与运行配置、生成或复用私有随机密钥、固定 Compose 项目和运行插值、执行 `docker load`，再以 `--pull never --no-build` 启动。新增 DIND 空缓存门禁，从真正的 tar.gz 解包后执行部署，并验证宿主环境污染不能覆盖已保存的密码、项目名、绑定地址和端口。
+- 固定验收：提交前源码 tree 为 `5fefdf3a825575fb6ecdfd57c20a9ee15d5fcaea`，Git archive SHA-256 为 `b29829997e5c69d30197ad3532235fd454170ba7e9402b6928744c85672761d2`，受审计 source SHA-256 为 `acd916659579a4436d8231507b419d0cc8f63bb6b02b447995a11e528456a076`；腾讯 Ubuntu 重建 tree 完全一致。
+- 验证：`validate-package.sh` 生成并校验 Linux/Windows 二进制、三镜像 tar、manifest、内外层校验和和归档文件模式；`validate-deploy.sh` 在零镜像 DIND 中完成三个镜像离线加载、三服务 healthy、HTTP 控制台、UID 10001、只读根、GDAL 3.13.3、PostGIS 3.5、9 个迁移、Redis、数据库/缓存/LHASA 三类持久化标记、重复部署配置不变、宿主环境污染隔离和日志密钥检查；`validate-go.sh` 全仓测试、`go vet` 和完整构建通过，门禁结束后本轮 DIND 容器和数据卷均已回收。
+- 关键决策：部署脚本只在首次运行生成运行密钥，既有 `runtime.env` 作为权威配置并显式覆盖宿主 Compose 插值；项目名通过 `--project-name` 固定，避免 `COMPOSE_PROJECT_NAME` 操作错误资源。P10.3 候选树没有真实 commit，manifest 使用 `sourceCommit=unknown`；P10.4 正式包必须绑定最终提交。
+- 已知风险：Shell 路径已在腾讯 Ubuntu 端到端验证；PowerShell 路径完成语法、严格键名、配置与打包合同测试，但未在 Windows Docker Desktop 空缓存环境完成真实容器验收。部署后的实时数据、地图和 LLM 仍依赖互联网与供应商状态。
+- 目标提交：`test(deploy): 验证离线一键部署流程`
 
 ## 关键决策与风险
 

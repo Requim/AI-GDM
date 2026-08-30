@@ -129,6 +129,19 @@ func TestPackageArtifactsMustMatchEveryFile(t *testing.T) {
 	})
 }
 
+func TestPackageRequiresBothDeploymentEntrypoints(t *testing.T) {
+	for _, filename := range requiredDeploymentArtifacts {
+		t.Run(filename, func(t *testing.T) {
+			fixture := newReleaseFixture(t)
+			if err := os.Remove(filepath.Join(fixture.root, filepath.FromSlash(filename))); err != nil {
+				t.Fatal(err)
+			}
+			fixture.rewriteTarAndArtifacts(t, nil)
+			assertPackageRejected(t, fixture.root)
+		})
+	}
+}
+
 func TestReleaseImageEnvironmentIsExact(t *testing.T) {
 	valid := "AI_GDM_IMAGE=ai-gdm/server:v0.1.0\n" +
 		"AI_GDM_POSTGIS_IMAGE=ai-gdm/postgis:17-3.5-v0.1.0\n" +
@@ -268,6 +281,8 @@ func writeFixtureFiles(t *testing.T, root string) {
 	writeFile(t, filepath.Join(root, "bin", "ai-gdm-healthcheck-linux-amd64"), []byte("health"))
 	writeFile(t, filepath.Join(root, "compose.yaml"), []byte("services: {}\n"))
 	writeFile(t, filepath.Join(root, "deploy", "compose.offline.yaml"), []byte("services: {}\n"))
+	writeFile(t, filepath.Join(root, "deploy", "deploy.sh"), []byte("#!/usr/bin/env sh\n"))
+	writeFile(t, filepath.Join(root, "deploy", "deploy.ps1"), []byte("$ErrorActionPreference = 'Stop'\n"))
 	writeFile(t, filepath.Join(root, "deploy", "release-images.env"), []byte(releaseImageEnvironment()))
 	writeFile(t, filepath.Join(root, "deploy", "runtime.env.example"), []byte(runtimeTemplate()))
 	writeFile(t, filepath.Join(root, "docs", "deployment-v1.md"), []byte("deployment\n"))

@@ -133,7 +133,11 @@ validate_source_commit() {
   automatic=0
   if [ "$requested" = auto ]; then
     automatic=1
-    requested=$(git -c "safe.directory=$ROOT" -C "$ROOT" rev-parse HEAD 2>/dev/null || printf '%s' unknown)
+    if detected=$(git -c "safe.directory=$ROOT" -C "$ROOT" rev-parse --verify HEAD 2>/dev/null); then
+      requested=$detected
+    else
+      requested=unknown
+    fi
   fi
   SOURCE_COMMIT=$requested
   if [ "$SOURCE_COMMIT" != unknown ]; then
@@ -257,10 +261,13 @@ copy_release_files() {
   cp "$BUILD_DIR/ai-gdm-healthcheck-linux-amd64" "$PACKAGE_DIR/bin/"
   cp "$SNAPSHOT_DIR/compose.yaml" "$PACKAGE_DIR/compose.yaml"
   cp "$SNAPSHOT_DIR/deploy/compose.offline.yaml" "$PACKAGE_DIR/deploy/compose.offline.yaml"
+  cp "$SNAPSHOT_DIR/deploy/deploy.sh" "$PACKAGE_DIR/deploy/deploy.sh"
+  cp "$SNAPSHOT_DIR/deploy/deploy.ps1" "$PACKAGE_DIR/deploy/deploy.ps1"
   cp "$SNAPSHOT_DIR/deploy/runtime.env.example" "$PACKAGE_DIR/deploy/runtime.env.example"
   cp "$SNAPSHOT_DIR/docs/deployment-v1.md" "$PACKAGE_DIR/docs/deployment-v1.md"
   cp "$SNAPSHOT_DIR/docs/package-v1.md" "$PACKAGE_DIR/docs/package-v1.md"
-  chmod 0755 "$PACKAGE_DIR/bin/ai-gdm-server-linux-amd64" "$PACKAGE_DIR/bin/ai-gdm-healthcheck-linux-amd64"
+  chmod 0755 "$PACKAGE_DIR/bin/ai-gdm-server-linux-amd64" "$PACKAGE_DIR/bin/ai-gdm-healthcheck-linux-amd64" \
+    "$PACKAGE_DIR/deploy/deploy.sh"
 }
 
 write_image_environment() {
@@ -308,6 +315,8 @@ write_manifest() {
     {"path": "images/ai-gdm-images-linux-amd64.tar", "sha256": "$(artifact_sha images/ai-gdm-images-linux-amd64.tar)", "sizeBytes": $(artifact_size images/ai-gdm-images-linux-amd64.tar)},
     {"path": "images/IMAGE-SOURCES.txt", "sha256": "$(artifact_sha images/IMAGE-SOURCES.txt)", "sizeBytes": $(artifact_size images/IMAGE-SOURCES.txt)},
     {"path": "deploy/compose.offline.yaml", "sha256": "$(artifact_sha deploy/compose.offline.yaml)", "sizeBytes": $(artifact_size deploy/compose.offline.yaml)},
+    {"path": "deploy/deploy.sh", "sha256": "$(artifact_sha deploy/deploy.sh)", "sizeBytes": $(artifact_size deploy/deploy.sh)},
+    {"path": "deploy/deploy.ps1", "sha256": "$(artifact_sha deploy/deploy.ps1)", "sizeBytes": $(artifact_size deploy/deploy.ps1)},
     {"path": "deploy/release-images.env", "sha256": "$(artifact_sha deploy/release-images.env)", "sizeBytes": $(artifact_size deploy/release-images.env)},
     {"path": "deploy/runtime.env.example", "sha256": "$(artifact_sha deploy/runtime.env.example)", "sizeBytes": $(artifact_size deploy/runtime.env.example)},
     {"path": "docs/deployment-v1.md", "sha256": "$(artifact_sha docs/deployment-v1.md)", "sizeBytes": $(artifact_size docs/deployment-v1.md)},

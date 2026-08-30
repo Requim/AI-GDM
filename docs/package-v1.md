@@ -20,7 +20,11 @@ dist/
   ai-gdm-v0.1.0-linux-amd64/
     bin/
     images/ai-gdm-images-linux-amd64.tar
-    deploy/
+    deploy/deploy.sh
+    deploy/deploy.ps1
+    deploy/compose.offline.yaml
+    deploy/release-images.env
+    deploy/runtime.env.example
     docs/
     compose.yaml
     manifest.json
@@ -37,7 +41,15 @@ dist/
 sudo env PACKAGE_VERSION=v0.1.0 PACKAGE_PULL_IMAGES=0 sh scripts/validate-package.sh
 ```
 
-门禁验证固定源码 tree、精确文件清单、二进制格式和 Go 构建信息、内部与外层 SHA-256、原始镜像 tar 结构、镜像平台与大小、空密钥模板，以及运行后不存在发布临时 tag。Docker 29 的镜像 ID 按 OCI 顶层 descriptor 摘要记录；校验器继续向下绑定唯一 `linux/amd64` manifest、legacy Config 和实际配置内容，不能用平台 config 摘要冒充顶层镜像 ID。构建时间必须是严格 UTC，版本必须是 `vMAJOR.MINOR.PATCH`。P10.3 再在隔离 Docker 数据目录中只通过 `docker load` 验证一键部署。
+门禁验证固定源码 tree、精确文件清单、二进制格式和 Go 构建信息、内部与外层 SHA-256、原始镜像 tar 结构、镜像平台与大小、空密钥模板，以及运行后不存在发布临时 tag。Docker 29 的镜像 ID 按 OCI 顶层 descriptor 摘要记录；校验器继续向下绑定唯一 `linux/amd64` manifest、legacy Config 和实际配置内容，不能用平台 config 摘要冒充顶层镜像 ID。构建时间必须是严格 UTC，版本必须是 `vMAJOR.MINOR.PATCH`。
+
+P10.3 额外执行：
+
+```sh
+sudo sh scripts/validate-deploy.sh
+```
+
+该门禁在独立空镜像缓存的 Docker 守护进程中只通过 `docker load` 和包内 `deploy/deploy.sh` 启动，不允许 Compose 拉取或构建；同时验证重复部署、保留卷停启、HTTP 访问、运行时身份和密钥日志边界。PowerShell 入口纳入相同发布 manifest 和 SHA-256 清单，并在提交前通过 PowerShell 语法解析与静态合同检查。
 
 ## 边界
 

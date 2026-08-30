@@ -82,6 +82,8 @@ cat >"$WORK_DIR/expected-files" <<'EOF'
 ./bin/ai-gdm-server-windows-amd64.exe
 ./compose.yaml
 ./deploy/compose.offline.yaml
+./deploy/deploy.ps1
+./deploy/deploy.sh
 ./deploy/release-images.env
 ./deploy/runtime.env.example
 ./docs/deployment-v1.md
@@ -98,6 +100,14 @@ diff -u "$WORK_DIR/expected-files" "$WORK_DIR/actual-files"
 }
 
 (cd "$PACKAGE_DIR" && sha256sum -c SHA256SUMS)
+[ -x "$PACKAGE_DIR/deploy/deploy.sh" ] || {
+  printf '%s\n' 'Shell 一键部署脚本不可执行' >&2
+  exit 1
+}
+[ -f "$PACKAGE_DIR/deploy/deploy.ps1" ] && [ ! -x "$PACKAGE_DIR/deploy/deploy.ps1" ] || {
+  printf '%s\n' 'PowerShell 一键部署脚本文件模式无效' >&2
+  exit 1
+}
 (cd "$PACKAGE_DIR" && awk '{print $2}' SHA256SUMS | LC_ALL=C sort) >"$WORK_DIR/checksum-files"
 grep -Fvx './SHA256SUMS' "$WORK_DIR/expected-files" >"$WORK_DIR/expected-checksum-files"
 diff -u "$WORK_DIR/expected-checksum-files" "$WORK_DIR/checksum-files"

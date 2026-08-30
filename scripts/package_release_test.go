@@ -17,7 +17,7 @@ func TestReleasePackagingContracts(t *testing.T) {
 		"security_prepare_snapshot", "GOOS=linux", "GOOS=windows", "docker save",
 		"ai-gdm-images-linux-amd64.tar", "manifest.json", "SHA256SUMS", "security_verify_stability",
 		"cleanup_partial_output", "PACKAGE_REQUIRE_SOURCE_COMMIT", "PACKAGE_MIN_FREE_KB",
-		"ai.gdm.package.run", "BUILD_CONTAINER",
+		"ai.gdm.package.run", "BUILD_CONTAINER", "deploy/deploy.sh", "deploy/deploy.ps1",
 	} {
 		if !strings.Contains(packageScript, value) {
 			t.Fatalf("发布打包脚本缺少 %q", value)
@@ -25,7 +25,7 @@ func TestReleasePackagingContracts(t *testing.T) {
 	}
 	for _, value := range []string{
 		"sha256sum -c", "ELF 64-bit", "PE32+", "go version -m", "expected-files",
-		"go run ./cmd/releasecheck", "ai.gdm.package.validation.run",
+		"go run ./cmd/releasecheck", "ai.gdm.package.validation.run", "./deploy/deploy.sh", "./deploy/deploy.ps1",
 	} {
 		if !strings.Contains(validateScript, value) {
 			t.Fatalf("发布包门禁缺少 %q", value)
@@ -41,6 +41,15 @@ func TestReleasePackagingContracts(t *testing.T) {
 	}
 	if strings.Contains(packageScript, "docker system prune") {
 		t.Fatal("打包流程不得清理不属于本阶段的 Docker 资源")
+	}
+}
+
+func TestPackageReleaseTreatsRepositoryWithoutHeadAsUncommitted(t *testing.T) {
+	script := readPackageFile(t, "package-release.sh")
+	assertOrderedText(t, script,
+		"rev-parse --verify HEAD", "requested=$detected", "requested=unknown", "SOURCE_COMMIT=$requested")
+	if strings.Contains(script, "rev-parse HEAD 2>/dev/null ||") {
+		t.Fatal("无 HEAD 仓库会把 rev-parse 的字面输出与 unknown 拼接")
 	}
 }
 
