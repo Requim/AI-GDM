@@ -11,6 +11,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/domain/provenance"
 	"github.com/Requim/AI-GDM/internal/platform/config"
+	"github.com/Requim/AI-GDM/internal/ports"
 )
 
 func TestRefreshGroupRunsSchedulersIndependently(t *testing.T) {
@@ -76,6 +77,37 @@ func TestLHASARefreshTaskAcceptsFallbackAndReturnsFailures(t *testing.T) {
 	refresher.err = sentinel
 	if err := lhasaRefreshTask(refresher, logger).Run(context.Background()); !errors.Is(err, sentinel) {
 		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestLHASARefreshTaskRecordsSuccessDegradedAndFailure(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	recorder := &observationRecorderStub{}
+	refresher := &lhasaRefresherStub{snapshot: hazard.Snapshot{ID: "fresh"}}
+	if err := lhasaRefreshTaskWithObservations(refresher, logger, recorder).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	refresher.snapshot.Source.QualityFlags = []string{weatherFallbackFlag}
+	if err := lhasaRefreshTaskWithObservations(refresher, logger, recorder).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	refresher.err = errors.New("provider failed")
+	if err := lhasaRefreshTaskWithObservations(refresher, logger, recorder).Run(context.Background()); err == nil {
+		t.Fatal("供应商失败未返回错误")
+	}
+	if len(recorder.values) != 3 {
+		t.Fatalf("观测数量=%d", len(recorder.values))
+	}
+	expected := []ports.ObservationOutcome{
+		ports.ObservationSuccess, ports.ObservationDegraded, ports.ObservationFailure,
+	}
+	for index, outcome := range expected {
+		if recorder.values[index].ComponentID != componentLHASA || recorder.values[index].Outcome != outcome {
+			t.Fatalf("观测[%d]=%+v", index, recorder.values[index])
+		}
+	}
+	if recorder.values[1].ErrorClass != weatherFallbackFlag {
+		t.Fatalf("降级错误分类=%q", recorder.values[1].ErrorClass)
 	}
 }
 

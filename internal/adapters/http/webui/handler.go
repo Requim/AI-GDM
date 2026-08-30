@@ -113,15 +113,17 @@ type pageView struct {
 }
 
 type sourceView struct {
-	ID        string
-	Name      string
-	Provider  string
-	Category  string
-	State     string
-	StateText string
-	UpdatedAt string
-	ValidTo   string
-	Detail    string
+	ID            string
+	Name          string
+	Provider      string
+	Category      string
+	State         string
+	StateText     string
+	UpdatedAt     string
+	LastAttemptAt string
+	LastSuccessAt string
+	ValidTo       string
+	Detail        string
 }
 
 func newPage(value dashboard.Overview) pageView {
@@ -136,14 +138,16 @@ func newPage(value dashboard.Overview) pageView {
 func newSourceView(source dashboard.SourceStatus) sourceView {
 	return sourceView{ID: source.ID, Name: source.Name, Provider: source.Provider,
 		Category: source.Category, State: string(source.State), StateText: stateText(source.State),
-		UpdatedAt: formatOptionalTime(source.UpdatedAt), ValidTo: formatOptionalTime(source.ValidTo),
+		UpdatedAt: formatOptionalTime(source.UpdatedAt), LastAttemptAt: formatOptionalTime(source.LastAttemptAt),
+		LastSuccessAt: formatOptionalTime(source.LastSuccessAt), ValidTo: formatOptionalTime(source.ValidTo),
 		Detail: source.Detail}
 }
 
 func stateText(state dashboard.SourceState) string {
 	labels := map[dashboard.SourceState]string{
-		dashboard.StateAvailable: "可用", dashboard.StateStale: "已过期",
-		dashboard.StateWaiting: "等待数据", dashboard.StateConfigured: "已配置",
+		dashboard.StateAvailable: "可用", dashboard.StateDegraded: "已降级",
+		dashboard.StateStale: "已过期", dashboard.StateWaiting: "等待观测",
+		dashboard.StateConfigured: "已配置", dashboard.StateUnknown: "未知",
 		dashboard.StateDisabled: "未启用", dashboard.StateUnavailable: "不可用",
 	}
 	return labels[state]

@@ -73,6 +73,18 @@ func (s *Server) Mount(pattern string, handler http.Handler) error {
 	return nil
 }
 
+// HandleExact 在服务启动前挂载一个精确路径 HTTP 适配器。
+func (s *Server) HandleExact(pattern string, handler http.Handler) error {
+	if s == nil || s.router == nil || handler == nil {
+		return fmt.Errorf("HTTP 路由或处理器不能为空")
+	}
+	if pattern == "" || !strings.HasPrefix(pattern, "/") || strings.ContainsAny(pattern, "?#") {
+		return fmt.Errorf("HTTP 挂载路径 %q 无效", pattern)
+	}
+	s.router.Handle(pattern, handler)
+	return nil
+}
+
 // Handler 返回服务路由，供集成测试和后续模块挂载使用。
 func (s *Server) Handler() http.Handler {
 	return s.httpServer.Handler
@@ -113,8 +125,8 @@ func routes(logger *slog.Logger, readiness *Readiness, options SecurityOptions) 
 	router.Use(securityHeaders)
 	router.Use(security.rateLimit)
 	router.Use(requestIDMiddleware(logger))
-	router.Use(middleware.Recoverer)
 	router.Use(accessLog(logger))
+	router.Use(middleware.Recoverer)
 	router.Use(security.authorize)
 	router.Use(csrfProtection)
 	router.Get("/healthz", healthHandler)
@@ -225,12 +237,63 @@ func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Request-ID", middleware.GetReqID(r.Context()))
 			started := time.Now()
-			next.ServeHTTP(w, r)
+			wrapped := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			next.ServeHTTP(wrapped, r)
+			status := responseStatus(wrapped.Status())
+			duration := time.Since(started)
 			logger.InfoContext(r.Context(), "HTTP 请求完成",
 				"method", r.Method, "path", accessLogPath(r.URL.Path),
 				"request_id", middleware.GetReqID(r.Context()),
-				"duration_ms", time.Since(started).Milliseconds())
+				"status", status, "outcome", responseOutcome(status),
+				"duration_ms", duration.Milliseconds())
+			auditProtectedWrite(logger, r, status, duration)
 		})
+	}
+}
+
+func auditProtectedWrite(logger *slog.Logger, r *http.Request, status int, duration time.Duration) {
+	if !protectedWriteRequest(r) {
+		return
+	}
+	logger.InfoContext(r.Context(), "受保护写操作审计",
+		"action", writeAction(r.URL.Path), "method", r.Method,
+		"request_id", middleware.GetReqID(r.Context()), "subject_type", "shared_admin_role",
+		"status", status, "outcome", responseOutcome(status),
+		"duration_ms", duration.Milliseconds())
+}
+
+func responseStatus(status int) int {
+	if status == 0 {
+		return http.StatusOK
+	}
+	return status
+}
+
+func responseOutcome(status int) string {
+	switch {
+	case status >= 200 && status < 400:
+		return "success"
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return "denied"
+	default:
+		return "failure"
+	}
+}
+
+func writeAction(path string) string {
+	switch {
+	case strings.HasSuffix(path, "/refresh"):
+		return "hazard.refresh"
+	case path == "/api/v1/loss/assessments":
+		return "loss.assess"
+	case path == "/api/v1/ai/report":
+		return "ai.report"
+	case strings.HasPrefix(path, "/api/v1/map/"):
+		return "map.plan"
+	case strings.HasPrefix(path, "/api/v1/survival/"):
+		return "survival.replay"
+	default:
+		return "api.write"
 	}
 }
 

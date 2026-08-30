@@ -59,7 +59,7 @@
 
       <section class="summary-grid" aria-label="数据源概况">
         <article class="summary-item summary-ready">
-          <span>正常或已配置</span>
+          <span>业务可用</span>
           <strong>{{.Summary.Available}}</strong>
         </article>
         <article class="summary-item summary-attention">
@@ -85,8 +85,7 @@
           <div class="source-row source-header" role="row">
             <span role="columnheader">数据源</span>
             <span role="columnheader">状态</span>
-            <span role="columnheader">最后成功时间</span>
-            <span role="columnheader">有效期至</span>
+            <span role="columnheader">数据与运行时间</span>
             <span role="columnheader">运行说明</span>
           </div>
           {{range .Sources}}
@@ -99,8 +98,12 @@
             <div role="cell">
               <span class="status status-{{.State}}"><i aria-hidden="true"></i>{{.StateText}}</span>
             </div>
-            <time role="cell">{{.UpdatedAt}}</time>
-            <time role="cell">{{.ValidTo}}</time>
+            <div class="source-times" role="cell">
+              <span>数据时间 <time>{{.UpdatedAt}}</time></span>
+              <span>最近尝试 <time>{{.LastAttemptAt}}</time></span>
+              <span>最近成功 <time>{{.LastSuccessAt}}</time></span>
+              <span>有效期至 <time>{{.ValidTo}}</time></span>
+            </div>
             <p role="cell">{{.Detail}}</p>
           </article>
           {{end}}

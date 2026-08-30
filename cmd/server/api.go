@@ -14,6 +14,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/platform/config"
 	"github.com/Requim/AI-GDM/internal/platform/httpserver"
 	"github.com/Requim/AI-GDM/internal/platform/resources"
+	"github.com/Requim/AI-GDM/internal/ports"
 )
 
 // mountApplicationAPI 将风险和地图适配器合并到同一个 /api/v1 挂载点，避免通配路由互相遮蔽。
@@ -21,11 +22,22 @@ func mountApplicationAPI(server *httpserver.Server, runtime *hazardRuntime,
 	cfg config.Config, dependencies *resources.Resources, logger *slog.Logger,
 	aiHandler http.Handler, survivalHandler http.Handler, authority mapapi.RouteAuthorityRecorder,
 ) error {
+	return mountApplicationAPIWithObservations(server, runtime, cfg, dependencies, logger,
+		aiHandler, survivalHandler, authority, nil)
+}
+
+func mountApplicationAPIWithObservations(server *httpserver.Server, runtime *hazardRuntime,
+	cfg config.Config, dependencies *resources.Resources, logger *slog.Logger,
+	aiHandler http.Handler, survivalHandler http.Handler, authority mapapi.RouteAuthorityRecorder,
+	recorder ports.ObservationRecorder,
+) error {
 	hazardHandler, err := newHazardAPIHandler(runtime, logger)
 	if err != nil {
 		return err
 	}
-	mapHandler, err := newMapAPIHandlerWithAuthority(cfg, dependencies, authority, logger)
+	mapHandler, err := newMapAPIHandlerWithAuthorityAndObservations(
+		cfg, dependencies, authority, logger, recorder,
+	)
 	if err != nil {
 		return err
 	}

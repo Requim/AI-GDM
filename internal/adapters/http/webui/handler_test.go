@@ -60,6 +60,33 @@ func TestHandlerRendersEscapedChineseConsole(t *testing.T) {
 	}
 }
 
+func TestHandlerRendersObservationTimesAndUnknownLiveEvents(t *testing.T) {
+	service := &serviceStub{overview: dashboard.Overview{
+		GeneratedAt: time.Date(2026, 8, 30, 4, 0, 0, 0, time.UTC), Environment: "test", Version: "v0",
+		Sources: []dashboard.SourceStatus{{ID: "weather", Name: "降雨与土壤湿度", Provider: "Open-Meteo",
+			Category: "气象", State: dashboard.StateDegraded, UpdatedAt: time.Date(2026, 8, 30, 3, 0, 0, 0, time.UTC),
+			LastAttemptAt: time.Date(2026, 8, 30, 3, 30, 0, 0, time.UTC),
+			LastSuccessAt: time.Date(2026, 8, 30, 3, 0, 0, 0, time.UTC),
+			ValidTo:       time.Date(2026, 8, 30, 5, 0, 0, 0, time.UTC), Detail: "最近业务调用已降级"},
+			{ID: "live-events", Name: "实时事件目录", Provider: "未接入", Category: "事件",
+				State: dashboard.StateUnknown, Detail: "未接入经核验的实时事件源，无法判断当前是否存在实时事件"}},
+		Summary: dashboard.Summary{Attention: 2},
+	}}
+	body := serve(t, newTestHandler(t, service), "/").Body.String()
+	for _, required := range []string{"业务可用", "status-degraded", "已降级", "status-unknown", "未知",
+		"数据时间", "最近尝试", "最近成功", "2026-08-30 11:30:00 UTC&#43;8",
+		"未接入经核验的实时事件源，无法判断当前是否存在实时事件"} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("控制台缺少 %q: %s", required, body)
+		}
+	}
+	for _, forbidden := range []string{"没有事件", "没有灾害"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("控制台不得推断 %q", forbidden)
+		}
+	}
+}
+
 func TestHandlerServesEmbeddedAssets(t *testing.T) {
 	handler := newTestHandler(t, &serviceStub{})
 	tests := []struct {
@@ -67,7 +94,7 @@ func TestHandlerServesEmbeddedAssets(t *testing.T) {
 		contentType string
 		contains    string
 	}{
-		{path: "/assets/app.css", contentType: "text/css", contains: ".source-table"},
+		{path: "/assets/app.css", contentType: "text/css", contains: ".status-degraded"},
 		{path: "/assets/evacuation.css", contentType: "text/css", contains: ".evacuation-workspace"},
 		{path: "/assets/assessment.css", contentType: "text/css", contains: ".assessment-workspace"},
 		{path: "/assets/api.js", contentType: "text/javascript", contains: "X-CSRF-Token"},

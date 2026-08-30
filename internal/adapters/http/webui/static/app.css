@@ -187,7 +187,7 @@ main { padding: 24px clamp(18px, 4vw, 56px) 44px; }
   min-height: 82px;
   padding: 14px 16px;
   display: grid;
-  grid-template-columns: minmax(210px, 1.35fr) 120px minmax(180px, 1fr) minmax(180px, 1fr) minmax(240px, 1.5fr);
+  grid-template-columns: minmax(210px, 1.2fr) 120px minmax(260px, 1.25fr) minmax(240px, 1.5fr);
   align-items: center;
   gap: 16px;
   border-bottom: 1px solid var(--line);
@@ -213,6 +213,17 @@ main { padding: 24px clamp(18px, 4vw, 56px) 44px; }
 .source-row time { font-family: Consolas, monospace; }
 .source-row p { margin: 0; line-height: 1.55; }
 
+.source-times { min-width: 0; display: grid; gap: 5px; }
+.source-times span {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.source-times time { min-width: 0; overflow-wrap: anywhere; color: var(--ink); }
+
 .status {
   width: max-content;
   display: inline-flex;
@@ -223,8 +234,9 @@ main { padding: 24px clamp(18px, 4vw, 56px) 44px; }
 }
 
 .status i { width: 8px; height: 8px; background: currentColor; }
-.status-available, .status-configured { color: var(--green); }
-.status-stale, .status-waiting { color: var(--amber); }
+.status-available { color: var(--green); }
+.status-degraded, .status-stale, .status-waiting,
+.status-configured, .status-unknown { color: var(--amber); }
 .status-disabled, .status-unavailable { color: var(--red); }
 
 .operations-strip {
@@ -344,8 +356,7 @@ main { padding: 24px clamp(18px, 4vw, 56px) 44px; }
   .topbar { align-items: flex-start; }
   .topbar-tools { align-items: flex-start; flex-direction: column; }
   .source-header { display: none; }
-  .source-row { grid-template-columns: minmax(190px, 1.3fr) 110px 1fr; }
-  .source-row time:nth-of-type(2) { display: none; }
+  .source-row { grid-template-columns: minmax(190px, 1.3fr) 110px minmax(240px, 1fr); }
   .source-row p { grid-column: 1 / -1; }
   .risk-workspace { grid-template-columns: minmax(0, 1fr) 290px; }
 }
@@ -360,7 +371,7 @@ main { padding: 24px clamp(18px, 4vw, 56px) 44px; }
   .summary-item { min-height: 76px; border-right: 0; border-bottom: 1px solid var(--line); }
   .summary-item:last-child { border-bottom: 0; }
   .source-row { grid-template-columns: 1fr auto; }
-  .source-row time { grid-column: 1 / -1; }
+  .source-times, .source-row p { grid-column: 1 / -1; }
   .operations-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .operations-strip div:nth-child(2) { border-right: 0; }
   .operations-strip div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }

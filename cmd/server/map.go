@@ -31,7 +31,13 @@ const (
 // newMapProvider 在组合根创建高德适配器，业务层只接收地图端口。
 func newMapProvider(cfg config.Config, dependencies *resources.Resources,
 	logger *slog.Logger,
-) (*amap.Provider, error) {
+) (mapProvider, error) {
+	return newMapProviderWithObservations(cfg, dependencies, logger, nil)
+}
+
+func newMapProviderWithObservations(cfg config.Config, dependencies *resources.Resources,
+	logger *slog.Logger, recorder ports.ObservationRecorder,
+) (mapProvider, error) {
 	if !cfg.Map.Enabled {
 		return nil, nil
 	}
@@ -59,7 +65,10 @@ func newMapProvider(cfg config.Config, dependencies *resources.Resources,
 	if err != nil {
 		return nil, fmt.Errorf("创建高德地图适配器: %w", err)
 	}
-	return provider, nil
+	if recorder == nil {
+		return provider, nil
+	}
+	return observedMapProvider{inner: provider, recorder: recorder}, nil
 }
 
 func newMapAPIHandler(cfg config.Config, dependencies *resources.Resources,
@@ -71,7 +80,13 @@ func newMapAPIHandler(cfg config.Config, dependencies *resources.Resources,
 func newMapAPIHandlerWithAuthority(cfg config.Config, dependencies *resources.Resources,
 	authority mapapi.RouteAuthorityRecorder, logger *slog.Logger,
 ) (http.Handler, error) {
-	provider, err := newMapProvider(cfg, dependencies, logger)
+	return newMapAPIHandlerWithAuthorityAndObservations(cfg, dependencies, authority, logger, nil)
+}
+
+func newMapAPIHandlerWithAuthorityAndObservations(cfg config.Config, dependencies *resources.Resources,
+	authority mapapi.RouteAuthorityRecorder, logger *slog.Logger, recorder ports.ObservationRecorder,
+) (http.Handler, error) {
+	provider, err := newMapProviderWithObservations(cfg, dependencies, logger, recorder)
 	if err != nil {
 		return nil, fmt.Errorf("初始化高德地图: %w", err)
 	}

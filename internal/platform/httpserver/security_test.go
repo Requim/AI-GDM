@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"bytes"
 	"crypto/tls"
 	"io"
 	"log/slog"
@@ -61,6 +62,92 @@ func TestProtectedWritesRequireConfiguredAdminAuthorization(t *testing.T) {
 				t.Fatalf("status=%d calls=%d body=%s", response.Code, calls, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestMetricsRequireConfiguredAdminAuthorization(t *testing.T) {
+	server := newTestServer(t)
+	calls := 0
+	if err := server.Mount("/metrics", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusNoContent)
+	})); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	if response := serveRequest(server.Handler(), request); response.Code != http.StatusUnauthorized {
+		t.Fatalf("未授权 metrics status=%d", response.Code)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	request.Header.Set("Authorization", "Bearer "+securityTestAdminToken)
+	if response := serveRequest(server.Handler(), request); response.Code != http.StatusNoContent || calls != 1 {
+		t.Fatalf("授权 metrics status=%d calls=%d", response.Code, calls)
+	}
+}
+
+func TestProtectedWriteAuditUsesBoundedFields(t *testing.T) {
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	server, err := New(":0", time.Second, logger, SecurityOptions{
+		AdminToken: securityTestAdminToken, RateLimitPerMinute: 60_000, RateLimitBurst: 10_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = server.Mount("/api/v1", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})); err != nil {
+		t.Fatal(err)
+	}
+	request := authorizedWriteRequest("/api/v1/ai/report?query=secret-query", `{"note":"secret-body"}`)
+	if response := serveRequest(server.Handler(), request); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d", response.Code)
+	}
+	logText := output.String()
+	for _, expected := range []string{"受保护写操作审计", "ai.report", "shared_admin_role", `"status":503`} {
+		if !strings.Contains(logText, expected) {
+			t.Fatalf("审计日志缺少 %q: %s", expected, logText)
+		}
+	}
+	for _, forbidden := range []string{securityTestAdminToken, "secret-query", "secret-body"} {
+		if strings.Contains(logText, forbidden) {
+			t.Fatalf("审计日志泄露 %q: %s", forbidden, logText)
+		}
+	}
+}
+
+func TestProtectedWritePanicReturns500AndWritesOneAudit(t *testing.T) {
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	server, err := New(":0", time.Second, logger, SecurityOptions{
+		AdminToken: securityTestAdminToken, RateLimitPerMinute: 60_000, RateLimitBurst: 10_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = server.Mount("/api/v1", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("secret-panic-value")
+	})); err != nil {
+		t.Fatal(err)
+	}
+	request := authorizedWriteRequest("/api/v1/ai/report?query=secret-query", `{"note":"secret-body"}`)
+	response := serveRequest(server.Handler(), request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("panic status=%d body=%s", response.Code, response.Body.String())
+	}
+	logText := output.String()
+	if count := strings.Count(logText, "受保护写操作审计"); count != 1 {
+		t.Fatalf("panic 审计条数=%d logs=%s", count, logText)
+	}
+	for _, expected := range []string{"ai.report", `"status":500`, `"outcome":"failure"`} {
+		if !strings.Contains(logText, expected) {
+			t.Fatalf("panic 审计缺少 %q: %s", expected, logText)
+		}
+	}
+	for _, forbidden := range []string{securityTestAdminToken, "secret-query", "secret-body", "secret-panic-value"} {
+		if strings.Contains(logText, forbidden) {
+			t.Fatalf("panic 审计泄露 %q: %s", forbidden, logText)
+		}
 	}
 }
 

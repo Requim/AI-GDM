@@ -17,7 +17,14 @@ import (
 func mountWebConsole(server *httpserver.Server, runtime *hazardRuntime, cfg config.Config,
 	dependencies *resources.Resources, logger *slog.Logger,
 ) error {
-	handler, err := newWebConsole(runtime, cfg, dependencies, logger)
+	return mountWebConsoleWithObservations(server, runtime, cfg, dependencies, logger, nil)
+}
+
+func mountWebConsoleWithObservations(server *httpserver.Server, runtime *hazardRuntime,
+	cfg config.Config, dependencies *resources.Resources, logger *slog.Logger,
+	observations ports.ComponentStatusReader,
+) error {
+	handler, err := newWebConsoleWithObservations(runtime, cfg, dependencies, logger, observations)
 	if err != nil {
 		return err
 	}
@@ -30,6 +37,13 @@ func mountWebConsole(server *httpserver.Server, runtime *hazardRuntime, cfg conf
 func newWebConsole(runtime *hazardRuntime, cfg config.Config,
 	dependencies *resources.Resources, logger *slog.Logger,
 ) (http.Handler, error) {
+	return newWebConsoleWithObservations(runtime, cfg, dependencies, logger, nil)
+}
+
+func newWebConsoleWithObservations(runtime *hazardRuntime, cfg config.Config,
+	dependencies *resources.Resources, logger *slog.Logger,
+	observations ports.ComponentStatusReader,
+) (http.Handler, error) {
 	var risk ports.LatestRiskReader
 	var weather ports.WeatherSnapshotReader
 	if runtime != nil {
@@ -38,7 +52,9 @@ func newWebConsole(runtime *hazardRuntime, cfg config.Config,
 	if dependencies != nil && dependencies.Database != nil {
 		weather = postgres.NewWeatherRepository(dependencies.Database)
 	}
-	service, err := dashboard.New(risk, weather, dashboardCapabilities(cfg, dependencies), utcClock{})
+	service, err := dashboard.New(
+		risk, weather, dashboardCapabilities(cfg, dependencies), observations, utcClock{},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("创建控制台应用服务: %w", err)
 	}

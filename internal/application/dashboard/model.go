@@ -7,23 +7,27 @@ type SourceState string
 
 const (
 	StateAvailable   SourceState = "available"
+	StateDegraded    SourceState = "degraded"
 	StateStale       SourceState = "stale"
 	StateWaiting     SourceState = "waiting"
 	StateConfigured  SourceState = "configured"
+	StateUnknown     SourceState = "unknown"
 	StateDisabled    SourceState = "disabled"
 	StateUnavailable SourceState = "unavailable"
 )
 
 // SourceStatus 保存一个数据源的配置、时效和最后成功时间。
 type SourceStatus struct {
-	ID        string
-	Name      string
-	Provider  string
-	Category  string
-	State     SourceState
-	UpdatedAt time.Time
-	ValidTo   time.Time
-	Detail    string
+	ID            string
+	Name          string
+	Provider      string
+	Category      string
+	State         SourceState
+	UpdatedAt     time.Time
+	ValidTo       time.Time
+	LastAttemptAt time.Time
+	LastSuccessAt time.Time
+	Detail        string
 }
 
 // Summary 汇总当前数据源状态数量。
@@ -46,9 +50,9 @@ func summarize(sources []SourceStatus) Summary {
 	var result Summary
 	for _, source := range sources {
 		switch source.State {
-		case StateAvailable, StateConfigured:
+		case StateAvailable:
 			result.Available++
-		case StateStale, StateWaiting:
+		case StateDegraded, StateStale, StateWaiting, StateConfigured, StateUnknown:
 			result.Attention++
 		default:
 			result.Unavailable++

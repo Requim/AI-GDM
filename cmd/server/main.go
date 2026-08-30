@@ -32,6 +32,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	observations, err := newObservationRegistry()
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -49,13 +53,18 @@ func run() error {
 	if hazards != nil {
 		landslideRefresher = hazards.landslide
 	}
-	refresh, err := newRefreshService(cfg, dependencies, logger, landslideRefresher)
+	refresh, err := newRefreshServiceWithObservations(
+		cfg, dependencies, logger, landslideRefresher, observations,
+	)
 	if err != nil {
 		return fmt.Errorf("初始化数据刷新: %w", err)
 	}
 	server, err := newHTTPServer(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("初始化 HTTP 安全边界: %w", err)
+	}
+	if err = mountMetrics(server, observations); err != nil {
+		return err
 	}
 	survival, err := newSurvivalRuntime(logger)
 	if err != nil {
@@ -65,15 +74,19 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("初始化权威分析解析器: %w", err)
 	}
-	aiHandler, err := newAIHandler(cfg, dependencies, authorityResolver, logger)
+	aiHandler, err := newAIHandlerWithObservations(
+		cfg, dependencies, authorityResolver, logger, observations,
+	)
 	if err != nil {
 		return fmt.Errorf("初始化智能研判: %w", err)
 	}
-	if err = mountApplicationAPI(server, hazards, cfg, dependencies, logger,
-		aiHandler, survival.handler, authorityResolver); err != nil {
+	if err = mountApplicationAPIWithObservations(server, hazards, cfg, dependencies, logger,
+		aiHandler, survival.handler, authorityResolver, observations); err != nil {
 		return err
 	}
-	if err = mountWebConsole(server, hazards, cfg, dependencies, logger); err != nil {
+	if err = mountWebConsoleWithObservations(
+		server, hazards, cfg, dependencies, logger, observations,
+	); err != nil {
 		return err
 	}
 	if err = runServices(ctx, server, refresh); err != nil {

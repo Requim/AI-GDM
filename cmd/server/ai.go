@@ -31,6 +31,24 @@ const (
 func newAIService(cfg config.Config, dependencies *resources.Resources,
 	resolver applicationagent.AuthoritativeAnalysisResolver, logger *slog.Logger,
 ) (*applicationagent.Service, error) {
+	return buildAIService(cfg, dependencies, resolver, logger, nil)
+}
+
+func newAIServiceWithObservations(cfg config.Config, dependencies *resources.Resources,
+	resolver applicationagent.AuthoritativeAnalysisResolver, logger *slog.Logger,
+	recorder ports.ObservationRecorder,
+) (aiReporter, error) {
+	service, err := buildAIService(cfg, dependencies, resolver, logger, recorder)
+	if err != nil || recorder == nil {
+		return service, err
+	}
+	return observedAIReporter{inner: service, recorder: recorder}, nil
+}
+
+func buildAIService(cfg config.Config, dependencies *resources.Resources,
+	resolver applicationagent.AuthoritativeAnalysisResolver, logger *slog.Logger,
+	recorder ports.ObservationRecorder,
+) (*applicationagent.Service, error) {
 	search, err := newEvidenceSearcher(cfg, dependencies, logger)
 	if err != nil {
 		return nil, err
@@ -38,6 +56,12 @@ func newAIService(cfg config.Config, dependencies *resources.Resources,
 	generator, err := newNarrativeGenerator(cfg, dependencies, logger)
 	if err != nil {
 		return nil, err
+	}
+	if search != nil && recorder != nil {
+		search = observedEvidenceSearcher{inner: search}
+	}
+	if generator != nil && recorder != nil {
+		generator = observedNarrativeGenerator{inner: generator}
 	}
 	service, err := applicationagent.New(resolver, search, generator, utcClock{})
 	if err != nil {
@@ -50,15 +74,22 @@ func newAIService(cfg config.Config, dependencies *resources.Resources,
 func newAIHandler(cfg config.Config, dependencies *resources.Resources,
 	resolver applicationagent.AuthoritativeAnalysisResolver, logger *slog.Logger,
 ) (http.Handler, error) {
+	return newAIHandlerWithObservations(cfg, dependencies, resolver, logger, nil)
+}
+
+func newAIHandlerWithObservations(cfg config.Config, dependencies *resources.Resources,
+	resolver applicationagent.AuthoritativeAnalysisResolver, logger *slog.Logger,
+	recorder ports.ObservationRecorder,
+) (http.Handler, error) {
 	if resolver == nil {
 		logger.Warn("未配置权威分析 resolver，智能研判 API 未挂载")
 		return nil, nil
 	}
-	service, err := newAIService(cfg, dependencies, resolver, logger)
+	reporter, err := newAIServiceWithObservations(cfg, dependencies, resolver, logger, recorder)
 	if err != nil {
 		return nil, err
 	}
-	handler, err := aiapi.New(service, logger)
+	handler, err := aiapi.New(reporter, logger)
 	if err != nil {
 		return nil, fmt.Errorf("创建智能研判 HTTP 适配器: %w", err)
 	}

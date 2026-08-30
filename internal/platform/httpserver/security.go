@@ -82,7 +82,7 @@ func (security *requestSecurity) rateLimit(next http.Handler) http.Handler {
 
 func (security *requestSecurity) authorize(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !protectedWriteRequest(r) {
+		if !protectedWriteRequest(r) && !protectedMetricsRequest(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -210,6 +210,10 @@ func validRequestOrigin(r *http.Request) bool {
 
 func protectedWriteRequest(r *http.Request) bool {
 	return isApplicationAPI(r.URL.Path) && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
+}
+
+func protectedMetricsRequest(r *http.Request) bool {
+	return r.URL.Path == "/metrics" && (r.Method == http.MethodGet || r.Method == http.MethodHead)
 }
 
 func isApplicationAPI(path string) bool {
