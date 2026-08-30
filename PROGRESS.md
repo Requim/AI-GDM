@@ -18,9 +18,9 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前阶段 | P10.2 二进制与原始镜像进行中 |
-| 最近完成 | P10.1 容器部署 |
-| 下一步 | 建立 Linux/Windows 二进制、完整 Docker 原始镜像和校验清单打包流程 |
+| 当前阶段 | P10.3 一键部署验收进行中 |
+| 最近完成 | P10.2 二进制与原始镜像 |
+| 下一步 | 完成 Shell/PowerShell 一键部署脚本，并在无本地镜像缓存环境验证加载、启动和访问 |
 | 阻塞项 | 无；未导入真实已批准基线时损失评估按数据不足降级 |
 | 最后更新 | 2026-08-30 |
 
@@ -68,8 +68,8 @@
 | P9.2 可观测与降级 | 已完成 | `feat(observability): 完善监控审计与服务降级` |
 | P9.3 完整测试 | 已完成 | `test(system): 完成系统级自动化验证` |
 | P10.1 容器部署 | 已完成 | `build(docker): 完成生产容器与编排配置` |
-| P10.2 二进制与原始镜像 | 进行中 | `build(package): 建立二进制与离线镜像打包流程` |
-| P10.3 一键部署验收 | 未开始 | `test(deploy): 验证离线一键部署流程` |
+| P10.2 二进制与原始镜像 | 已完成 | `build(package): 建立二进制与离线镜像打包流程` |
+| P10.3 一键部署验收 | 进行中 | `test(deploy): 验证离线一键部署流程` |
 | P10.4 正式交付 | 未开始 | `chore(release): 完成面试评估版本交付` |
 
 ## 阶段记录
@@ -458,6 +458,18 @@
 - 关键决策：构建代理作为显式参数提供，运行时密钥只写入权限受限且被 Git 忽略的 env 文件；容器门禁从暂存 tree 创建只读快照并以 tree/source SHA 绑定结果，失败路径只按本轮标签和 Compose project 回收资源。
 - 已知风险：当前直接暴露 HTTP `8080`，尚无 TLS 终止；实时供应商仍要求服务器联网；仓库不内置资产价格和脆弱性数值，未导入真实、已批准且可审计的损失基线时损失接口返回 `insufficient_data`，不得用测试数据冒充生产金额。
 - 目标提交：`build(docker): 完成生产容器与编排配置`
+
+### P10.2 二进制与原始镜像
+
+- 状态：已完成
+- 目标：生成 Linux/Windows AMD64 Go 可执行文件、Linux 健康检查二进制、应用/PostGIS/Redis 完整 Docker 原始镜像、版本清单和内外层 SHA-256，并确保发布产物不进入 Git。
+- 变更：新增版本化打包脚本、离线 Compose 覆盖、空密钥运行模板、发布包文档和只读 `releasecheck`；服务支持无依赖 `--version`。打包过程从固定源码快照交叉编译二进制，以 `docker save` 输出三张运行镜像，并在退出、信号或失败时只回收本轮容器和临时标签。
+- 镜像身份：Docker 29 的镜像 ID 按 OCI 顶层 descriptor 摘要记录；门禁严格绑定 RepoTag、顶层 manifest/index、唯一 `linux/amd64` 子清单、legacy Config、配置内容大小与摘要、layer 顺序及固定上游镜像摘要，缺失、重复或跨镜像错绑均 fail-closed。
+- 固定验收：提交前源码 tree 为 `b2deb9ff1cb9870d1f0c34ab618207ee9f42b415`，Git archive SHA-256 为 `0b0188a89e0bc8bf1af74152c5d0a52bc8309e1b0ccf34f6e14293aab6325b77`，受审计 source SHA-256 为 `dacc50b4df82d12ff5cff5491525229da86ebbc30d7d72e1e5a46cf3ca8068fe`；腾讯 Ubuntu 重建 tree 完全一致。
+- 验证：`validate-package.sh` 实际生成并校验 Linux ELF、Windows PE、健康检查二进制和约 `433 MB` 的三镜像 tar，内部 `SHA256SUMS`、外层 tar.gz sidecar、OCI 结构、Go 1.26.7 构建信息和版本均通过；同一重建 Git tree 继续通过 `validate-go.sh` 全仓测试、暂存密钥扫描、`go vet` 和完整构建，结束后无发布临时镜像标签或验证容器。
+- 关键决策：提交前固定 tree 验证明确记录 `sourceCommit=unknown`；P10.4 正式发布必须从真实提交执行 `PACKAGE_REQUIRE_SOURCE_COMMIT=1`，使 commit、tree、source 和发布附件可相互验证。二进制、Docker tar 和外层发布包继续由 `.gitignore` 排除。
+- 已知风险：P10.2 只证明包的完整性和可加载结构，不等同于无缓存环境部署成功；该场景由 P10.3 验收。Windows 可执行文件已验证格式和 Go 构建信息，但 Windows Docker Desktop 端到端仍由具备 Windows 环境的评估方执行。
+- 目标提交：`build(package): 建立二进制与离线镜像打包流程`
 
 ## 关键决策与风险
 

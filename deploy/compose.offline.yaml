@@ -1,0 +1,10 @@
+services:
+  postgres:
+    image: ${AI_GDM_POSTGIS_IMAGE:?AI_GDM_POSTGIS_IMAGE is required}
+    pull_policy: never
+  redis:
+    image: ${AI_GDM_REDIS_IMAGE:?AI_GDM_REDIS_IMAGE is required}
+    pull_policy: never
+  app:
+    image: ${AI_GDM_IMAGE:?AI_GDM_IMAGE is required}
+    pull_policy: never

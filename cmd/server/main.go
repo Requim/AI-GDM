@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -17,10 +18,21 @@ import (
 var version = "dev"
 
 func main() {
+	if printVersion(os.Args[1:], os.Stdout) {
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func printVersion(arguments []string, output io.Writer) bool {
+	if len(arguments) != 1 || arguments[0] != "--version" {
+		return false
+	}
+	fmt.Fprintln(output, version)
+	return true
 }
 
 func run() error {
