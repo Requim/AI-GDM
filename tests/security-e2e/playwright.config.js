@@ -1,0 +1,22 @@
+import { defineConfig } from "@playwright/test";
+
+export default defineConfig({
+  testDir: "./specs",
+  timeout: 35_000,
+  expect: { timeout: 6_000 },
+  fullyParallel: false,
+  forbidOnly: true,
+  workers: 1,
+  reporter: "json",
+  use: {
+    baseURL: process.env.E2E_BASE_URL || "http://127.0.0.1:18083",
+    headless: true,
+    locale: "zh-CN",
+    timezoneId: "Asia/Shanghai",
+    trace: "retain-on-failure",
+    launchOptions: {
+      executablePath: process.env.E2E_CHROMIUM_PATH || undefined,
+      args: ["--no-sandbox", "--disable-dev-shm-usage"]
+    }
+  }
+});

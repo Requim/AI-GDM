@@ -12,7 +12,7 @@ import (
 )
 
 func TestApplicationAPIDispatchesRiskAndMapPrefixes(t *testing.T) {
-	server := httpserver.New(":0", time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := newTestHTTPServer(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	app := applicationAPI{
 		hazard: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/hazards/landslide" {
@@ -59,6 +59,19 @@ func TestApplicationAPIDispatchesRiskAndMapPrefixes(t *testing.T) {
 	if aiResponse.Code != http.StatusResetContent {
 		t.Fatalf("智能研判路由状态 = %d", aiResponse.Code)
 	}
+}
+
+const testAdminToken = "0123456789abcdef0123456789abcdef"
+
+func newTestHTTPServer(t *testing.T, logger *slog.Logger) *httpserver.Server {
+	t.Helper()
+	server, err := httpserver.New(":0", time.Second, logger, httpserver.SecurityOptions{
+		AdminToken: testAdminToken, RateLimitPerMinute: 60_000, RateLimitBurst: 10_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server
 }
 
 func serveApplication(t *testing.T, handler http.Handler, path string) *httptest.ResponseRecorder {

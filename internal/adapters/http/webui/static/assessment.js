@@ -132,7 +132,9 @@
   }
 
   function bindLoss() {
-    elements.lossForm.addEventListener("submit", function (event) {
+    elements.lossButton.addEventListener("click", runLoss);
+    elements.lossInput.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter") return;
       event.preventDefault();
       runLoss();
     });
@@ -143,9 +145,9 @@
 
   async function runLoss() {
     const snapshotID = elements.lossInput.value.trim();
-    if (!validID(snapshotID) || !elements.lossForm.checkValidity()) {
+    if (!validID(snapshotID) || !elements.lossInput.checkValidity()) {
       clearLossResult("风险快照标识无效，请检查后重试。", "error");
-      elements.lossForm.reportValidity();
+      elements.lossInput.reportValidity();
       return;
     }
     const request = ++state.lossRequest;

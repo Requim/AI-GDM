@@ -126,14 +126,14 @@ test("公交 citycode 显示、校验并透传到 typed transit stub", async ({ 
   let routeRequestCount = 0;
   page.on("request", (value) => { if (value.url().endsWith(ROUTES_PATH)) routeRequestCount++; });
 
-  expect(await page.locator("#evacuation-form").evaluate((form) => form.checkValidity())).toBe(false);
+  expect(await evacuationControlsValid(page)).toBe(false);
   await page.locator("#route-plan").click();
   expect(await page.locator("#origin-city").evaluate((input) => input.validationMessage.length > 0)).toBe(true);
   expect(routeRequestCount).toBe(0);
 
   await page.locator("#origin-city").fill("abc");
   await page.locator("#destination-city").fill("021");
-  expect(await page.locator("#evacuation-form").evaluate((form) => form.checkValidity())).toBe(false);
+  expect(await evacuationControlsValid(page)).toBe(false);
   expect(await page.locator("#origin-city").evaluate((input) => input.validationMessage.length > 0)).toBe(true);
   expect(routeRequestCount).toBe(0);
 
@@ -564,10 +564,14 @@ async function searchFacilitiesAndRead(page) {
 }
 
 async function planRoutes(page) {
-  const formIsValid = await page.locator("#evacuation-form").evaluate((form) => form.checkValidity());
-  expect(formIsValid).toBe(true);
+  expect(await evacuationControlsValid(page)).toBe(true);
   await page.locator("#route-plan").click();
   await expect(page.locator("#route-status")).not.toHaveClass(/result-state-loading/);
+}
+
+async function evacuationControlsValid(page) {
+  return page.locator("#evacuation-form").evaluate((group) =>
+    Array.from(group.querySelectorAll("input:required")).every((input) => input.checkValidity()));
 }
 
 async function selectTravelMode(page, mode) {

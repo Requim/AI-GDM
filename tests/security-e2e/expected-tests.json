@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "project": "",
+      "file": "security.spec.js",
+      "title": "管理员令牌只驻留当前页面内存并通过服务端写请求边界"
+    },
+    {
+      "project": "",
+      "file": "security.spec.js",
+      "title": "非法令牌和跨站接口在客户端 fail-closed"
+    },
+    {
+      "project": "",
+      "file": "security.spec.js",
+      "title": "脚本阻断或禁用时授权控件不会把令牌写入 URL"
+    },
+    {
+      "project": "",
+      "file": "security.spec.js",
+      "title": "401 响应体超量或中断时立即清除内存令牌"
+    },
+    {
+      "project": "",
+      "file": "security.spec.js",
+      "title": "管理员授权控件在手机和桌面视口不产生横向溢出"
+    }
+  ]
+}

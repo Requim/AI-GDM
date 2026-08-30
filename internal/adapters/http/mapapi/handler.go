@@ -2,6 +2,7 @@
 package mapapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -240,9 +241,13 @@ func decode(request *http.Request, destination any) error {
 	if request.ContentLength > maxRequestBytes {
 		return fmt.Errorf("%w: 请求体超过 %d 字节", domain.ErrInvalidInput, maxRequestBytes)
 	}
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRequestBytes))
+	payload, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBytes+1))
+	if err != nil || len(payload) > maxRequestBytes {
+		return fmt.Errorf("%w: 请求体超过 %d 字节或无法读取", domain.ErrInvalidInput, maxRequestBytes)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil {
+	if err = decoder.Decode(destination); err != nil {
 		return fmt.Errorf("%w: 请求 JSON 无效", domain.ErrInvalidInput)
 	}
 	var extra any

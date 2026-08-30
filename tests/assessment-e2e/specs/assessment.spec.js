@@ -1004,7 +1004,7 @@ async function selectTab(page, name) {
 async function submitLoss(page) {
   await selectTab(page, "loss");
   await page.locator("#loss-snapshot-id").fill(LOSS_SNAPSHOT_ID);
-  expect(await page.locator("#loss-assessment-form").evaluate((form) => form.checkValidity())).toBe(true);
+  expect(await page.locator("#loss-snapshot-id").evaluate((input) => input.checkValidity())).toBe(true);
   await page.locator("#loss-assessment-run").click();
   await expect(page.locator("#loss-assessment-status")).not.toHaveClass(/assessment-state-loading/);
 }

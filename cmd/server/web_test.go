@@ -7,16 +7,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Requim/AI-GDM/internal/platform/config"
-	"github.com/Requim/AI-GDM/internal/platform/httpserver"
 	"github.com/Requim/AI-GDM/internal/platform/resources"
 )
 
 func TestWebConsoleDoesNotShadowHealthOrAPI(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := httpserver.New(":0", time.Second, logger)
+	server := newTestHTTPServer(t, logger)
 	api := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
 	if err := server.Mount("/api/v1", api); err != nil {
 		t.Fatal(err)

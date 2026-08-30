@@ -10,7 +10,6 @@ import (
 
 	hazardapp "github.com/Requim/AI-GDM/internal/application/hazard"
 	"github.com/Requim/AI-GDM/internal/platform/config"
-	"github.com/Requim/AI-GDM/internal/platform/httpserver"
 	"github.com/Requim/AI-GDM/internal/platform/logging"
 	"github.com/Requim/AI-GDM/internal/platform/resources"
 )
@@ -54,7 +53,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("初始化数据刷新: %w", err)
 	}
-	server := httpserver.New(cfg.HTTPAddr, cfg.ShutdownTimeout, logger)
+	server, err := newHTTPServer(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("初始化 HTTP 安全边界: %w", err)
+	}
 	survival, err := newSurvivalRuntime(logger)
 	if err != nil {
 		return fmt.Errorf("初始化生还历史回放: %w", err)

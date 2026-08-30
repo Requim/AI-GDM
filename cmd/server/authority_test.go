@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -130,7 +129,7 @@ func newNoDatabaseAuthorityHarness(t *testing.T) noDatabaseAuthorityHarness {
 	if err != nil || aiHandler == nil {
 		t.Fatalf("ai handler=%v error=%v", aiHandler, err)
 	}
-	server := httpserver.New("127.0.0.1:0", time.Second, logger)
+	server := newTestHTTPServer(t, logger)
 	if err = mountApplicationAPI(server, nil, config.Config{}, nil, logger,
 		aiHandler, survival.handler, resolver); err != nil {
 		t.Fatal(err)
@@ -148,6 +147,8 @@ func postAuthorityReport(t *testing.T, handler http.Handler, kind report.Authori
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/ai/report", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+testAdminToken)
+	request.Header.Set(httpserver.CSRFHeaderName, httpserver.CSRFHeaderValue)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response

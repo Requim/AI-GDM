@@ -86,7 +86,7 @@
     elements.facilityKind.addEventListener("change", function () { invalidateFacilities("设施类型已改变"); });
     elements.facilityRadius.addEventListener("input", function () { invalidateFacilities("搜索半径已改变"); });
     elements.facilitySearch.addEventListener("click", searchFacilities);
-    elements.form.addEventListener("submit", planRoutes);
+    elements.routePlan.addEventListener("click", planRoutes);
     map.on("click", function (event) { writePoint(coordinateTarget, event.latlng.lng, event.latlng.lat, true, true); });
     syncTransitFields();
   }
@@ -180,8 +180,7 @@
     }
   }
 
-  async function planRoutes(event) {
-    event.preventDefault();
+  async function planRoutes() {
     let token = null;
     try {
       const request = routeRequest();

@@ -31,6 +31,7 @@ func TestHandlerRendersEscapedChineseConsole(t *testing.T) {
 	body := response.Body.String()
 	if !strings.Contains(body, "监控中心控制台") || !strings.Contains(body, `id="risk-map"`) ||
 		!strings.Contains(body, `id="evacuation"`) || !strings.Contains(body, `id="assessment"`) ||
+		!strings.Contains(body, `id="admin-auth-form"`) || !strings.Contains(body, `type="password"`) ||
 		!strings.Contains(body, `/assets/risk-map.js`) || !strings.Contains(body, `/assets/evacuation.js`) ||
 		!strings.Contains(body, `/assets/assessment.js`) ||
 		!strings.Contains(body, `data-survival-cases-endpoint="/api/v1/survival/cases"`) ||
@@ -39,6 +40,20 @@ func TestHandlerRendersEscapedChineseConsole(t *testing.T) {
 		strings.Contains(body, "<script>alert") ||
 		!strings.Contains(body, "&lt;script&gt;alert") {
 		t.Fatalf("页面内容不符合预期: %s", body)
+	}
+	if strings.Contains(body, `<form id="admin-auth-form"`) ||
+		strings.Contains(body, `<form id="evacuation-form"`) ||
+		strings.Contains(body, `<form id="loss-assessment-form"`) ||
+		strings.Contains(body, `name="admin-token"`) ||
+		strings.Contains(body, `name="originLongitude"`) || strings.Contains(body, `name="originLatitude"`) ||
+		strings.Contains(body, `name="destinationLongitude"`) || strings.Contains(body, `name="destinationLatitude"`) ||
+		strings.Contains(body, `name="snapshotId"`) ||
+		!strings.Contains(body, `placeholder="输入管理员令牌" disabled`) ||
+		!strings.Contains(body, `id="admin-auth-submit" type="button" disabled`) ||
+		!strings.Contains(body, `id="admin-auth-clear" type="button" disabled`) ||
+		!strings.Contains(body, `id="route-plan" class="primary-command" type="button"`) ||
+		!strings.Contains(body, `id="loss-assessment-run" class="primary-command" type="button"`) {
+		t.Fatalf("管理员令牌控件不得具有默认 GET 提交语义: %s", body)
 	}
 	if response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("控制台页面缺少 no-store")
@@ -55,7 +70,7 @@ func TestHandlerServesEmbeddedAssets(t *testing.T) {
 		{path: "/assets/app.css", contentType: "text/css", contains: ".source-table"},
 		{path: "/assets/evacuation.css", contentType: "text/css", contains: ".evacuation-workspace"},
 		{path: "/assets/assessment.css", contentType: "text/css", contains: ".assessment-workspace"},
-		{path: "/assets/api.js", contentType: "text/javascript", contains: "requestJSON"},
+		{path: "/assets/api.js", contentType: "text/javascript", contains: "X-CSRF-Token"},
 		{path: "/assets/risk-map.js", contentType: "text/javascript", contains: "MAX_VISIBLE_ZONES"},
 		{path: "/assets/evacuation.js", contentType: "text/javascript", contains: "planRoutes"},
 		{path: "/assets/assessment.js", contentType: "text/javascript", contains: "loadModelCard"},
@@ -69,6 +84,22 @@ func TestHandlerServesEmbeddedAssets(t *testing.T) {
 			(test.contains != "" && !strings.Contains(response.Body.String(), test.contains)) {
 			t.Fatalf("静态资源 %s 响应无效: status=%d type=%s", test.path,
 				response.Code, response.Header().Get("Content-Type"))
+		}
+	}
+}
+
+func TestEmbeddedAdminAuthorizationUsesMemoryOnly(t *testing.T) {
+	handler := newTestHandler(t, &serviceStub{})
+	script := serve(t, handler, "/assets/api.js").Body.String()
+	for _, required := range []string{"let adminToken", `credentials: "omit"`,
+		"setAdminAuthorization", "clearAdminAuthorization", "sameOriginEndpoint"} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("api.js 缺少 %q", required)
+		}
+	}
+	for _, forbidden := range []string{"localStorage", "sessionStorage", "document.cookie"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("api.js 不得使用 %s 保存管理员令牌", forbidden)
 		}
 	}
 }

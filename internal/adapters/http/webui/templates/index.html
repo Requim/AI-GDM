@@ -25,10 +25,22 @@
           <h1>监控中心控制台</h1>
         </div>
       </div>
-      <div class="runtime-meta" aria-label="运行信息">
-        <span>{{.Environment}}</span>
-        <span>{{.Version}}</span>
-        <time>{{.GeneratedAt}}</time>
+      <div class="topbar-tools">
+        <div id="admin-auth-form" class="admin-auth" role="group" aria-labelledby="admin-auth-label">
+          <label id="admin-auth-label" for="admin-token">管理员授权</label>
+          <div class="admin-auth-controls">
+            <input id="admin-token" type="password" minlength="32" maxlength="256"
+              autocomplete="new-password" spellcheck="false" placeholder="输入管理员令牌" disabled>
+            <button id="admin-auth-submit" type="button" disabled>授权</button>
+            <button id="admin-auth-clear" type="button" disabled>清除</button>
+          </div>
+          <output id="admin-auth-status" for="admin-token" aria-live="polite">未授权</output>
+        </div>
+        <div class="runtime-meta" aria-label="运行信息">
+          <span>{{.Environment}}</span>
+          <span>{{.Version}}</span>
+          <time>{{.GeneratedAt}}</time>
+        </div>
       </div>
     </header>
 
@@ -163,7 +175,7 @@
         </div>
 
         <div class="evacuation-workspace">
-          <form id="evacuation-form" class="evacuation-form">
+          <div id="evacuation-form" class="evacuation-form" role="group" aria-labelledby="evacuation-title">
             <fieldset>
               <legend>地图点击写入</legend>
               <div class="segmented-control" aria-label="地图点击写入目标">
@@ -174,14 +186,14 @@
 
             <div class="coordinate-block">
               <strong>起点 WGS84</strong>
-              <label>经度<input id="origin-longitude" name="originLongitude" type="number" min="-180" max="180" step="0.000001" placeholder="104.066541" required></label>
-              <label>纬度<input id="origin-latitude" name="originLatitude" type="number" min="-90" max="90" step="0.000001" placeholder="30.572269" required></label>
+              <label>经度<input id="origin-longitude" type="number" min="-180" max="180" step="0.000001" placeholder="104.066541" required></label>
+              <label>纬度<input id="origin-latitude" type="number" min="-90" max="90" step="0.000001" placeholder="30.572269" required></label>
             </div>
 
             <div class="coordinate-block">
               <strong>终点 WGS84</strong>
-              <label>经度<input id="destination-longitude" name="destinationLongitude" type="number" min="-180" max="180" step="0.000001" placeholder="104.082000" required></label>
-              <label>纬度<input id="destination-latitude" name="destinationLatitude" type="number" min="-90" max="90" step="0.000001" placeholder="30.590000" required></label>
+              <label>经度<input id="destination-longitude" type="number" min="-180" max="180" step="0.000001" placeholder="104.082000" required></label>
+              <label>纬度<input id="destination-latitude" type="number" min="-90" max="90" step="0.000001" placeholder="30.590000" required></label>
             </div>
 
             <fieldset>
@@ -211,9 +223,9 @@
 
             <div class="evacuation-actions">
               <button id="facility-search" class="secondary-command" type="button"><span aria-hidden="true">&#9678;</span>搜索候选设施</button>
-              <button id="route-plan" class="primary-command" type="submit"><span aria-hidden="true">&#8594;</span>规划候选路线</button>
+              <button id="route-plan" class="primary-command" type="button"><span aria-hidden="true">&#8594;</span>规划候选路线</button>
             </div>
-          </form>
+          </div>
 
           <div class="evacuation-map-panel">
             <div id="evacuation-message" class="dispatch-state" role="status" aria-live="polite">请在地图上选择起点和终点，或直接输入 WGS84 坐标。</div>
@@ -264,17 +276,17 @@
 
         <div class="assessment-workspace">
           <section id="assessment-panel-loss" class="assessment-panel" role="tabpanel" aria-labelledby="assessment-tab-loss" data-assessment-panel="loss">
-            <form id="loss-assessment-form" class="assessment-control-column">
+            <div id="loss-assessment-form" class="assessment-control-column" role="group" aria-labelledby="assessment-tab-loss">
               <div class="assessment-panel-heading">
                 <span>01</span>
                 <div><strong>服务端权威损失输入</strong><small>浏览器仅提交风险快照标识</small></div>
               </div>
               <label>风险快照 ID
-                  <input id="loss-snapshot-id" name="snapshotId" type="text" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}" autocomplete="off" placeholder="等待风险地图或手动输入受约束 ID" required>
+                  <input id="loss-snapshot-id" type="text" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}" autocomplete="off" placeholder="等待风险地图或手动输入受约束 ID" required>
               </label>
               <p class="assessment-control-note">风险区、行政区、去重面积、道路、设施和已批准基线均由服务端读取。缺少真实输入时返回数据不足，不使用演示数值补齐。</p>
-              <button id="loss-assessment-run" class="primary-command" type="submit">计算确定性损失区间</button>
-            </form>
+              <button id="loss-assessment-run" class="primary-command" type="button">计算确定性损失区间</button>
+            </div>
 
             <div class="assessment-result-column" aria-label="损失评估结果">
               <div class="assessment-panel-heading">

@@ -3,7 +3,8 @@ package httpserver
 import (
 	"bytes"
 	"context"
-	"io"
+	"crypto/sha256"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -36,7 +37,7 @@ func TestInvalidRequestIDStopsApplicationAPIsBeforeSideEffects(t *testing.T) {
 }
 
 func TestRequestIDMiddlewareKeepsOnlyBoundedASCIIIdentifiers(t *testing.T) {
-	server := New(":0", time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := newTestServer(t)
 	valid := "client.Request-42:alpha"
 	response := requestWithID(server.Handler(), http.MethodGet, "/healthz", "", valid)
 	if response.Code != http.StatusOK || response.Header().Get("X-Request-ID") != valid {
@@ -57,11 +58,201 @@ func TestMaximumRequestIDKeepsApplicationErrorsWithinWireBudget(t *testing.T) {
 		http.MethodGet, "/api/v1/survival/not-found", "", requestID)
 }
 
+func TestInvalidRequestIDFloodIsRateLimitedBeforeRejectionAudit(t *testing.T) {
+	logOutput := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(logOutput, nil))
+	calls := 0
+	server, err := New(":0", time.Second, logger, SecurityOptions{
+		AdminToken: securityTestAdminToken, RateLimitPerMinute: 20, RateLimitBurst: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = server.Mount("/api/v1", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusNoContent)
+	})); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 25; index++ {
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/read", nil)
+		request.Header.Add("X-Request-ID", "first")
+		request.Header.Add("X-Request-ID", "second")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		want := http.StatusBadRequest
+		if index >= 20 {
+			want = http.StatusTooManyRequests
+		}
+		assertRequestIDFloodResponse(t, response, want)
+	}
+	if calls != 0 {
+		t.Fatalf("非法 requestID 洪泛进入业务 %d 次", calls)
+	}
+	if records := strings.Count(logOutput.String(), "\n"); records != 20 {
+		t.Fatalf("拒绝审计未受限流预算约束: records=%d", records)
+	}
+	if strings.Contains(logOutput.String(), "first") || strings.Contains(logOutput.String(), "second") {
+		t.Fatal("拒绝审计泄露非法 requestID")
+	}
+}
+
+func TestInvalidRequestIDFloodOnPublicPathsConsumesSecurityBudget(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "health", path: "/healthz"},
+		{name: "readiness", path: "/readyz"},
+		{name: "web", path: "/"},
+		{name: "not_found", path: "/missing"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assertInvalidPublicRequestIDFlood(t, test.path)
+		})
+	}
+}
+
+func TestPublicRequestsConsumeSecurityBudget(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+		webCalls   int
+	}{
+		{name: "health", path: "/healthz", wantStatus: http.StatusOK},
+		{name: "readiness", path: "/readyz", wantStatus: http.StatusServiceUnavailable},
+		{name: "web", path: "/", wantStatus: http.StatusNoContent, webCalls: 20},
+		{name: "not_found", path: "/missing", wantStatus: http.StatusNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, logOutput, calls := publicRequestIDTestServer(t, test.path == "/")
+			for index := 0; index < 25; index++ {
+				request := httptest.NewRequest(http.MethodGet, test.path, nil)
+				if index%2 == 0 {
+					request.Header.Set("X-Request-ID", fmt.Sprintf("public-%d", index))
+				}
+				response := serveRequest(server.Handler(), request)
+				want := test.wantStatus
+				if index >= 20 {
+					want = http.StatusTooManyRequests
+				}
+				if response.Code != want {
+					t.Fatalf("index=%d status=%d want=%d", index, response.Code, want)
+				}
+				if want == http.StatusTooManyRequests {
+					assertRequestIDFloodResponse(t, response, want)
+				}
+			}
+			if *calls != test.webCalls || strings.Count(logOutput.String(), "\n") != 20 {
+				t.Fatalf("calls=%d logs=%d", *calls, strings.Count(logOutput.String(), "\n"))
+			}
+		})
+	}
+}
+
+func TestLongNotFoundPathsUseBoundedAuditDigest(t *testing.T) {
+	server, logOutput, _ := publicRequestIDTestServer(t, false)
+	path := "/missing/" + strings.Repeat("sensitive-path-segment-", 800)
+	for index := 0; index < 25; index++ {
+		response := serveRequest(server.Handler(), httptest.NewRequest(http.MethodGet, path, nil))
+		want := http.StatusNotFound
+		if index >= 20 {
+			want = http.StatusTooManyRequests
+		}
+		if response.Code != want {
+			t.Fatalf("index=%d status=%d want=%d", index, response.Code, want)
+		}
+	}
+	digest := sha256.Sum256([]byte(path))
+	auditPath := fmt.Sprintf("sha256:%x", digest[:])
+	logs := logOutput.String()
+	if strings.Count(logs, "\n") != 20 || strings.Contains(logs, path) || !strings.Contains(logs, auditPath) {
+		t.Fatalf("长路径审计无效: logs=%d bytes=%d digest=%t raw=%t",
+			strings.Count(logs, "\n"), len(logs), strings.Contains(logs, auditPath), strings.Contains(logs, path))
+	}
+	if len(logs) > 20*1024 {
+		t.Fatalf("长路径审计超过总预算: bytes=%d", len(logs))
+	}
+}
+
+func assertInvalidPublicRequestIDFlood(t *testing.T, path string) {
+	t.Helper()
+	server, logOutput, calls := publicRequestIDTestServer(t, path == "/")
+	for index := 0; index < 25; index++ {
+		response := duplicateRequestIDRequest(server.Handler(), path)
+		want := http.StatusBadRequest
+		if index >= 20 {
+			want = http.StatusTooManyRequests
+		}
+		assertRequestIDFloodResponse(t, response, want)
+	}
+	if *calls != 0 || strings.Count(logOutput.String(), "\n") != 20 {
+		t.Fatalf("path=%s calls=%d logs=%d", path, *calls, strings.Count(logOutput.String(), "\n"))
+	}
+	if strings.Contains(logOutput.String(), "first") || strings.Contains(logOutput.String(), "second") {
+		t.Fatalf("path=%s 拒绝审计泄露非法 requestID", path)
+	}
+}
+
+func publicRequestIDTestServer(t *testing.T, mountWeb bool) (*Server, *bytes.Buffer, *int) {
+	t.Helper()
+	logOutput := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(logOutput, nil))
+	server, err := New(":0", time.Second, logger, SecurityOptions{
+		AdminToken: securityTestAdminToken, RateLimitPerMinute: 20, RateLimitBurst: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := new(int)
+	if mountWeb {
+		err = server.Mount("/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			*calls++
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return server, logOutput, calls
+}
+
+func duplicateRequestIDRequest(handler http.Handler, path string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	request.Header.Add("X-Request-ID", "first")
+	request.Header.Add("X-Request-ID", "second")
+	return serveRequest(handler, request)
+}
+
+func assertRequestIDFloodResponse(t *testing.T, response *httptest.ResponseRecorder, want int) {
+	t.Helper()
+	requestID := response.Header().Get("X-Request-ID")
+	if response.Code != want || !validRequestID(requestID) || requestID == "first" || requestID == "second" ||
+		!strings.Contains(response.Body.String(), requestID) {
+		t.Fatalf("洪泛响应无效: status=%d want=%d id=%q body=%s",
+			response.Code, want, requestID, response.Body.String())
+	}
+	if response.Header().Get("Content-Security-Policy") == "" {
+		t.Fatal("洪泛响应缺少安全响应头")
+	}
+	if want == http.StatusTooManyRequests && response.Header().Get("Retry-After") != "60" {
+		t.Fatalf("429 缺少 Retry-After: %v", response.Header())
+	}
+}
+
 func requestIDTestServer(t *testing.T) (*Server, *bytes.Buffer, *rejectedApplication) {
 	t.Helper()
 	logOutput := &bytes.Buffer{}
 	logger := slog.New(slog.NewJSONHandler(logOutput, nil))
-	server := New(":0", time.Second, logger)
+	server, err := New(":0", time.Second, logger, SecurityOptions{
+		AdminToken: securityTestAdminToken, RateLimitPerMinute: 60_000, RateLimitBurst: 10_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	application := &rejectedApplication{}
 	aiHandler, err := aiapi.New(application, logger)
 	if err != nil {
@@ -114,6 +305,11 @@ func assertRejectedApplicationRequest(t *testing.T, handler http.Handler, logOut
 
 func requestWithID(handler http.Handler, method, path, body, requestID string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions {
+		request.Header.Set("Authorization", "Bearer "+securityTestAdminToken)
+		request.Header.Set(CSRFHeaderName, CSRFHeaderValue)
+		request.Header.Set("Content-Type", "application/json")
+	}
 	if requestID != "" {
 		request.Header.Set("X-Request-ID", requestID)
 	}

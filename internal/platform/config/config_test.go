@@ -32,6 +32,9 @@ func TestLoadDefaults(t *testing.T) {
 		got.LLM.Model != defaultLLMModel || got.LLM.MaxCompletionTokens != 1200 {
 		t.Fatalf("AI = Search=%+v LLM=%+v", got.Search, got.LLM)
 	}
+	if got.Security.AdminToken != "" || got.Security.RateLimitPerMinute != 120 || got.Security.RateLimitBurst != 30 {
+		t.Fatalf("Security = %+v", got.Security)
+	}
 }
 
 func TestLoadRejectsInvalidTimeout(t *testing.T) {
@@ -228,6 +231,7 @@ func clearConfigEnv(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
 		"APP_HTTP_ADDR", "APP_ENV", "APP_LOG_LEVEL", "APP_SHUTDOWN_TIMEOUT",
+		"APP_ADMIN_TOKEN", "APP_RATE_LIMIT_PER_MINUTE", "APP_RATE_LIMIT_BURST",
 		"DATABASE_URL", "REDIS_ADDR", "REDIS_PASSWORD", "REDIS_DB",
 		"REFRESH_ENABLED", "REFRESH_INTERVAL", "REFRESH_TIMEOUT",
 		"OPEN_METEO_BASE_URL", "OPEN_METEO_API_KEY", "OPEN_METEO_POINTS",

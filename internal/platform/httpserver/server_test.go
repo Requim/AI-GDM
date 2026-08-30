@@ -10,7 +10,7 @@ import (
 )
 
 func TestHealthAndReadiness(t *testing.T) {
-	server := New(":0", time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := newTestServer(t)
 
 	health := serve(t, server.Handler(), "/healthz")
 	if health.Code != http.StatusOK {
@@ -24,7 +24,7 @@ func TestHealthAndReadiness(t *testing.T) {
 }
 
 func TestRequestIDHeader(t *testing.T) {
-	server := New(":0", time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := newTestServer(t)
 	response := serve(t, server.Handler(), "/healthz")
 
 	if response.Header().Get("X-Request-ID") == "" {
@@ -33,7 +33,7 @@ func TestRequestIDHeader(t *testing.T) {
 }
 
 func TestMountAddsApplicationRoutes(t *testing.T) {
-	server := New(":0", time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := newTestServer(t)
 	api := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	})
@@ -51,7 +51,7 @@ func TestMountAddsApplicationRoutes(t *testing.T) {
 }
 
 func TestMountRejectsInvalidInputs(t *testing.T) {
-	server := New(":0", time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	server := newTestServer(t)
 	tests := []struct {
 		pattern string
 		handler http.Handler
@@ -65,6 +65,17 @@ func TestMountRejectsInvalidInputs(t *testing.T) {
 			t.Fatalf("Mount(%q) 未拒绝无效输入", test.pattern)
 		}
 	}
+}
+
+func newTestServer(t *testing.T) *Server {
+	t.Helper()
+	server, err := New(":0", time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)), SecurityOptions{
+		AdminToken: "0123456789abcdef0123456789abcdef", RateLimitPerMinute: 60_000, RateLimitBurst: 10_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server
 }
 
 func serve(t *testing.T, handler http.Handler, path string) *httptest.ResponseRecorder {

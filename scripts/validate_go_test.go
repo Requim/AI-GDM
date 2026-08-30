@@ -21,7 +21,7 @@ func TestValidateGoScriptDeclaresOfflineBoundary(t *testing.T) {
 			t.Fatalf("全量 Go 脚本缺少离线边界 %q", fragment)
 		}
 	}
-	if strings.Contains(script, "TEST_DATABASE_URL=") {
+	if strings.Contains(script, "TEST_DATABASE_"+"URL=") {
 		t.Fatal("离线全量 Go 脚本不应冒充 PostgreSQL 集成门禁")
 	}
 }

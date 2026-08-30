@@ -16,7 +16,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-const maxRequestIDBytes = 128
+const (
+	maxRequestIDBytes    = 128
+	maxAccessLogPathSize = 256
+)
 
 var rejectedRequestSequence atomic.Uint64
 
@@ -29,21 +32,33 @@ type Server struct {
 	shutdownTimeout time.Duration
 }
 
-// New 创建带基础中间件和健康探针的 HTTP 服务。
-func New(addr string, timeout time.Duration, logger *slog.Logger) *Server {
+// New 创建带安全中间件和健康探针的 HTTP 服务。
+func New(addr string, timeout time.Duration, logger *slog.Logger,
+	security SecurityOptions,
+) (*Server, error) {
+	if logger == nil || strings.TrimSpace(addr) == "" || timeout <= 0 {
+		return nil, fmt.Errorf("HTTP 地址、关闭超时或日志器无效")
+	}
 	readiness := &Readiness{}
-	router := routes(logger, readiness)
+	router, err := routes(logger, readiness, security)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		httpServer: &http.Server{
 			Addr:              addr,
 			Handler:           router,
 			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      60 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			MaxHeaderBytes:    32 * 1024,
 		},
 		router:          router,
 		logger:          logger,
 		readiness:       readiness,
 		shutdownTimeout: timeout,
-	}
+	}, nil
 }
 
 // Mount 在服务启动前挂载一个独立 HTTP 适配器。
@@ -89,14 +104,22 @@ func (s *Server) shutdown() error {
 	return s.httpServer.Shutdown(ctx)
 }
 
-func routes(logger *slog.Logger, readiness *Readiness) *chi.Mux {
+func routes(logger *slog.Logger, readiness *Readiness, options SecurityOptions) (*chi.Mux, error) {
+	security, err := newRequestSecurity(options)
+	if err != nil {
+		return nil, err
+	}
 	router := chi.NewRouter()
+	router.Use(securityHeaders)
+	router.Use(security.rateLimit)
 	router.Use(requestIDMiddleware(logger))
 	router.Use(middleware.Recoverer)
 	router.Use(accessLog(logger))
+	router.Use(security.authorize)
+	router.Use(csrfProtection)
 	router.Get("/healthz", healthHandler)
 	router.Get("/readyz", readinessHandler(readiness))
-	return router
+	return router, nil
 }
 
 func requestIDMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
@@ -176,6 +199,17 @@ func rejectedRequestID() string {
 	return generatedRequestID(fmt.Sprintf("rejected-%d-%d", time.Now().UnixNano(), sequence))
 }
 
+func earlyResponseRequest(w http.ResponseWriter, r *http.Request) *http.Request {
+	requestID := rejectedRequestID()
+	values := r.Header.Values(middleware.RequestIDHeader)
+	if _, _, invalid := requestIDRejection(values); !invalid && len(values) == 1 {
+		requestID = values[0]
+	}
+	w.Header().Set(middleware.RequestIDHeader, requestID)
+	ctx := context.WithValue(r.Context(), middleware.RequestIDKey, requestID)
+	return r.WithContext(ctx)
+}
+
 func writeInvalidRequestID(w http.ResponseWriter, requestID string) {
 	w.Header().Set("X-Request-ID", requestID)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -193,11 +227,19 @@ func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			started := time.Now()
 			next.ServeHTTP(w, r)
 			logger.InfoContext(r.Context(), "HTTP 请求完成",
-				"method", r.Method, "path", r.URL.Path,
+				"method", r.Method, "path", accessLogPath(r.URL.Path),
 				"request_id", middleware.GetReqID(r.Context()),
 				"duration_ms", time.Since(started).Milliseconds())
 		})
 	}
+}
+
+func accessLogPath(path string) string {
+	if len(path) <= maxAccessLogPathSize {
+		return path
+	}
+	digest := sha256.Sum256([]byte(path))
+	return fmt.Sprintf("sha256:%x", digest[:])
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {

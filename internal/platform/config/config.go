@@ -52,6 +52,7 @@ type Config struct {
 	RedisAddr       string
 	RedisPassword   string
 	RedisDB         int
+	Security        SecurityConfig
 	Refresh         RefreshConfig
 	Weather         WeatherConfig
 	LHASA           LHASAConfig
@@ -135,44 +136,64 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	refresh, err := loadRefresh()
-	if err != nil {
+	if err = loadConfigSections(&base); err != nil {
 		return Config{}, err
 	}
-	weather, err := loadWeather()
-	if err != nil {
-		return Config{}, err
-	}
-	lhasa, err := loadLHASA()
-	if err != nil {
-		return Config{}, err
-	}
-	mapConfig, err := loadMap()
-	if err != nil {
-		return Config{}, err
-	}
-	search, err := loadSearch()
-	if err != nil {
-		return Config{}, err
-	}
-	llm, err := loadLLM()
-	if err != nil {
-		return Config{}, err
-	}
-	base.Refresh, base.Weather, base.LHASA, base.Map, base.Search, base.LLM = refresh, weather, lhasa, mapConfig, search, llm
-	if err = validateRefresh(base); err != nil {
-		return Config{}, err
-	}
-	if err = validateMap(base.Map); err != nil {
-		return Config{}, err
-	}
-	if err = validateSearch(base.Search); err != nil {
-		return Config{}, err
-	}
-	if err = validateLLM(base.LLM); err != nil {
+	if err = validateConfig(base); err != nil {
 		return Config{}, err
 	}
 	return base, nil
+}
+
+func loadConfigSections(base *Config) error {
+	refresh, err := loadRefresh()
+	if err != nil {
+		return err
+	}
+	weather, err := loadWeather()
+	if err != nil {
+		return err
+	}
+	lhasa, err := loadLHASA()
+	if err != nil {
+		return err
+	}
+	mapConfig, err := loadMap()
+	if err != nil {
+		return err
+	}
+	search, err := loadSearch()
+	if err != nil {
+		return err
+	}
+	llm, err := loadLLM()
+	if err != nil {
+		return err
+	}
+	security, err := loadSecurity()
+	if err != nil {
+		return err
+	}
+	base.Security, base.Refresh, base.Weather = security, refresh, weather
+	base.LHASA, base.Map, base.Search, base.LLM = lhasa, mapConfig, search, llm
+	return nil
+}
+
+func validateConfig(config Config) error {
+	validators := []func() error{
+		func() error { return validateRefresh(config) },
+		func() error { return validateSecurity(config) },
+		func() error { return validateMap(config.Map) },
+		func() error { return validateSearch(config.Search) },
+		func() error { return validateLLM(config.LLM) },
+		func() error { return validateSecretSet(config) },
+	}
+	for _, validate := range validators {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func loadSearch() (SearchConfig, error) {

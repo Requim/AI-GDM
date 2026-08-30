@@ -127,6 +127,21 @@ func TestMapAPIRejectsOversizedRequestBody(t *testing.T) {
 	assertError(t, response, http.StatusBadRequest, "invalid_request")
 }
 
+func TestMapAPIRejectsChunkedTailBeyondRequestLimit(t *testing.T) {
+	places := &facilitySearcherStub{}
+	handler := newHandler(t, places, &routePlannerStub{})
+	valid := `{"center":{"longitude":116.4,"latitude":39.9},"kind":"shelter","radiusMeters":100}`
+	body := valid + strings.Repeat(" ", maxRequestBytes-len(valid)) + `{}`
+	request := httptest.NewRequest(http.MethodPost, "/places/nearby", strings.NewReader(body))
+	request.ContentLength = -1
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	assertError(t, response, http.StatusBadRequest, "invalid_request")
+	if places.calls != 0 {
+		t.Fatal("chunked 超量请求仍调用了设施搜索")
+	}
+}
+
 func TestMapAPIRejectsTransitUntilCityContractExists(t *testing.T) {
 	handler := newHandler(t, &facilitySearcherStub{}, &routePlannerStub{})
 	response := serveJSON(t, handler, http.MethodPost, "/routes",
