@@ -21,7 +21,7 @@ import (
 
 const (
 	// DefaultBaseURL 是博查 Web Search API 的公开兼容端点。
-	DefaultBaseURL = "https://api.bochaai.com/v1/web-search"
+	DefaultBaseURL = "https://api.bocha.cn/v1/web-search"
 	ProviderName   = "博查 AI 搜索"
 	DatasetName    = "Bocha Web Search"
 	defaultMaxAge  = 72 * time.Hour
@@ -111,6 +111,7 @@ func (p *Provider) Search(ctx context.Context, query string, limit int) ([]repor
 	limit = p.normalizeLimit(limit)
 	body, err := json.Marshal(searchRequest{
 		Query: query, Count: limit, Freshness: freshness(p.maxAge), Summary: true,
+		Include: strings.Join(p.trustedDomains, ","),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("编码博查搜索请求: %w", err)

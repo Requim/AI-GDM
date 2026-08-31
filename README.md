@@ -325,7 +325,7 @@ geoBoundaries、WorldPop 和 Overpass 使用服务内置的受控公开端点，
 | --- | --- | --- |
 | `BOCHA_ENABLED` | `false` | 是否启用实时证据搜索。 |
 | `BOCHA_API_KEY` | 空 | 博查服务端 Key。 |
-| `BOCHA_BASE_URL` | `https://api.bochaai.com/v1/web-search` | 搜索 HTTPS 端点。 |
+| `BOCHA_BASE_URL` | `https://api.bocha.cn/v1/web-search` | 搜索 HTTPS 端点。 |
 | `BOCHA_MAX_RESULTS` | `10` | 单次结果上限，范围 `1-50`。 |
 | `BOCHA_MAX_AGE` | `72h` | 本地证据有效窗口。 |
 | `BOCHA_TRUSTED_DOMAINS` | `gov.cn,mnr.gov.cn,mem.gov.cn,cma.cn,earthdata.nasa.gov` | 逗号分隔的可信来源基域。 |

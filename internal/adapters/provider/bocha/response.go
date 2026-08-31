@@ -18,6 +18,7 @@ type searchRequest struct {
 	Freshness string `json:"freshness,omitempty"`
 	Summary   bool   `json:"summary"`
 	Count     int    `json:"count"`
+	Include   string `json:"include,omitempty"`
 }
 
 // searchItem 覆盖博查兼容 Bing 结构中用于证据审计的字段。

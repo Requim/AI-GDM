@@ -319,7 +319,7 @@ func validInput() report.NarrativeInput {
 		Evidence: []report.Evidence{{
 			Title: "公开通报", URL: "https://www.mnr.gov.cn/news/1", Summary: "降雨增加",
 			Source: provenance.Provenance{
-				Provider: "bocha", Dataset: "search", SourceURI: "https://api.bochaai.com/v1/web-search",
+				Provider: "bocha", Dataset: "search", SourceURI: "https://api.bocha.cn/v1/web-search",
 				SourceRevision: "sha256:" + strings.Repeat("a", 64), DataKind: provenance.DataKindObservation,
 				FetchedAt: time.Date(2026, 8, 27, 3, 0, 0, 0, time.UTC),
 			},

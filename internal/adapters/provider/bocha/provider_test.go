@@ -24,7 +24,8 @@ func TestSearchFiltersTrustedFreshAndDuplicateResults(t *testing.T) {
 			return
 		}
 		var request searchRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Freshness != "oneDay" {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Freshness != "oneDay" ||
+			request.Include != "mnr.gov.cn,mem.gov.cn" {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
@@ -104,6 +105,12 @@ func TestNewRejectsInsecureEndpointAndMissingKey(t *testing.T) {
 		if _, err := New(nil, config); !errors.Is(err, domain.ErrInvalidInput) {
 			t.Fatalf("New(%+v) error = %v", config, err)
 		}
+	}
+}
+
+func TestDefaultBaseURLMatchesOfficialEndpoint(t *testing.T) {
+	if DefaultBaseURL != "https://api.bocha.cn/v1/web-search" {
+		t.Fatalf("DefaultBaseURL = %q", DefaultBaseURL)
 	}
 }
 

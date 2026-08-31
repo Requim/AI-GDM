@@ -9,6 +9,7 @@
 - 端点必须是无用户信息、无查询参数和无片段的 HTTPS 地址。
 - API 密钥只从 `BOCHA_API_KEY` 读取，放在服务端内存，请求日志和来源 URI 不包含密钥。
 - 查询去除首尾空白，限制为 512 个 Unicode 字符；结果数限制为 1 至 50。
+- 请求使用博查官方 `include` 参数限定配置的可信域名，响应返回后仍执行同一可信域校验。
 - 共用 HTTP 客户端负责超时、重试、限流、响应大小和错误脱敏。
 
 ## 证据筛选
@@ -32,7 +33,7 @@
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `BOCHA_ENABLED` | `false` | 是否启用搜索供应商 |
-| `BOCHA_BASE_URL` | `https://api.bochaai.com/v1/web-search` | 服务端 HTTPS 端点 |
+| `BOCHA_BASE_URL` | `https://api.bocha.cn/v1/web-search` | 服务端 HTTPS 端点 |
 | `BOCHA_API_KEY` | 无 | 只允许通过环境变量注入 |
 | `BOCHA_MAX_RESULTS` | `10` | 单次结果上限，最大 50 |
 | `BOCHA_MAX_AGE` | `72h` | 本地证据时效窗口 |

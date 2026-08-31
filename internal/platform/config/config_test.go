@@ -29,7 +29,7 @@ func TestLoadDefaults(t *testing.T) {
 		got.Map.APIKey != "" || got.Map.SecurityCode != "" {
 		t.Fatalf("Map = %+v", got.Map)
 	}
-	if got.Search.Enabled || got.Search.MaxResults != 10 || got.Search.MaxAge != 72*time.Hour ||
+	if got.Search.Enabled || got.Search.BaseURL != defaultBochaBaseURL || got.Search.MaxResults != 10 || got.Search.MaxAge != 72*time.Hour ||
 		got.LLM.Enabled || got.LLM.ProviderName != defaultLLMProviderName || got.LLM.BaseURL != defaultLLMBaseURL ||
 		got.LLM.Model != defaultLLMModel || got.LLM.MaxCompletionTokens != 1200 {
 		t.Fatalf("AI = Search=%+v LLM=%+v", got.Search, got.LLM)

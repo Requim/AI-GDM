@@ -32,6 +32,7 @@ const (
 	defaultGDALBinary      = "gdal"
 	defaultAMAPBaseURL     = "https://restapi.amap.com"
 	defaultAMAPTimeout     = 15 * time.Second
+	defaultBochaBaseURL    = "https://api.bocha.cn/v1/web-search"
 	defaultLLMProviderName = "Jojocode OpenAI 兼容服务"
 	defaultLLMBaseURL      = "https://jojocode.com/v1/chat/completions"
 	defaultLLMModel        = "gpt-5.6-terra"
@@ -210,7 +211,7 @@ func loadSearch() (SearchConfig, error) {
 		return SearchConfig{}, err
 	}
 	trusted := splitList(stringEnv("BOCHA_TRUSTED_DOMAINS", "gov.cn,mnr.gov.cn,mem.gov.cn,cma.cn,earthdata.nasa.gov"))
-	return SearchConfig{Enabled: enabled, BaseURL: stringEnv("BOCHA_BASE_URL", "https://api.bochaai.com/v1/web-search"), APIKey: strings.TrimSpace(os.Getenv("BOCHA_API_KEY")), MaxResults: maxResults, MaxAge: maxAge, TrustedDomains: trusted}, nil
+	return SearchConfig{Enabled: enabled, BaseURL: stringEnv("BOCHA_BASE_URL", defaultBochaBaseURL), APIKey: strings.TrimSpace(os.Getenv("BOCHA_API_KEY")), MaxResults: maxResults, MaxAge: maxAge, TrustedDomains: trusted}, nil
 }
 
 func loadLLM() (LLMConfig, error) {
