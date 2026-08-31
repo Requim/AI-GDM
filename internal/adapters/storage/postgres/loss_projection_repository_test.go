@@ -373,19 +373,26 @@ func TestLossProjectionRejectsInvalidLimitsBeforeDatabaseAccess(t *testing.T) {
 }
 
 func saveLossProjectionRisk(t *testing.T, ctx context.Context, repository *HazardRepository,
-	now time.Time, suffix string, zoneCount int,
+	now time.Time, suffix string, zoneCount int, coverages ...*hazard.Coverage,
 ) (hazard.Snapshot, []hazard.RiskZone) {
 	now = now.UTC().Truncate(time.Microsecond)
 	return saveLossProjectionRiskWithWindow(t, ctx, repository, now, suffix, zoneCount,
-		now.Add(-10*time.Minute), now.Add(50*time.Minute))
+		now.Add(-10*time.Minute), now.Add(50*time.Minute), coverages...)
 }
 
 func saveLossProjectionRiskWithWindow(t *testing.T, ctx context.Context, repository *HazardRepository,
 	now time.Time, suffix string, zoneCount int, validFrom, validTo time.Time,
+	coverages ...*hazard.Coverage,
 ) (hazard.Snapshot, []hazard.RiskZone) {
 	t.Helper()
+	if len(coverages) > 1 {
+		t.Fatal("风险快照测试夹具最多接受一个覆盖范围")
+	}
 	now = now.UTC().Truncate(time.Microsecond)
 	snapshot, _ := storageFixture(now.Add(-10 * time.Minute))
+	if len(coverages) == 1 {
+		snapshot.Coverage = coverages[0]
+	}
 	snapshot.ValidFrom, snapshot.Source.ValidFrom = postgresTime(validFrom), postgresTime(validFrom)
 	snapshot.ValidTo, snapshot.Source.ValidTo = postgresTime(validTo), postgresTime(validTo)
 	snapshot.ID = fmt.Sprintf("loss-projection-%s-%d", suffix, time.Now().UnixNano())

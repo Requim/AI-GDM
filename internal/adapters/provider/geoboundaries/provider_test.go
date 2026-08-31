@@ -146,6 +146,22 @@ func TestBoundaryEvidenceBindsURLDigestAndFullShapeID(t *testing.T) {
 	assertBoundaryBindingReference(t, value.InputReferences[1], metadataDigestHex, digestHex)
 }
 
+func TestRiskBoundaryProjectsValidatedCoverageAndGeometry(t *testing.T) {
+	provider, requests := boundaryProvider(t, string(validGeometryDocument().payload()), "")
+	value, err := provider.RiskBoundary(context.Background())
+	if err != nil || requests.Load() != 2 {
+		t.Fatalf("RiskBoundary()=%+v error=%v requests=%d", value, err, requests.Load())
+	}
+	if value.Coverage.BoundaryID != testBoundaryID || value.Coverage.RegionCode != "CN" ||
+		value.Coverage.BoundaryType != "ADM0" || value.Coverage.BoundaryVersion != "2019" ||
+		value.Geometry.Type != "MultiPolygon" || len(value.InputReferences) != 2 {
+		t.Fatalf("RiskBoundary()=%+v", value)
+	}
+	if err = value.Validate(); err != nil {
+		t.Fatalf("RiskBoundary() 未通过领域校验: %v", err)
+	}
+}
+
 func TestBoundaryBindingReferenceChangesWithMetadataEvidence(t *testing.T) {
 	value, err := decodeMetadata(validMetadataPayload())
 	if err != nil {

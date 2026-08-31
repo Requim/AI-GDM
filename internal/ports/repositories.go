@@ -47,10 +47,26 @@ type RiskZoneReader interface {
 	ZonesBySnapshot(ctx context.Context, snapshotID string) ([]hazard.RiskZone, error)
 }
 
-// HazardAnalysisWriter 原子保存完整灾害分析。
+// HazardAnalysisRefreshLease 表示同一分析族的跨进程刷新租约。
+type HazardAnalysisRefreshLease interface {
+	// Release 释放刷新租约。
+	Release() error
+}
+
+// HazardAnalysisRefreshLocker 串行化同一分析族的完整刷新过程。
+type HazardAnalysisRefreshLocker interface {
+	// LockAnalysisRefresh 获取分析族级刷新租约。
+	LockAnalysisRefresh(ctx context.Context, selector hazard.AnalysisSelector) (
+		HazardAnalysisRefreshLease, error)
+}
+
+// HazardAnalysisWriter 原子保存完整灾害分析并协调覆盖范围身份。
 type HazardAnalysisWriter interface {
 	// SaveAnalysis 在同一事务保存快照和全部风险区。
 	SaveAnalysis(ctx context.Context, snapshot hazard.Snapshot, zones []hazard.RiskZone) error
+	// ReconcileAnalysisCoverage 恢复匹配边界的历史结果，并使审计水位内的其他范围退出最新选择。
+	ReconcileAnalysisCoverage(ctx context.Context, selector hazard.AnalysisSelector,
+		replacement hazard.Coverage, observedAt time.Time) error
 }
 
 // HazardAnalysisReader 读取同一处理版本最后成功的完整灾害分析。

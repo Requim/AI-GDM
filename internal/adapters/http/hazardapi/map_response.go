@@ -33,8 +33,21 @@ type mapRiskResult struct {
 	OmittedZoneCount        int               `json:"omittedZoneCount"`
 	OmittedComplexZoneCount int               `json:"omittedComplexZoneCount"`
 	OmittedPayloadZoneCount int               `json:"omittedPayloadZoneCount"`
+	Coverage                mapCoverageScope  `json:"coverage"`
 	Limits                  mapResponseLimits `json:"limits"`
 	Limitations             []string          `json:"mapLimitations"`
+}
+
+type mapCoverageScope struct {
+	Mode                string `json:"mode"`
+	Label               string `json:"label"`
+	Source              string `json:"source,omitempty"`
+	License             string `json:"license,omitempty"`
+	RegionCode          string `json:"regionCode,omitempty"`
+	BoundaryID          string `json:"boundaryId,omitempty"`
+	BoundaryType        string `json:"boundaryType,omitempty"`
+	BoundaryVersion     string `json:"boundaryVersion,omitempty"`
+	ViewportIndependent bool   `json:"viewportIndependent"`
 }
 
 type mapResponseLimits struct {
@@ -84,12 +97,34 @@ func projectMapRisk(result applicationhazard.MapRiskResult) (mapRiskResult, erro
 	if err != nil {
 		return mapRiskResult{}, err
 	}
+	coverage, err := projectMapCoverage(result.Snapshot)
+	if err != nil {
+		return mapRiskResult{}, err
+	}
 	value := mapRiskResult{Snapshot: result.Snapshot, Zones: selected, Assessment: result.Assessment,
 		TotalZoneCount: result.TotalZoneCount, VisibleZoneCount: len(selected),
 		OmittedZoneCount: result.TotalZoneCount - len(selected), OmittedComplexZoneCount: complexCount,
-		OmittedPayloadZoneCount: payloadCount, Limits: defaultMapLimits()}
+		OmittedPayloadZoneCount: payloadCount, Coverage: coverage, Limits: defaultMapLimits()}
 	value.Limitations = mapLimitations(value)
 	return value, nil
+}
+
+func projectMapCoverage(snapshot hazard.Snapshot) (mapCoverageScope, error) {
+	if snapshot.Coverage == nil {
+		return mapCoverageScope{Mode: "bounding_box",
+			Label: "中国外接矩形预筛选（包含部分境外区域）", ViewportIndependent: true}, nil
+	}
+	if err := snapshot.Coverage.Validate(); err != nil || snapshot.Coverage.RegionCode != "CN" ||
+		snapshot.Coverage.BoundaryType != "ADM0" {
+		return mapCoverageScope{}, fmt.Errorf("%w: 风险快照覆盖范围无效", domain.ErrInsufficientData)
+	}
+	return mapCoverageScope{Mode: string(snapshot.Coverage.Mode),
+		Label:      fmt.Sprintf("CHN ADM0 边界（%s）", snapshot.Coverage.BoundaryVersion),
+		Source:     snapshot.Coverage.Source,
+		License:    snapshot.Coverage.License,
+		RegionCode: snapshot.Coverage.RegionCode, BoundaryID: snapshot.Coverage.BoundaryID,
+		BoundaryType:    snapshot.Coverage.BoundaryType,
+		BoundaryVersion: snapshot.Coverage.BoundaryVersion, ViewportIndependent: true}, nil
 }
 
 func selectMapZones(zones []hazard.RiskZone) ([]hazard.RiskZone, int, int, error) {
@@ -197,6 +232,12 @@ func defaultMapLimits() mapResponseLimits {
 
 func mapLimitations(value mapRiskResult) []string {
 	limitations := []string{"地图响应只用于浏览器辅助研判，完整风险记录请查询审计接口"}
+	if value.Coverage.Mode == string(hazard.CoverageAdministrativeBoundary) {
+		limitations = append(limitations,
+			"统计范围按版本化 CHN ADM0 边界裁剪，不随当前地图视窗变化，且不作为官方国界依据")
+	} else {
+		limitations = append(limitations, "当前快照仅按中国外接矩形预筛选，可能包含境外区域")
+	}
 	if value.OmittedZoneCount > 0 {
 		limitations = append(limitations, "地图已按风险优先级省略部分风险区，省略不表示风险为零")
 	}

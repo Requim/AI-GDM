@@ -23,6 +23,12 @@ type ArtifactFetcher interface {
 	Fetch(ctx context.Context, artifact provenance.Artifact) (provenance.Artifact, error)
 }
 
+// HazardBoundaryProvider 返回风险处理使用的版本化行政边界。
+type HazardBoundaryProvider interface {
+	// RiskBoundary 返回已校验、可绑定快照身份的固定边界输入。
+	RiskBoundary(ctx context.Context) (hazard.ProcessingBoundary, error)
+}
+
 // RasterProcessor 把风险栅格转换为领域快照和风险区。
 type RasterProcessor interface {
 	// ModelName 返回处理结果使用的稳定模型名称。
@@ -30,7 +36,8 @@ type RasterProcessor interface {
 	// Version 返回处理算法和固定参数的稳定版本。
 	Version() string
 	// Process 执行固定参数的裁剪、分级和矢量化。
-	Process(ctx context.Context, artifact provenance.Artifact) (hazard.Snapshot, []hazard.RiskZone, error)
+	Process(ctx context.Context, artifact provenance.Artifact,
+		boundary hazard.ProcessingBoundary) (hazard.Snapshot, []hazard.RiskZone, error)
 }
 
 // WeatherReader 读取指定坐标的数值天气模型结果。

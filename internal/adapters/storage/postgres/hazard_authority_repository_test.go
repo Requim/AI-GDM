@@ -129,6 +129,39 @@ func TestRiskAuthorityRepeatedArtifactKeepsAuthorityStable(t *testing.T) {
 	}
 }
 
+func TestRiskAuthorityBindsCoverageIntoImmutableSnapshot(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC()
+	snapshot, zone := storageFixture(now)
+	renameStorageFixture(&snapshot, &zone, snapshot.ID+"-authority-coverage")
+	snapshot.Coverage = storageCoverage(now)
+	cleanupSnapshot(t, repository, snapshot.ID)
+	t.Cleanup(func() {
+		_, _ = repository.pool.Exec(context.Background(),
+			`DELETE FROM risk_assessments WHERE snapshot_id=$1`, snapshot.ID)
+	})
+	if err := repository.SaveAnalysis(ctx, snapshot, []hazard.RiskZone{zone}); err != nil {
+		t.Fatal(err)
+	}
+	persistAuthoritySpatialFixture(t, repository, snapshot, &zone)
+	assessment := authorityRiskAssessment(snapshot, zone, "coverage")
+	if err := repository.SaveRiskAssessment(ctx, snapshot, assessment); err != nil {
+		t.Fatal(err)
+	}
+	read := readAuthorityFixture(t, ctx, repository, snapshot.ID)
+	if read.Snapshot.Coverage == nil ||
+		read.Snapshot.Coverage.Identity() != snapshot.Coverage.Identity() {
+		t.Fatalf("权威快照覆盖范围丢失: %+v", read.Snapshot.Coverage)
+	}
+	changed := snapshot
+	changed.Coverage = storageCoverage(now)
+	changed.Coverage.SHA256 = strings.Repeat("b", 64)
+	if _, err := repository.ReuseRiskAuthority(ctx, changed,
+		[]hazard.RiskZone{zone}); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("权威快照覆盖范围漂移未拒绝: %v", err)
+	}
+}
+
 func TestRiskAuthorityRejectsSameIDContentDrift(t *testing.T) {
 	ctx, repository := integrationHazardRepository(t)
 	snapshot, zone := authorityStorageFixture(t, repository)
@@ -161,6 +194,63 @@ func TestRiskAuthorityReuseAllowsOnlyFixedFallbackOverlay(t *testing.T) {
 	if err := repository.SaveRiskAssessment(ctx, snapshot, assessment); err != nil {
 		t.Fatal(err)
 	}
+	fallback := riskAuthorityFallbackOverlay(snapshot, false)
+	reused, err := repository.ReuseRiskAuthority(ctx, fallback, []hazard.RiskZone{zone})
+	if err != nil || !reused {
+		t.Fatalf("固定 fallback 覆盖未复用权威: reused=%v err=%v", reused, err)
+	}
+	boundaryFallback := riskAuthorityFallbackOverlay(snapshot, true)
+	reused, err = repository.ReuseRiskAuthority(ctx, boundaryFallback, []hazard.RiskZone{zone})
+	if err != nil || !reused {
+		t.Fatalf("边界身份 fallback 覆盖未复用权威: reused=%v err=%v", reused, err)
+	}
+	fallback.Limitations[len(fallback.Limitations)-1] = "任意降级说明"
+	if _, err = repository.ReuseRiskAuthority(ctx, fallback,
+		[]hazard.RiskZone{zone}); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("非白名单 fallback 覆盖未拒绝: %v", err)
+	}
+}
+
+func TestValidFallbackOverlayUsesStrictBoundaryWhitelist(t *testing.T) {
+	stored, _ := storageFixture(time.Date(2026, 8, 31, 8, 0, 0, 0, time.UTC))
+	standard := riskAuthorityFallbackOverlay(stored, false)
+	boundary := riskAuthorityFallbackOverlay(stored, true)
+	if !validFallbackOverlay(stored, standard) {
+		t.Fatal("标准 fallback 覆盖应通过")
+	}
+	if !validFallbackOverlay(stored, boundary) {
+		t.Fatal("成对边界身份 fallback 覆盖应通过")
+	}
+	if !validFallbackOverlay(standard, boundary) {
+		t.Fatal("已固化标准 fallback 应允许追加成对边界身份覆盖")
+	}
+	if validFallbackOverlay(boundary, standard) {
+		t.Fatal("已固化边界身份 fallback 不应允许移除边界覆盖")
+	}
+	tests := []struct {
+		name   string
+		mutate func(hazard.Snapshot) hazard.Snapshot
+	}{
+		{"仅边界标记", keepBoundaryQualityOnly},
+		{"仅边界限制", keepBoundaryLimitationOnly},
+		{"额外质量标记", addUnexpectedQualityFlag},
+		{"额外快照限制", addUnexpectedSnapshotLimitation},
+		{"额外来源限制", addUnexpectedSourceLimitation},
+		{"边界标记乱序", reverseFallbackQualityFlags},
+		{"边界限制乱序", reverseFallbackSnapshotLimitations},
+		{"权威内容漂移", driftFallbackModelVersion},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			incoming := riskAuthorityFallbackOverlay(stored, true)
+			if validFallbackOverlay(stored, test.mutate(incoming)) {
+				t.Fatal("非白名单 fallback 覆盖未拒绝")
+			}
+		})
+	}
+}
+
+func riskAuthorityFallbackOverlay(snapshot hazard.Snapshot, boundary bool) hazard.Snapshot {
 	fallback := snapshot
 	fallback.Status, fallback.Source.Stale = hazard.SnapshotStale, true
 	fallback.Source.QualityFlags = append(append([]string(nil), snapshot.Source.QualityFlags...),
@@ -169,15 +259,55 @@ func TestRiskAuthorityReuseAllowsOnlyFixedFallbackOverlay(t *testing.T) {
 		fallbackSourceLimitation)
 	fallback.Limitations = append(append([]string(nil), snapshot.Limitations...),
 		fallbackSnapshotLimitation)
-	reused, err := repository.ReuseRiskAuthority(ctx, fallback, []hazard.RiskZone{zone})
-	if err != nil || !reused {
-		t.Fatalf("固定 fallback 覆盖未复用权威: reused=%v err=%v", reused, err)
+	if boundary {
+		fallback.Source.QualityFlags = append(fallback.Source.QualityFlags, fallbackBoundaryQualityFlag)
+		fallback.Limitations = append(fallback.Limitations, fallbackBoundarySnapshotLimitation)
 	}
-	fallback.Limitations[len(fallback.Limitations)-1] = "任意降级说明"
-	if _, err = repository.ReuseRiskAuthority(ctx, fallback,
-		[]hazard.RiskZone{zone}); !errors.Is(err, domain.ErrInvalidInput) {
-		t.Fatalf("非白名单 fallback 覆盖未拒绝: %v", err)
-	}
+	return fallback
+}
+
+func keepBoundaryQualityOnly(snapshot hazard.Snapshot) hazard.Snapshot {
+	snapshot.Limitations = snapshot.Limitations[:len(snapshot.Limitations)-1]
+	return snapshot
+}
+
+func keepBoundaryLimitationOnly(snapshot hazard.Snapshot) hazard.Snapshot {
+	snapshot.Source.QualityFlags = snapshot.Source.QualityFlags[:len(snapshot.Source.QualityFlags)-1]
+	return snapshot
+}
+
+func addUnexpectedQualityFlag(snapshot hazard.Snapshot) hazard.Snapshot {
+	snapshot.Source.QualityFlags = append(snapshot.Source.QualityFlags, "unexpected_quality")
+	return snapshot
+}
+
+func addUnexpectedSnapshotLimitation(snapshot hazard.Snapshot) hazard.Snapshot {
+	snapshot.Limitations = append(snapshot.Limitations, "任意额外边界限制")
+	return snapshot
+}
+
+func addUnexpectedSourceLimitation(snapshot hazard.Snapshot) hazard.Snapshot {
+	snapshot.Source.Limitations = append(snapshot.Source.Limitations, "任意额外来源限制")
+	return snapshot
+}
+
+func reverseFallbackQualityFlags(snapshot hazard.Snapshot) hazard.Snapshot {
+	last := len(snapshot.Source.QualityFlags) - 1
+	snapshot.Source.QualityFlags[last-1], snapshot.Source.QualityFlags[last] =
+		snapshot.Source.QualityFlags[last], snapshot.Source.QualityFlags[last-1]
+	return snapshot
+}
+
+func reverseFallbackSnapshotLimitations(snapshot hazard.Snapshot) hazard.Snapshot {
+	last := len(snapshot.Limitations) - 1
+	snapshot.Limitations[last-1], snapshot.Limitations[last] =
+		snapshot.Limitations[last], snapshot.Limitations[last-1]
+	return snapshot
+}
+
+func driftFallbackModelVersion(snapshot hazard.Snapshot) hazard.Snapshot {
+	snapshot.ModelVersion += "-drift"
+	return snapshot
 }
 
 func TestRiskAuthorityReadRejectsLiveSnapshotTamper(t *testing.T) {

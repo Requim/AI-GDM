@@ -128,12 +128,16 @@
           </button>
         </div>
 
-        <div class="risk-toolbar" aria-label="风险等级图例">
+        <div class="risk-toolbar" aria-label="风险等级图例与显示范围">
           <span><i class="legend-low" aria-hidden="true"></i>低</span>
           <span><i class="legend-moderate" aria-hidden="true"></i>中</span>
           <span><i class="legend-high" aria-hidden="true"></i>高</span>
           <span><i class="legend-very-high" aria-hidden="true"></i>很高</span>
-          <strong id="risk-visible-count">等待风险数据</strong>
+          <div class="risk-count-summary" role="status" aria-live="polite" aria-label="风险区显示范围">
+            <strong id="risk-visible-count">等待风险数据</strong>
+            <span id="risk-total-count">总数待读取</span>
+            <small id="risk-coverage-scope">统计范围待读取</small>
+          </div>
         </div>
 
         <div id="risk-map-message" class="map-state map-state-loading" role="status" aria-live="polite">

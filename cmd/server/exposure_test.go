@@ -24,6 +24,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/domain/provenance"
+	"github.com/Requim/AI-GDM/internal/domain/spatial"
 	"github.com/Requim/AI-GDM/internal/domain/spatialanalysis"
 	"github.com/Requim/AI-GDM/internal/platform/resources"
 )
@@ -138,7 +139,7 @@ func TestOverpassProductionProviderDeniesEveryRedirect(t *testing.T) {
 }
 
 func TestBuildExposureCollectorInvokesInjectedPorts(t *testing.T) {
-	probe := newExposurePortProbe()
+	probe := newExposurePortProbe(t)
 	collector, err := buildExposureCollector(exposureCollectorRuntime{
 		geometries: probe, administrator: probe, projector: probe, writer: probe, clock: probe,
 	}, exposureProviderSet{boundary: probe, population: probe, infrastructure: probe})
@@ -603,10 +604,12 @@ type exposurePortProbe struct {
 	saved          exposurecollection.ExposureProjection
 }
 
-func newExposurePortProbe() *exposurePortProbe {
+func newExposurePortProbe(t *testing.T) *exposurePortProbe {
+	t.Helper()
 	now := time.Date(2026, 8, 28, 12, 5, 0, 0, time.UTC)
-	input := exposureGeometryFixture(now)
-	return &exposurePortProbe{now: now, input: input, boundary: exposureBoundaryFixture(now),
+	boundary := exposureBoundaryFixture(now)
+	input := exposureGeometryFixture(t, now, boundary)
+	return &exposurePortProbe{now: now, input: input, boundary: boundary,
 		administration: exposureAdministrationFixture(input), population: exposurePopulationFixture(now),
 		infrastructure: exposureInfrastructureFixture(now), projected: exposureProjectedFeatures(input.Zones)}
 }
@@ -662,15 +665,31 @@ func (p *exposurePortProbe) SaveExposureProjection(_ context.Context,
 
 func (p *exposurePortProbe) Now() time.Time { return p.now }
 
-func exposureGeometryFixture(now time.Time) exposurecollection.GeometryInput {
+func exposureGeometryFixture(t *testing.T, now time.Time,
+	boundary exposurecollection.AdministrativeBoundary,
+) exposurecollection.GeometryInput {
+	t.Helper()
 	geometry := json.RawMessage(`{"type":"Polygon","coordinates":` +
 		`[[[116,39],[116.01,39],[116.01,39.01],[116,39]]]}`)
+	var boundaryGeometry spatial.Geometry
+	if err := json.Unmarshal(boundary.Geometry, &boundaryGeometry); err != nil {
+		t.Fatal(err)
+	}
+	geometryDigest, err := hazard.BoundaryGeometryDigest(boundaryGeometry)
+	if err != nil {
+		t.Fatal(err)
+	}
 	snapshot := hazard.Snapshot{ID: "snapshot-composition", HazardType: hazard.TypeLandslide,
 		ModelName: "LHASA", ModelVersion: "2", RunAt: now.Add(-time.Hour),
 		ValidFrom: now.Add(-time.Hour), ValidTo: now.Add(time.Hour), Status: hazard.SnapshotAvailable,
 		Source: provenance.Provenance{Provider: "NASA", Dataset: "LHASA",
 			SourceURI: "https://example.test/lhasa", DataKind: provenance.DataKindNowcast,
-			FetchedAt: now.Add(-time.Hour), ValidFrom: now.Add(-time.Hour), ValidTo: now.Add(time.Hour)}}
+			FetchedAt: now.Add(-time.Hour), ValidFrom: now.Add(-time.Hour), ValidTo: now.Add(time.Hour)},
+		Coverage: &hazard.Coverage{Mode: hazard.CoverageAdministrativeBoundary,
+			RegionCode: boundary.RegionCode, BoundaryID: boundary.BoundaryID,
+			BoundaryType: boundary.BoundaryType, BoundaryVersion: boundary.BoundaryYear,
+			Source: boundary.Source, License: boundary.License, Reference: boundary.Reference,
+			SHA256: boundary.Digest, GeometrySHA256: geometryDigest, CollectedAt: boundary.CollectedAt}}
 	zones := []applicationloss.LossRiskZone{{ID: "zone-composition", SnapshotID: snapshot.ID,
 		Level: hazard.RiskHigh, AreaSquareM: 1_000_000, AreaCalculated: true}}
 	analysis := applicationloss.LossSpatialProjection{ID: "spatial-" + strings.Repeat("a", 64),

@@ -38,7 +38,7 @@ type systemLimitation struct {
 func TestValidateSystemScriptMatchesManifest(t *testing.T) {
 	script := readSystemGateFile(t, "validate-system.sh")
 	manifest := readSystemManifest(t)
-	if manifest.Version != 1 || len(manifest.Gates) != 15 {
+	if manifest.Version != 1 || len(manifest.Gates) != 16 {
 		t.Fatalf("系统门禁 manifest 数量无效: %+v", manifest)
 	}
 	declarations := declaredSystemGates(script)
@@ -128,7 +128,7 @@ func assertSystemGateFragments(t *testing.T, script string) {
 		"docker ps -a --format '{{.Names}}'", "docker network ls --format '{{.Name}}'",
 		"AI_GDM_LIVE_EXPOSURE=$LIVE_EXPOSURE", "disabled null",
 		"security_hash_file \"$log_file\"", "duration_ms", "verify_gate_sentinel",
-		"scripts/validate-loss-api.sh", "assessment_source_sha256",
+		"scripts/validate-loss-api.sh", "scripts/validate-raster.sh", "assessment_source_sha256",
 		"scripts/validate-amap-live.sh", "AI_GDM_SYSTEM_LIVE_AMAP",
 		"真实 LLM 上游暂不可用，模型目录与系统降级合同验证通过",
 		"ASSESSMENT_E2E_TREE_SHA=$SECURITY_TREE_SHA",
@@ -146,7 +146,7 @@ func assertSystemGateFragments(t *testing.T, script string) {
 
 func assertBrowserSentinels(t *testing.T, manifest systemManifest) {
 	t.Helper()
-	expected := map[string]int{"risk-map-chromium": 19, "evacuation-chromium": 42, "assessment-chromium": 121}
+	expected := map[string]int{"risk-map-chromium": 26, "evacuation-chromium": 42, "assessment-chromium": 126}
 	for _, gate := range manifest.Gates {
 		count, exists := expected[gate.ID]
 		if !exists {

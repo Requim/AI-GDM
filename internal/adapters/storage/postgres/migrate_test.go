@@ -76,3 +76,23 @@ func TestSpatialAnalysisMigrationContract(t *testing.T) {
 		t.Error("空间分析迁移不应复用灾害分析完成标记")
 	}
 }
+
+func TestHazardCoverageMigrationContract(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/011_hazard_snapshot_coverage.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToLower(string(content))
+	for _, fragment := range []string{"add column coverage jsonb", "coverage is null",
+		"jsonb_typeof(coverage) = 'object'", "hazard_snapshots_supersession_changes_coverage",
+		"coverage->>'geometrysha256'", "superseded_by_coverage->>'geometrysha256'",
+		"is distinct from row"} {
+		if !strings.Contains(sql, fragment) {
+			t.Errorf("风险覆盖范围迁移缺少契约片段 %q", fragment)
+		}
+	}
+	if strings.Contains(sql, "coverage jsonb not null") || strings.Contains(sql, "coverage jsonb default") ||
+		strings.Contains(sql, "update hazard_snapshots") {
+		t.Fatal("风险覆盖范围迁移不得强制回填历史快照")
+	}
+}

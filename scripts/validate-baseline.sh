@@ -9,7 +9,7 @@ POSTGRES_PASSWORD="validation-$VALIDATION_ID"
 GO_PROXY="${GOPROXY:-https://goproxy.cn,direct}"
 
 cleanup() {
-  docker rm -f "$POSTGRES_NAME" >/dev/null 2>&1 || true
+  docker rm -fv "$POSTGRES_NAME" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM

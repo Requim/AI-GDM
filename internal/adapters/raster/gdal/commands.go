@@ -5,9 +5,19 @@ import "strconv"
 type pipelinePaths struct {
 	clipped        string
 	classified     string
+	boundary       string
+	rawPolygons    string
 	polygons       string
 	statistics     string
+	boundaryErrors string
 	geometryErrors string
+}
+
+func vectorClipArguments(input, boundary, output string) []string {
+	return []string{
+		"vector", "clip", "--input-format", "GeoJSON", "--like", boundary,
+		"--output-format", "GeoJSON", "--overwrite", input, output,
+	}
 }
 
 func clipArguments(input, output string, bbox [4]float64) []string {

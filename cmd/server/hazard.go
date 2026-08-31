@@ -13,6 +13,7 @@ import (
 
 	"github.com/Requim/AI-GDM/internal/adapters/http/hazardapi"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/artifactstore"
+	"github.com/Requim/AI-GDM/internal/adapters/provider/geoboundaries"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/httpclient"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/lhasa"
 	"github.com/Requim/AI-GDM/internal/adapters/raster/gdal"
@@ -98,8 +99,14 @@ func newLHASACollector(cfg config.Config, dependencies *resources.Resources,
 	if err != nil {
 		return nil, fmt.Errorf("创建 LHASA 栅格处理器: %w", err)
 	}
-	collector, err := collection.NewLHASACollector(provider, downloader, processor,
-		repository, repository, utcClock{}, cfg.LHASA.StaleAfter)
+	boundary, err := geoboundaries.New(geoboundaries.Options{
+		Client: newExposureHTTPClient(logger, defaultExposureHTTPPolicies().boundary),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("创建 LHASA 中国边界适配器: %w", err)
+	}
+	collector, err := collection.NewLHASACollector(provider, downloader, boundary, processor,
+		repository, repository, repository, utcClock{}, cfg.LHASA.StaleAfter)
 	if err != nil {
 		return nil, fmt.Errorf("创建 LHASA 采集用例: %w", err)
 	}

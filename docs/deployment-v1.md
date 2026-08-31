@@ -83,9 +83,9 @@ sudo sh scripts/validate-docker.sh
 sudo sh scripts/validate-deploy.sh
 ```
 
-P10.1 门禁从固定 Git tree 创建只读快照，验证镜像构建、非 root、只读根文件系统、GDAL 版本、PostGIS 扩展、9 个迁移、Redis、HTTP 探针和重启持久化，并在结束时回收本轮资源。
+P10.1 门禁从固定 Git tree 创建只读快照，验证镜像构建、非 root、只读根文件系统、GDAL 版本、PostGIS 扩展、11 个迁移、Redis、HTTP 探针和重启持久化，并在结束时回收本轮资源。
 
-P10.3 门禁从固定 Git tree 构建发布包，再启动独立 Docker-in-Docker 守护进程；内层守护进程初始镜像数必须为零，只允许从包内 tar 加载三个镜像。门禁连续运行部署脚本两次并执行一次保留卷的停启，验证非 root、只读根、GDAL、PostGIS、9 个迁移、Redis、HTTP 访问、运行配置幂等及 PostgreSQL/Redis/LHASA 三类持久化，结束时只按本轮所有权标签回收资源。
+P10.3 门禁从固定 Git tree 构建发布包，再启动独立 Docker-in-Docker 守护进程；内层守护进程初始镜像数必须为零，只允许从包内 tar 加载三个镜像。门禁连续运行部署脚本两次并执行一次保留卷的停启，验证非 root、只读根、GDAL、PostGIS、11 个迁移、Redis、HTTP 访问、运行配置幂等及 PostgreSQL/Redis/LHASA 三类持久化，结束时只按本轮所有权标签回收资源。
 
 ## 当前边界
 
@@ -94,3 +94,4 @@ P10.3 门禁从固定 Git tree 构建发布包，再启动独立 Docker-in-Docke
 - 仓库不内置可作为生产结论的资产价格和脆弱性数值。未导入真实、已批准且可审计的损失基线时，只允许基于真实道路暴露和公开案例生成明确标记的 `reference_only` 研究参考区间；输入不足时仍返回 `insufficient_data`，不得用测试数据冒充生产结果。
 - 当前直接暴露 HTTP `8080`，尚未提供 TLS 终止；正式公网长期运行应增加可信反向代理和证书。
 - Windows 脚本可校验和启动 Linux 容器栈，但本阶段的完整空缓存验收运行在腾讯 Ubuntu；Windows Docker Desktop 需至少分配 4 GiB 内存并预留镜像 tar、Docker 存储和持久卷空间。
+- `011_hazard_snapshot_coverage` 对 SQL 结构是可追加升级，但新快照及其 Authority 摘要会包含 `Coverage`，旧二进制无法直接读取这些新 Authority。该版本按单向数据升级发布；需要回滚旧二进制时，必须先停止生成新 Authority，并恢复到升级前数据库备份，不得只替换应用镜像。

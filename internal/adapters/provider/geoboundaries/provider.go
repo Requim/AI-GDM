@@ -20,6 +20,8 @@ import (
 	"github.com/Requim/AI-GDM/internal/adapters/provider/httpclient"
 	"github.com/Requim/AI-GDM/internal/application/exposurecollection"
 	"github.com/Requim/AI-GDM/internal/domain"
+	"github.com/Requim/AI-GDM/internal/domain/hazard"
+	"github.com/Requim/AI-GDM/internal/domain/spatial"
 )
 
 const (
@@ -114,6 +116,36 @@ func (p *Provider) Boundary(ctx context.Context) (exposurecollection.Administrat
 		InputReferences: []string{p.metadataURL,
 			boundaryBindingReference(downloadURL, metadata, geometry.ShapeID,
 				metadataDigestHex, digestHex)}}, nil
+}
+
+// RiskBoundary 返回风险栅格处理使用的版本化中国 ADM0 边界。
+func (p *Provider) RiskBoundary(ctx context.Context) (hazard.ProcessingBoundary, error) {
+	value, err := p.Boundary(ctx)
+	if err != nil {
+		return hazard.ProcessingBoundary{}, err
+	}
+	var geometry spatial.Geometry
+	if err = json.Unmarshal(value.Geometry, &geometry); err != nil {
+		return hazard.ProcessingBoundary{}, providerError("geoBoundaries 风险边界几何无法解码")
+	}
+	geometryDigest, err := hazard.BoundaryGeometryDigest(geometry)
+	if err != nil {
+		return hazard.ProcessingBoundary{}, providerError("geoBoundaries 风险边界几何摘要无法计算")
+	}
+	boundary := hazard.ProcessingBoundary{
+		Coverage: hazard.Coverage{
+			Mode: hazard.CoverageAdministrativeBoundary, RegionCode: value.RegionCode,
+			BoundaryID: value.BoundaryID, BoundaryType: value.BoundaryType,
+			BoundaryVersion: value.BoundaryYear, Source: value.Source, License: value.License,
+			Reference: value.Reference, SHA256: value.Digest,
+			GeometrySHA256: geometryDigest, CollectedAt: value.CollectedAt,
+		},
+		Geometry: geometry, InputReferences: append([]string(nil), value.InputReferences...),
+	}
+	if err = boundary.Validate(); err != nil {
+		return hazard.ProcessingBoundary{}, fmt.Errorf("校验 geoBoundaries 风险边界: %w", err)
+	}
+	return boundary, nil
 }
 
 type metadata struct {

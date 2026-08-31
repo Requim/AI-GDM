@@ -13,6 +13,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/domain/provenance"
+	"github.com/Requim/AI-GDM/internal/domain/spatial"
 	"github.com/Requim/AI-GDM/internal/domain/spatialanalysis"
 )
 
@@ -87,6 +88,17 @@ func TestCollectorRejectsFutureBoundaryCollectionTime(t *testing.T) {
 	fixture.boundary.value.CollectedAt = fixture.now.Add(time.Minute)
 	_, err := fixture.collector.Collect(context.Background(), fixture.input.Snapshot.ID, fixture.input.Analysis.ID)
 	if !errors.Is(err, domain.ErrInsufficientData) || fixture.writer.calls != 0 {
+		t.Fatalf("Collect() error=%v writer calls=%d", err, fixture.writer.calls)
+	}
+}
+
+func TestCollectorRejectsBoundaryDifferentFromRiskSnapshot(t *testing.T) {
+	fixture := newCollectorFixture(t)
+	fixture.boundary.value.Digest = repeatedHex("c")
+	_, err := fixture.collector.Collect(context.Background(), fixture.input.Snapshot.ID,
+		fixture.input.Analysis.ID)
+	if !errors.Is(err, domain.ErrInsufficientData) ||
+		!strings.Contains(err.Error(), "行政边界版本不一致") || fixture.writer.calls != 0 {
 		t.Fatalf("Collect() error=%v writer calls=%d", err, fixture.writer.calls)
 	}
 }
@@ -266,12 +278,20 @@ func newCollectorFixture(t *testing.T) collectorFixture {
 
 func geometryFixture(now time.Time) GeometryInput {
 	geometry := json.RawMessage(`{"type":"Polygon","coordinates":[[[116,39],[116.01,39],[116.01,39.01],[116,39]]]}`)
+	boundary := boundaryFixture(now)
+	geometryDigest := boundaryGeometryDigest(boundary.Geometry)
 	snapshot := hazard.Snapshot{ID: "snapshot-real", HazardType: hazard.TypeLandslide,
 		ModelName: "LHASA", ModelVersion: "2", RunAt: now.Add(-time.Hour),
 		ValidFrom: now.Add(-time.Hour), ValidTo: now.Add(time.Hour), Status: hazard.SnapshotAvailable,
 		Source: provenance.Provenance{Provider: "NASA", Dataset: "LHASA", SourceURI: "https://example.test/lhasa",
 			DataKind: provenance.DataKindNowcast, FetchedAt: now.Add(-time.Hour),
-			ValidFrom: now.Add(-time.Hour), ValidTo: now.Add(time.Hour)}}
+			ValidFrom: now.Add(-time.Hour), ValidTo: now.Add(time.Hour)},
+		Coverage: &hazard.Coverage{Mode: hazard.CoverageAdministrativeBoundary,
+			RegionCode: boundary.RegionCode, BoundaryID: boundary.BoundaryID,
+			BoundaryType: boundary.BoundaryType, BoundaryVersion: boundary.BoundaryYear,
+			Source: boundary.Source, License: boundary.License, Reference: boundary.Reference,
+			SHA256: boundary.Digest, GeometrySHA256: geometryDigest,
+			CollectedAt: boundary.CollectedAt}}
 	zones := []applicationloss.LossRiskZone{{ID: "zone-a", SnapshotID: snapshot.ID,
 		Level: hazard.RiskHigh, AreaSquareM: 1_000_000, AreaCalculated: true}}
 	analysis := applicationloss.LossSpatialProjection{ID: "spatial-" + repeatedHex("a"),
@@ -290,6 +310,18 @@ func geometryFixture(now time.Time) GeometryInput {
 		panic(err)
 	}
 	return value
+}
+
+func boundaryGeometryDigest(raw json.RawMessage) string {
+	var geometry spatial.Geometry
+	if err := json.Unmarshal(raw, &geometry); err != nil {
+		panic(err)
+	}
+	digest, err := hazard.BoundaryGeometryDigest(geometry)
+	if err != nil {
+		panic(err)
+	}
+	return digest
 }
 
 func boundaryFixture(now time.Time) AdministrativeBoundary {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
+	"github.com/Requim/AI-GDM/internal/domain/spatial"
 )
 
 func TestLivePipeline(t *testing.T) {
@@ -29,6 +30,7 @@ func TestLivePipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	processor.now = func() time.Time { return fixtureTime().Add(time.Hour) }
 	artifact := fixtureArtifact(input)
 	artifact.SizeBytes = fileSize(t, input)
 	checksum, err := fileChecksum(ctx, input, 1024*1024)
@@ -36,15 +38,49 @@ func TestLivePipeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	artifact.Provenance.SHA256 = checksum
-	snapshot, zones, err := processor.Process(ctx, artifact)
+	boundary := processingBoundaryMultiPolygonForBBox(bbox)
+	snapshot, zones, err := processor.Process(ctx, artifact, boundary)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Status != hazard.SnapshotAvailable || len(zones) != 1 || zones[0].Level != hazard.RiskHigh {
+	if snapshot.Status != hazard.SnapshotAvailable || len(zones) != 2 {
 		t.Fatalf("snapshot=%+v zones=%+v", snapshot, zones)
 	}
-	if zones[0].Minimum < 0.59 || zones[0].Maximum > 0.61 {
-		t.Fatalf("zone statistics = %+v", zones[0])
+	for _, zone := range zones {
+		if zone.Level != hazard.RiskHigh || zone.Minimum < 0.59 || zone.Maximum > 0.61 {
+			t.Fatalf("zone statistics = %+v", zone)
+		}
+	}
+	width, height := bbox[2]-bbox[0], bbox[3]-bbox[1]
+	assertZonesContainPoint(t, zones, spatial.Point{
+		Longitude: bbox[0] + width*0.05, Latitude: bbox[1] + height*0.1,
+	}, true, "主体")
+	assertZonesContainPoint(t, zones, spatial.Point{
+		Longitude: bbox[0] + width*0.325, Latitude: bbox[1] + height*0.45,
+	}, false, "洞")
+	assertZonesContainPoint(t, zones, spatial.Point{
+		Longitude: bbox[0] + width*0.78, Latitude: bbox[1] + height*0.45,
+	}, false, "边界外间隙")
+	assertZonesContainPoint(t, zones, spatial.Point{
+		Longitude: bbox[0] + width*0.92, Latitude: bbox[1] + height*0.35,
+	}, true, "离岛")
+}
+
+func assertZonesContainPoint(t *testing.T, zones []hazard.RiskZone, point spatial.Point,
+	want bool, label string,
+) {
+	t.Helper()
+	inside := false
+	for _, zone := range zones {
+		matched, err := zone.Geometry.ContainsPoint(point)
+		if err != nil {
+			t.Fatalf("风险区 MultiPolygon %s点判断失败: %v", label, err)
+		}
+		inside = inside || matched
+	}
+	if inside != want {
+		t.Fatalf("风险区 MultiPolygon %s裁剪结果无效: inside=%v want=%v zones=%+v",
+			label, inside, want, zones)
 	}
 }
 

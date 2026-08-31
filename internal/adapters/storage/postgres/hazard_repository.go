@@ -56,18 +56,58 @@ func (r *HazardRepository) SaveAnalysis(ctx context.Context, snapshot hazard.Sna
 	return nil
 }
 
+// ReconcileAnalysisCoverage 恢复匹配新边界的历史分析，并使其他旧范围退出最新结果选择。
+func (r *HazardRepository) ReconcileAnalysisCoverage(ctx context.Context,
+	selector hazard.AnalysisSelector, replacement hazard.Coverage, observedAt time.Time,
+) error {
+	if err := validateAnalysisSelector(selector); err != nil {
+		return err
+	}
+	if err := replacement.Validate(); err != nil {
+		return fmt.Errorf("校验替代风险覆盖范围: %w", err)
+	}
+	if observedAt.IsZero() {
+		return fmt.Errorf("%w: 风险覆盖范围失效时间无效", domain.ErrInvalidInput)
+	}
+	if _, offset := observedAt.Zone(); offset != 0 {
+		return fmt.Errorf("%w: 风险覆盖范围失效时间必须使用 UTC", domain.ErrInvalidInput)
+	}
+	replacement.CollectedAt = postgresTime(replacement.CollectedAt)
+	observedAt = postgresTime(observedAt)
+	if observedAt.Before(replacement.CollectedAt) {
+		return fmt.Errorf("%w: 风险覆盖范围失效时间早于替代边界采集时间", domain.ErrInvalidInput)
+	}
+	payload, err := json.Marshal(replacement)
+	if err != nil {
+		return fmt.Errorf("编码替代风险覆盖范围: %w", err)
+	}
+	var affected int64
+	err = r.pool.QueryRow(ctx, reconcileAnalysisCoverageSQL,
+		selector.HazardType, selector.ModelName, selector.TransformVersion, selector.Provider,
+		selector.Dataset, payload, observedAt).Scan(&affected)
+	if err != nil {
+		return fmt.Errorf("协调灾害分析覆盖范围: %w", err)
+	}
+	return nil
+}
+
 func saveSnapshot(ctx context.Context, executor sqlExecutor, value hazard.Snapshot,
 	complete bool,
 ) error {
+	if value.Coverage != nil {
+		if err := value.Coverage.Validate(); err != nil {
+			return fmt.Errorf("校验灾害快照覆盖范围: %w", err)
+		}
+	}
 	value = normalizeSnapshotForStorage(value)
-	thresholds, source, limitations, err := snapshotJSON(value)
+	thresholds, source, coverage, limitations, err := snapshotJSON(value)
 	if err != nil {
 		return err
 	}
 	result, err := executor.Exec(ctx, saveSnapshotSQL,
 		value.ID, value.HazardType, value.ModelName, value.ModelVersion, value.RunAt,
 		value.ValidFrom, value.ValidTo, value.RasterReference, value.ProbabilitySemantics,
-		thresholds, value.Status, source, limitations, complete)
+		thresholds, value.Status, source, coverage, limitations, complete)
 	if err != nil {
 		return fmt.Errorf("保存灾害快照 %s: %w", value.ID, err)
 	}
@@ -88,6 +128,11 @@ func normalizeSnapshotForStorage(value hazard.Snapshot) hazard.Snapshot {
 	value.Source.FetchedAt = postgresTime(value.Source.FetchedAt)
 	value.Source.ValidFrom = postgresTime(value.Source.ValidFrom)
 	value.Source.ValidTo = postgresTime(value.Source.ValidTo)
+	if value.Coverage != nil {
+		coverage := *value.Coverage
+		coverage.CollectedAt = postgresTime(coverage.CollectedAt)
+		value.Coverage = &coverage
+	}
 	return value
 }
 
@@ -284,6 +329,11 @@ func validateCompleteAnalysis(snapshot hazard.Snapshot, zones []hazard.RiskZone)
 	if err := hazard.ValidateThresholds(snapshot.Thresholds); err != nil {
 		return err
 	}
+	if snapshot.Coverage != nil {
+		if err := snapshot.Coverage.Validate(); err != nil {
+			return fmt.Errorf("校验完整灾害分析覆盖范围: %w", err)
+		}
+	}
 	return validateZoneSet(snapshot.ID, zones)
 }
 
@@ -440,20 +490,27 @@ func queryZones(ctx context.Context, queryer sqlQueryer, query string,
 	return values, nil
 }
 
-func snapshotJSON(value hazard.Snapshot) ([]byte, []byte, []byte, error) {
+func snapshotJSON(value hazard.Snapshot) ([]byte, []byte, []byte, []byte, error) {
 	thresholds, err := json.Marshal(value.Thresholds)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("编码风险阈值: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("编码风险阈值: %w", err)
 	}
 	source, err := json.Marshal(value.Source)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("编码快照来源: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("编码快照来源: %w", err)
+	}
+	var coverage []byte
+	if value.Coverage != nil {
+		coverage, err = json.Marshal(value.Coverage)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("编码快照覆盖范围: %w", err)
+		}
 	}
 	limitations, err := json.Marshal(value.Limitations)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("编码快照限制: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("编码快照限制: %w", err)
 	}
-	return thresholds, source, limitations, nil
+	return thresholds, source, coverage, limitations, nil
 }
 
 type rowScanner interface {
@@ -475,28 +532,35 @@ type riskMapQueryer interface {
 
 func scanSnapshot(row rowScanner) (hazard.Snapshot, error) {
 	var value hazard.Snapshot
-	var thresholds, source, limitations []byte
+	var thresholds, source, coverage, limitations []byte
 	err := row.Scan(&value.ID, &value.HazardType, &value.ModelName, &value.ModelVersion,
 		&value.RunAt, &value.ValidFrom, &value.ValidTo, &value.RasterReference,
-		&value.ProbabilitySemantics, &thresholds, &value.Status, &source, &limitations)
+		&value.ProbabilitySemantics, &thresholds, &value.Status, &source, &coverage, &limitations)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return hazard.Snapshot{}, domain.ErrNotFound
 	}
 	if err != nil {
 		return hazard.Snapshot{}, fmt.Errorf("扫描灾害快照: %w", err)
 	}
-	if err = decodeSnapshotJSON(&value, thresholds, source, limitations); err != nil {
+	if err = decodeSnapshotJSON(&value, thresholds, source, coverage, limitations); err != nil {
 		return hazard.Snapshot{}, err
 	}
 	return value, nil
 }
 
-func decodeSnapshotJSON(value *hazard.Snapshot, thresholds, source, limitations []byte) error {
+func decodeSnapshotJSON(value *hazard.Snapshot, thresholds, source, coverage,
+	limitations []byte,
+) error {
 	if err := json.Unmarshal(thresholds, &value.Thresholds); err != nil {
 		return fmt.Errorf("解码风险阈值: %w", err)
 	}
 	if err := json.Unmarshal(source, &value.Source); err != nil {
 		return fmt.Errorf("解码快照来源: %w", err)
+	}
+	if len(coverage) > 0 && string(coverage) != "null" {
+		if err := json.Unmarshal(coverage, &value.Coverage); err != nil {
+			return fmt.Errorf("解码快照覆盖范围: %w", err)
+		}
 	}
 	if err := json.Unmarshal(limitations, &value.Limitations); err != nil {
 		return fmt.Errorf("解码快照限制: %w", err)
@@ -547,8 +611,8 @@ func scanZone(row rowScanner) (hazard.RiskZone, error) {
 
 const saveSnapshotSQL = `INSERT INTO hazard_snapshots (
     id,hazard_type,model_name,model_version,run_at,valid_from,valid_to,raster_reference,
-    probability_semantics,thresholds,status,source,limitations,analysis_complete
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+    probability_semantics,thresholds,status,source,coverage,limitations,analysis_complete
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 ON CONFLICT (id) DO UPDATE SET
     status=EXCLUDED.status, source=EXCLUDED.source, limitations=EXCLUDED.limitations,
     analysis_complete=hazard_snapshots.analysis_complete OR EXCLUDED.analysis_complete
@@ -561,6 +625,7 @@ WHERE hazard_snapshots.hazard_type=EXCLUDED.hazard_type
     AND hazard_snapshots.raster_reference=EXCLUDED.raster_reference
     AND hazard_snapshots.probability_semantics=EXCLUDED.probability_semantics
     AND hazard_snapshots.thresholds=EXCLUDED.thresholds
+	AND hazard_snapshots.coverage IS NOT DISTINCT FROM EXCLUDED.coverage
     AND (NOT EXISTS (SELECT 1 FROM risk_assessments WHERE snapshot_id=EXCLUDED.id)
         OR (hazard_snapshots.status=EXCLUDED.status
             AND hazard_snapshots.source=EXCLUDED.source
@@ -571,19 +636,72 @@ const riskAssessmentExistsSQL = `SELECT EXISTS(
 )`
 
 const selectSnapshotSQL = `SELECT id,hazard_type,model_name,model_version,run_at,valid_from,
-    valid_to,raster_reference,probability_semantics,thresholds,status,source,limitations
+    valid_to,raster_reference,probability_semantics,thresholds,status,source,coverage,limitations
     FROM hazard_snapshots`
 
 const latestSnapshotWhere = ` WHERE hazard_type=$1 AND analysis_complete=TRUE
-    AND status IN ('available','stale') ORDER BY run_at DESC, created_at DESC, id DESC LIMIT 1`
+    AND status IN ('available','stale') AND coverage IS NOT NULL AND superseded_at IS NULL
+    ORDER BY run_at DESC, created_at DESC, id DESC LIMIT 1`
 
 const riskDetailWhere = ` WHERE id=$1 AND analysis_complete=TRUE
     AND status IN ('available','stale')`
 
 const latestAnalysisWhere = ` WHERE hazard_type=$1 AND model_name=$2
     AND source->>'transformVersion'=$3 AND source->>'provider'=$4 AND source->>'dataset'=$5
-    AND analysis_complete=TRUE
+    AND analysis_complete=TRUE AND superseded_at IS NULL
     AND status IN ('available','stale') ORDER BY run_at DESC, created_at DESC, id DESC LIMIT 1`
+
+const reconcileAnalysisCoverageSQL = `WITH replacement AS (
+    SELECT $6::jsonb AS coverage
+), anchor AS (
+    SELECT run_at,created_at,id FROM hazard_snapshots,replacement
+    WHERE hazard_type=$1 AND model_name=$2
+        AND source->>'transformVersion'=$3 AND source->>'provider'=$4 AND source->>'dataset'=$5
+        AND analysis_complete=TRUE AND status IN ('available','stale')
+    ORDER BY run_at DESC,created_at DESC,id DESC LIMIT 1
+), updated AS (
+    UPDATE hazard_snapshots AS candidate SET
+        superseded_at=CASE WHEN ROW(
+            candidate.coverage->>'boundaryId',candidate.coverage->>'boundaryVersion',
+            candidate.coverage->>'sha256',candidate.coverage->>'geometrySha256'
+        ) IS NOT DISTINCT FROM ROW(
+            replacement.coverage->>'boundaryId',replacement.coverage->>'boundaryVersion',
+            replacement.coverage->>'sha256',replacement.coverage->>'geometrySha256'
+        ) THEN NULL ELSE COALESCE(candidate.superseded_at,$7) END,
+        superseded_by_coverage=CASE WHEN ROW(
+            candidate.coverage->>'boundaryId',candidate.coverage->>'boundaryVersion',
+            candidate.coverage->>'sha256',candidate.coverage->>'geometrySha256'
+        ) IS NOT DISTINCT FROM ROW(
+            replacement.coverage->>'boundaryId',replacement.coverage->>'boundaryVersion',
+            replacement.coverage->>'sha256',replacement.coverage->>'geometrySha256'
+        ) THEN NULL ELSE COALESCE(candidate.superseded_by_coverage,replacement.coverage) END
+    FROM anchor,replacement WHERE candidate.hazard_type=$1 AND candidate.model_name=$2
+        AND candidate.source->>'transformVersion'=$3 AND candidate.source->>'provider'=$4
+        AND candidate.source->>'dataset'=$5 AND candidate.analysis_complete=TRUE
+        AND candidate.status IN ('available','stale')
+        AND ROW(candidate.run_at,candidate.created_at,candidate.id) <= ROW(anchor.run_at,anchor.created_at,anchor.id)
+        AND ((ROW(
+            candidate.coverage->>'boundaryId',candidate.coverage->>'boundaryVersion',
+            candidate.coverage->>'sha256',candidate.coverage->>'geometrySha256'
+        ) IS NOT DISTINCT FROM ROW(
+            replacement.coverage->>'boundaryId',replacement.coverage->>'boundaryVersion',
+            replacement.coverage->>'sha256',replacement.coverage->>'geometrySha256'
+        ) AND candidate.superseded_at IS NOT NULL) OR (ROW(
+            candidate.coverage->>'boundaryId',candidate.coverage->>'boundaryVersion',
+            candidate.coverage->>'sha256',candidate.coverage->>'geometrySha256'
+        ) IS DISTINCT FROM ROW(
+            replacement.coverage->>'boundaryId',replacement.coverage->>'boundaryVersion',
+            replacement.coverage->>'sha256',replacement.coverage->>'geometrySha256'
+        ) AND (candidate.superseded_at IS NULL OR ROW(
+            candidate.superseded_by_coverage->>'boundaryId',
+            candidate.superseded_by_coverage->>'boundaryVersion',
+            candidate.superseded_by_coverage->>'sha256',
+            candidate.superseded_by_coverage->>'geometrySha256'
+        ) IS NOT DISTINCT FROM ROW(
+            replacement.coverage->>'boundaryId',replacement.coverage->>'boundaryVersion',
+            replacement.coverage->>'sha256',replacement.coverage->>'geometrySha256'))))
+    RETURNING candidate.id
+) SELECT COUNT(*) FROM updated`
 
 const saveZoneSQL = `INSERT INTO risk_zones (
     id,snapshot_id,geometry,probability_minimum,probability_mean,probability_maximum,

@@ -10,6 +10,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/Requim/AI-GDM/internal/adapters/provider/artifactstore"
+	"github.com/Requim/AI-GDM/internal/adapters/provider/geoboundaries"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/httpclient"
 	lhasaprovider "github.com/Requim/AI-GDM/internal/adapters/provider/lhasa"
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
@@ -46,6 +47,17 @@ func TestLiveEarthdataChinaAcquisition(t *testing.T) {
 	}
 	stored, err := fetcher.Fetch(ctx, artifact)
 	if err != nil {
+		t.Fatal(err)
+	}
+	boundaryProvider, err := geoboundaries.New(geoboundaries.Options{Client: newLiveEarthdataClient()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundary, err := boundaryProvider.RiskBoundary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = validateBoundaryForBBox(boundary.Geometry, chinaBBox); err != nil {
 		t.Fatal(err)
 	}
 	if len(stored.Provenance.SourceParts) != 12 || stored.LocalPath == "" || stored.Provenance.SHA256 == "" {
@@ -94,7 +106,8 @@ func TestLiveEarthdataPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, zones, err := processor.Process(ctx, stored)
+	boundary := processingBoundaryForBBox(bbox)
+	snapshot, zones, err := processor.Process(ctx, stored, boundary)
 	if err != nil {
 		t.Fatal(err)
 	}

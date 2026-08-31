@@ -22,8 +22,21 @@ type riskData struct {
 	OmittedZoneCount        int            `json:"omittedZoneCount"`
 	OmittedComplexZoneCount int            `json:"omittedComplexZoneCount"`
 	OmittedPayloadZoneCount int            `json:"omittedPayloadZoneCount"`
+	Coverage                riskCoverage   `json:"coverage"`
 	Limits                  responseLimits `json:"limits"`
 	MapLimitations          []string       `json:"mapLimitations"`
+}
+
+type riskCoverage struct {
+	Mode                string `json:"mode"`
+	Label               string `json:"label"`
+	Source              string `json:"source,omitempty"`
+	License             string `json:"license,omitempty"`
+	RegionCode          string `json:"regionCode"`
+	BoundaryID          string `json:"boundaryId"`
+	BoundaryType        string `json:"boundaryType"`
+	BoundaryVersion     string `json:"boundaryVersion"`
+	ViewportIndependent bool   `json:"viewportIndependent"`
 }
 
 type riskSnapshot struct {
@@ -122,11 +135,20 @@ func envelopeFor(name string) riskEnvelope {
 	case "fallback_then_expiry":
 		value = validEnvelope(shortValidTo)
 		markFallback(&value)
+	case "legacy_bbox":
+		value.Data.Coverage = riskCoverage{Mode: "bounding_box",
+			Label: "中国外接矩形预筛选（包含部分境外区域）", ViewportIndependent: true}
+	case "invalid_coverage":
+		value.Data.Coverage.ViewportIndependent = false
+	case "coverage_version_mismatch":
+		value.Data.Coverage.BoundaryVersion = "2024"
 	case "all_zones_omitted":
 		markAllZonesOmitted(&value)
 	case "all_zones_omitted_then_expiry":
 		value = validEnvelope(shortValidTo)
 		markAllZonesOmitted(&value)
+	case "partial_omission":
+		markPartialOmission(&value)
 	case "too_many_zones":
 		value.Data.Zones = repeatedZones(3001)
 		value.Data.TotalZoneCount, value.Data.VisibleZoneCount = 3001, 3001
@@ -150,6 +172,14 @@ func markAllZonesOmitted(value *riskEnvelope) {
 	value.Data.MapLimitations = []string{"全部风险区因地图安全上限被省略"}
 }
 
+func markPartialOmission(value *riskEnvelope) {
+	value.Data.Zones = repeatedZones(3000)
+	value.Data.TotalZoneCount, value.Data.VisibleZoneCount = 24553, 3000
+	value.Data.OmittedZoneCount = 21553
+	value.Data.OmittedComplexZoneCount, value.Data.OmittedPayloadZoneCount = 153, 21400
+	value.Data.MapLimitations = []string{"地图已按风险优先级省略部分风险区，省略不表示风险为零"}
+}
+
 func validEnvelope(validTo string) riskEnvelope {
 	zones := []riskZone{zone("zone-high", simplePolygon())}
 	return riskEnvelope{Data: riskData{
@@ -162,6 +192,10 @@ func validEnvelope(validTo string) riskEnvelope {
 			Status: "available", DataStatus: "current", Confidence: riskConfidence{Level: "high"},
 			RuleVersion: "ai-gdm-risk-rules-v1", Limitations: []string{}},
 		TotalZoneCount: len(zones), VisibleZoneCount: len(zones),
+		Coverage: riskCoverage{Mode: "administrative_boundary", Label: "CHN ADM0 边界（2019）",
+			Source: "geoBoundaries, Wikimedia Commons", License: "Public Domain",
+			RegionCode: "CN", BoundaryID: "CHN-ADM0-1", BoundaryType: "ADM0",
+			BoundaryVersion: "2019", ViewportIndependent: true},
 		Limits: responseLimits{MaxZones: 3000, MaxSourceZones: 100000,
 			MaxZoneVertices: 5000, MaxTotalVertices: 200000,
 			MaxGeometryBytes: 512 * 1024, MaxResponseBytes: 8 * 1024 * 1024},

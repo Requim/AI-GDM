@@ -65,6 +65,15 @@
   font: 13px Consolas, monospace;
 }
 
+.evacuation-form .travel-mode input {
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 .evacuation-form input:focus, .evacuation-form select:focus { border-color: var(--cyan); outline: 1px solid var(--cyan); }
 .city-code-fields, .facility-search-controls { margin-bottom: 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .city-code-fields[hidden] { display: none; }

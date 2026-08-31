@@ -17,9 +17,20 @@ import (
 )
 
 const (
-	fallbackQualityFlag        = "fallback_last_success"
-	fallbackSourceLimitation   = "实时采集失败，使用最后成功 LHASA 分析"
-	fallbackSnapshotLimitation = "本次刷新使用未超过时效的最后成功结果"
+	fallbackQualityFlag                = "fallback_last_success"
+	fallbackBoundaryQualityFlag        = "fallback_boundary_identity_unverified"
+	fallbackSourceLimitation           = "实时采集失败，使用最后成功 LHASA 分析"
+	fallbackSnapshotLimitation         = "本次刷新使用未超过时效的最后成功结果"
+	fallbackBoundarySnapshotLimitation = "本次未能刷新行政边界身份，沿用最后成功快照的已绑定边界"
+)
+
+type fallbackOverlayVariant uint8
+
+const (
+	fallbackOverlayNone fallbackOverlayVariant = iota
+	fallbackOverlayStandard
+	fallbackOverlayBoundary
+	fallbackOverlayInvalid
 )
 
 var _ ports.HazardAuthorityReader = (*HazardRepository)(nil)
@@ -101,10 +112,13 @@ func sameStoredSnapshot(stored storedRiskAuthority, snapshot hazard.Snapshot) er
 }
 
 func validFallbackOverlay(stored, incoming hazard.Snapshot) bool {
+	boundaryFlag, validFlags := fallbackListVariant(stored.Source.QualityFlags,
+		incoming.Source.QualityFlags, fallbackQualityFlag, fallbackBoundaryQualityFlag)
+	boundaryLimitation, validLimitations := fallbackListVariant(stored.Limitations,
+		incoming.Limitations, fallbackSnapshotLimitation, fallbackBoundarySnapshotLimitation)
 	if incoming.Status != hazard.SnapshotStale || !incoming.Source.Stale ||
-		!fallbackList(stored.Source.QualityFlags, incoming.Source.QualityFlags, fallbackQualityFlag) ||
-		!fallbackList(stored.Source.Limitations, incoming.Source.Limitations, fallbackSourceLimitation) ||
-		!fallbackList(stored.Limitations, incoming.Limitations, fallbackSnapshotLimitation) {
+		!validFlags || !validLimitations || boundaryFlag != boundaryLimitation ||
+		!fallbackList(stored.Source.Limitations, incoming.Source.Limitations, fallbackSourceLimitation) {
 		return false
 	}
 	candidate := incoming
@@ -118,6 +132,31 @@ func validFallbackOverlay(stored, incoming hazard.Snapshot) bool {
 	}
 	right, rightDigest, err := payloadDigest(candidate)
 	return err == nil && leftDigest == rightDigest && bytes.Equal(left, right)
+}
+
+func fallbackListVariant(stored, incoming []string, required, optional string) (bool, bool) {
+	storedBase, storedVariant := splitFallbackSuffix(stored, required, optional)
+	incomingBase, incomingVariant := splitFallbackSuffix(incoming, required, optional)
+	if storedVariant == fallbackOverlayInvalid || incomingVariant == fallbackOverlayInvalid ||
+		incomingVariant == fallbackOverlayNone || storedVariant > incomingVariant ||
+		!sameOrderedStrings(storedBase, incomingBase) {
+		return false, false
+	}
+	return incomingVariant == fallbackOverlayBoundary, true
+}
+
+func splitFallbackSuffix(values []string, required, optional string) ([]string, fallbackOverlayVariant) {
+	base, variant := values, fallbackOverlayNone
+	switch {
+	case len(values) >= 2 && values[len(values)-2] == required && values[len(values)-1] == optional:
+		base, variant = values[:len(values)-2], fallbackOverlayBoundary
+	case len(values) >= 1 && values[len(values)-1] == required:
+		base, variant = values[:len(values)-1], fallbackOverlayStandard
+	}
+	if containsOrderedString(base, required) || containsOrderedString(base, optional) {
+		return nil, fallbackOverlayInvalid
+	}
+	return base, variant
 }
 
 func fallbackList(stored, incoming []string, marker string) bool {

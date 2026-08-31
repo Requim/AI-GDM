@@ -14,66 +14,101 @@ import (
 )
 
 const (
-	lhasaFallbackQualityFlag = "fallback_last_success"
-	lhasaProviderName        = "NASA Earthdata GIS"
-	lhasaDatasetName         = "LHASA Hazard Today"
+	lhasaFallbackQualityFlag        = "fallback_last_success"
+	lhasaBoundaryFallbackFlag       = "fallback_boundary_identity_unverified"
+	lhasaProviderName               = "NASA Earthdata GIS"
+	lhasaDatasetName                = "LHASA Hazard Today"
+	lhasaBoundaryFallbackLimitation = "本次未能刷新行政边界身份，沿用最后成功快照的已绑定边界"
 )
 
 // LHASACollector 获取、处理并原子保存 LHASA 风险分析。
 type LHASACollector struct {
 	discovery ports.ArtifactDiscovery
 	fetcher   ports.ArtifactFetcher
+	boundary  ports.HazardBoundaryProvider
 	processor ports.RasterProcessor
 	writer    ports.HazardAnalysisWriter
 	reader    ports.HazardAnalysisReader
+	locker    ports.HazardAnalysisRefreshLocker
 	clock     ports.Clock
 	maxAge    time.Duration
 }
 
 // NewLHASACollector 创建支持最后成功分析回退的 LHASA 采集用例。
 func NewLHASACollector(discovery ports.ArtifactDiscovery, fetcher ports.ArtifactFetcher,
-	processor ports.RasterProcessor, writer ports.HazardAnalysisWriter,
-	reader ports.HazardAnalysisReader, clock ports.Clock, maxAge time.Duration,
+	boundary ports.HazardBoundaryProvider, processor ports.RasterProcessor, writer ports.HazardAnalysisWriter,
+	reader ports.HazardAnalysisReader, locker ports.HazardAnalysisRefreshLocker,
+	clock ports.Clock, maxAge time.Duration,
 ) (*LHASACollector, error) {
-	if discovery == nil || fetcher == nil || processor == nil || writer == nil ||
-		reader == nil || clock == nil || maxAge <= 0 {
+	if discovery == nil || fetcher == nil || boundary == nil || processor == nil || writer == nil ||
+		reader == nil || locker == nil || clock == nil || maxAge <= 0 {
 		return nil, fmt.Errorf("%w: LHASA 采集依赖或回退时效无效", domain.ErrInvalidInput)
 	}
 	return &LHASACollector{
-		discovery: discovery, fetcher: fetcher, processor: processor,
-		writer: writer, reader: reader, clock: clock, maxAge: maxAge,
+		discovery: discovery, fetcher: fetcher, boundary: boundary, processor: processor,
+		writer: writer, reader: reader, locker: locker, clock: clock, maxAge: maxAge,
 	}, nil
 }
 
 // Collect 刷新 LHASA 分析；失败时只返回未超过时效的最后成功完整分析。
-func (c *LHASACollector) Collect(ctx context.Context) (hazard.Snapshot, []hazard.RiskZone, error) {
+func (c *LHASACollector) Collect(ctx context.Context) (
+	snapshot hazard.Snapshot, zones []hazard.RiskZone, err error,
+) {
+	lease, err := c.locker.LockAnalysisRefresh(ctx, c.analysisSelector())
+	if err != nil {
+		return hazard.Snapshot{}, nil, unavailableLHASA(fmt.Errorf("获取 LHASA 分析刷新锁: %w", err))
+	}
+	defer func() {
+		if releaseErr := lease.Release(); releaseErr != nil {
+			snapshot, zones = hazard.Snapshot{}, nil
+			err = errors.Join(err, fmt.Errorf("释放 LHASA 分析刷新锁: %w", releaseErr))
+		}
+	}()
+	return c.collectLocked(ctx)
+}
+
+func (c *LHASACollector) collectLocked(ctx context.Context) (hazard.Snapshot, []hazard.RiskZone, error) {
 	previous := c.readLatest(ctx)
+	boundary, err := c.readBoundary(ctx)
+	if err != nil {
+		return c.fallbackBoundary(previous, err)
+	}
+	coverageChanged := previous.err == nil && !sameCoverage(previous.snapshot.Coverage, boundary.Coverage)
+	if err = c.reconcileCoverage(ctx, boundary); err != nil {
+		return hazard.Snapshot{}, nil, err
+	}
+	previous = c.readLatest(ctx)
+	if previous.err == nil && !sameCoverage(previous.snapshot.Coverage, boundary.Coverage) {
+		return hazard.Snapshot{}, nil, unavailableLHASA(
+			fmt.Errorf("%w: 最新 LHASA 分析未切换到当前行政边界", domain.ErrInsufficientData))
+	}
 	artifact, err := c.discovery.DiscoverLatest(ctx)
 	if err != nil {
-		return c.fallback(previous, fmt.Errorf("发现最新 LHASA 制品: %w", err))
+		return c.fallbackAfterCoverageChange(previous, coverageChanged,
+			fmt.Errorf("发现最新 LHASA 制品: %w", err))
 	}
 	artifact = reconcileArtifactRevision(artifact, previous)
 	if err = c.validateArtifact(artifact); err != nil {
-		return c.fallback(previous, err)
+		return c.fallbackAfterCoverageChange(previous, coverageChanged, err)
 	}
-	if snapshot, zones, ok := c.reuseLatest(previous, artifact); ok {
+	if snapshot, zones, ok := c.reuseLatest(previous, artifact, boundary); ok {
 		return snapshot, zones, nil
 	}
-	snapshot, zones, err := c.collectFresh(ctx, artifact)
+	snapshot, zones, err := c.collectFresh(ctx, artifact, boundary)
 	if err != nil {
-		return c.fallback(previous, err)
+		return c.fallbackAfterCoverageChange(previous, coverageChanged, err)
 	}
 	return snapshot, zones, nil
 }
 
 func (c *LHASACollector) collectFresh(ctx context.Context,
-	artifact provenance.Artifact,
+	artifact provenance.Artifact, boundary hazard.ProcessingBoundary,
 ) (hazard.Snapshot, []hazard.RiskZone, error) {
 	stored, err := c.fetcher.Fetch(ctx, artifact)
 	if err != nil {
 		return hazard.Snapshot{}, nil, fmt.Errorf("下载 LHASA 制品: %w", err)
 	}
-	snapshot, zones, err := c.processor.Process(ctx, stored)
+	snapshot, zones, err := c.processor.Process(ctx, stored, boundary)
 	if err != nil {
 		return hazard.Snapshot{}, nil, fmt.Errorf("处理 LHASA 栅格: %w", err)
 	}
@@ -87,15 +122,64 @@ func (c *LHASACollector) collectFresh(ctx context.Context,
 }
 
 func (c *LHASACollector) reuseLatest(previous lhasaAnalysis,
-	artifact provenance.Artifact,
+	artifact provenance.Artifact, boundary hazard.ProcessingBoundary,
 ) (hazard.Snapshot, []hazard.RiskZone, bool) {
-	if previous.err != nil || !sameLHASAArtifact(previous.snapshot, artifact) {
+	if previous.err != nil || !sameLHASAArtifact(previous.snapshot, artifact) ||
+		!sameCoverage(previous.snapshot.Coverage, boundary.Coverage) {
 		return hazard.Snapshot{}, nil, false
 	}
 	if c.validateAnalysis(previous.snapshot, previous.zones) != nil {
 		return hazard.Snapshot{}, nil, false
 	}
 	return previous.snapshot, previous.zones, true
+}
+
+func (c *LHASACollector) reconcileCoverage(ctx context.Context,
+	boundary hazard.ProcessingBoundary,
+) error {
+	err := c.writer.ReconcileAnalysisCoverage(ctx, c.analysisSelector(), boundary.Coverage, c.clock.Now().UTC())
+	if err != nil {
+		return unavailableLHASA(fmt.Errorf("协调 LHASA 行政边界范围: %w", err))
+	}
+	return nil
+}
+
+func (c *LHASACollector) readBoundary(ctx context.Context) (hazard.ProcessingBoundary, error) {
+	boundary, err := c.boundary.RiskBoundary(ctx)
+	if err != nil {
+		return hazard.ProcessingBoundary{}, fmt.Errorf("读取中国风险处理边界: %w", err)
+	}
+	if err = boundary.Validate(); err != nil || boundary.Coverage.RegionCode != "CN" ||
+		boundary.Coverage.BoundaryType != "ADM0" {
+		return hazard.ProcessingBoundary{}, fmt.Errorf("%w: 中国风险处理边界无效", domain.ErrInvalidInput)
+	}
+	now := c.clock.Now()
+	if now.IsZero() || boundary.Coverage.CollectedAt.After(now) {
+		return hazard.ProcessingBoundary{}, fmt.Errorf("%w: 中国风险处理边界采集时间晚于当前时间",
+			domain.ErrInsufficientData)
+	}
+	return boundary, nil
+}
+
+func (c *LHASACollector) fallbackBoundary(previous lhasaAnalysis, cause error,
+) (hazard.Snapshot, []hazard.RiskZone, error) {
+	snapshot, zones, err := c.fallback(previous, cause)
+	if err != nil {
+		return hazard.Snapshot{}, nil, err
+	}
+	snapshot.Source.QualityFlags = appendUnique(snapshot.Source.QualityFlags, lhasaBoundaryFallbackFlag)
+	snapshot.Limitations = appendUnique(snapshot.Limitations, lhasaBoundaryFallbackLimitation)
+	return snapshot, zones, nil
+}
+
+func (c *LHASACollector) fallbackAfterCoverageChange(previous lhasaAnalysis,
+	coverageChanged bool, cause error,
+) (hazard.Snapshot, []hazard.RiskZone, error) {
+	if coverageChanged && previous.err != nil {
+		return hazard.Snapshot{}, nil, unavailableLHASA(cause,
+			fmt.Errorf("%w: 行政边界版本已变化，禁止回退到旧范围", domain.ErrInsufficientData))
+	}
+	return c.fallback(previous, cause)
 }
 
 func (c *LHASACollector) fallback(previous lhasaAnalysis, cause error,
@@ -118,12 +202,15 @@ type lhasaAnalysis struct {
 }
 
 func (c *LHASACollector) readLatest(ctx context.Context) lhasaAnalysis {
-	selector := hazard.AnalysisSelector{
+	snapshot, zones, err := c.reader.LatestAnalysis(ctx, c.analysisSelector())
+	return lhasaAnalysis{snapshot: snapshot, zones: zones, err: err}
+}
+
+func (c *LHASACollector) analysisSelector() hazard.AnalysisSelector {
+	return hazard.AnalysisSelector{
 		HazardType: hazard.TypeLandslide, ModelName: c.processor.ModelName(),
 		TransformVersion: c.processor.Version(), Provider: lhasaProviderName, Dataset: lhasaDatasetName,
 	}
-	snapshot, zones, err := c.reader.LatestAnalysis(ctx, selector)
-	return lhasaAnalysis{snapshot: snapshot, zones: zones, err: err}
 }
 
 func (c *LHASACollector) validateArtifact(artifact provenance.Artifact) error {
@@ -152,6 +239,13 @@ func (c *LHASACollector) validateAnalysis(snapshot hazard.Snapshot, zones []haza
 	}
 	if err := snapshot.Source.Validate(); err != nil {
 		return fmt.Errorf("校验 LHASA 分析来源: %w", err)
+	}
+	if snapshot.Coverage == nil || snapshot.Coverage.Validate() != nil ||
+		snapshot.Coverage.RegionCode != "CN" || snapshot.Coverage.BoundaryType != "ADM0" {
+		return fmt.Errorf("%w: LHASA 分析覆盖范围无效", domain.ErrInvalidInput)
+	}
+	if snapshot.Coverage.CollectedAt.After(snapshot.RunAt) {
+		return fmt.Errorf("%w: LHASA 分析覆盖范围时间晚于处理时间", domain.ErrInvalidInput)
 	}
 	if snapshot.Source.Provider != lhasaProviderName || snapshot.Source.Dataset != lhasaDatasetName ||
 		snapshot.Source.SourceRevision == "" || snapshot.Source.RevisionFirstSeenAt.IsZero() {
@@ -212,6 +306,10 @@ func sameLHASAArtifact(snapshot hazard.Snapshot, artifact provenance.Artifact) b
 		snapshot.Source.RevisionFirstSeenAt.Equal(artifact.Provenance.RevisionFirstSeenAt)
 }
 
+func sameCoverage(previous *hazard.Coverage, current hazard.Coverage) bool {
+	return previous != nil && previous.Identity() == current.Identity()
+}
+
 func reconcileArtifactRevision(artifact provenance.Artifact, previous lhasaAnalysis) provenance.Artifact {
 	if previous.err != nil || !sameSourceRevision(previous.snapshot.Source, artifact.Provenance) {
 		return artifact
@@ -258,6 +356,10 @@ func cloneSnapshot(value hazard.Snapshot) hazard.Snapshot {
 	value.Source.QualityFlags = append([]string(nil), value.Source.QualityFlags...)
 	value.Source.Limitations = append([]string(nil), value.Source.Limitations...)
 	value.Source.SourceParts = append([]provenance.SourcePart(nil), value.Source.SourceParts...)
+	if value.Coverage != nil {
+		coverage := *value.Coverage
+		value.Coverage = &coverage
+	}
 	return value
 }
 

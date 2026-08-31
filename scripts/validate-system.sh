@@ -256,11 +256,13 @@ run_gate exposure-providers scripts/validate-exposure-providers.sh required \
   null '' \
   sh "$SNAPSHOT_DIR/scripts/validate-exposure-providers.sh"
 unset AI_GDM_LIVE_EXPOSURE
+run_gate raster-gdal scripts/validate-raster.sh required '' false null '' \
+  sh "$SNAPSHOT_DIR/scripts/validate-raster.sh"
 run_gate loss-api scripts/validate-loss-api.sh required '' false null '' \
   sh "$SNAPSHOT_DIR/scripts/validate-loss-api.sh"
 run_gate risk-map-go scripts/validate-map-ui.sh required '' false null '' \
   sh "$SNAPSHOT_DIR/scripts/validate-map-ui.sh"
-run_gate risk-map-chromium scripts/validate-risk-map-browser.sh required '' false 19 \
+run_gate risk-map-chromium scripts/validate-risk-map-browser.sh required '' false 26 \
   '风险地图 fail-closed 浏览器回归通过' \
   sh "$SNAPSHOT_DIR/scripts/validate-risk-map-browser.sh"
 run_gate evacuation-ui scripts/validate-evacuation-ui.sh required '' false null '' \
@@ -275,8 +277,8 @@ run_gate assessment-ui scripts/validate-assessment-ui.sh required '' false null 
 ASSESSMENT_E2E_TREE_SHA=$SECURITY_TREE_SHA
 ASSESSMENT_E2E_SOURCE_SHA256=$(assessment_source_sha256 "$SNAPSHOT_DIR")
 export ASSESSMENT_E2E_TREE_SHA ASSESSMENT_E2E_SOURCE_SHA256
-run_gate assessment-chromium scripts/validate-assessment-browser.sh required '' false 121 \
-  '评估界面 Playwright 结果审计通过: passed=121 failed=0 skipped=0' \
+run_gate assessment-chromium scripts/validate-assessment-browser.sh required '' false 126 \
+  '评估界面 Playwright 结果审计通过: passed=126 failed=0 skipped=0' \
   sh "$SNAPSHOT_DIR/scripts/validate-assessment-browser.sh"
 unset ASSESSMENT_E2E_TREE_SHA ASSESSMENT_E2E_SOURCE_SHA256
 run_gate validate-go scripts/validate-go.sh required '' false null '' \

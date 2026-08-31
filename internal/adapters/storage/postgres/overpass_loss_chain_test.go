@@ -26,6 +26,7 @@ import (
 	applicationloss "github.com/Requim/AI-GDM/internal/application/loss"
 	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
+	"github.com/Requim/AI-GDM/internal/domain/spatial"
 )
 
 const (
@@ -120,7 +121,8 @@ func assertUnsafeGeoBoundaryResponseNotPersisted(t *testing.T, metadata, geometr
 	ctx, repository := integrationHazardRepository(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	suffix := fmt.Sprintf("geoboundary-shape-%d", time.Now().UnixNano())
-	snapshot, zones := saveLossProjectionRisk(t, ctx, repository, now, suffix, 1)
+	snapshot, zones := saveLossProjectionRisk(t, ctx, repository, now, suffix, 1,
+		overpassChainCoverage(t, now))
 	analysis := insertLossSpatialAnalysis(t, ctx, repository, snapshot, zones,
 		now.Add(-5*time.Minute), suffix, false)
 	boundary, requests := geoBoundaryProviderWithResponses(t, now, metadata, geometry)
@@ -148,7 +150,8 @@ func assertUnsafeOverpassResponseNotPersisted(t *testing.T, mutate func([]map[st
 	ctx, repository := integrationHazardRepository(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	suffix := fmt.Sprintf("overpass-coordinate-%d", time.Now().UnixNano())
-	snapshot, zones := saveLossProjectionRisk(t, ctx, repository, now, suffix, 1)
+	snapshot, zones := saveLossProjectionRisk(t, ctx, repository, now, suffix, 1,
+		overpassChainCoverage(t, now))
 	analysis := insertLossSpatialAnalysis(t, ctx, repository, snapshot, zones,
 		now.Add(-5*time.Minute), suffix, false)
 	response := overpassChainResponse(now)
@@ -438,7 +441,8 @@ func collectOverpassChainProjection(t *testing.T, ctx context.Context, repositor
 ) (hazard.Snapshot, exposurecollection.ExposureProjection, *atomic.Int32) {
 	t.Helper()
 	suffix := fmt.Sprintf("overpass-chain-%d", time.Now().UnixNano())
-	snapshot, zones := saveLossProjectionRisk(t, ctx, repository, now, suffix, 1)
+	snapshot, zones := saveLossProjectionRisk(t, ctx, repository, now, suffix, 1,
+		overpassChainCoverage(t, now))
 	analysis := insertLossSpatialAnalysis(t, ctx, repository, snapshot, zones,
 		now.Add(-5*time.Minute), suffix, false)
 	provider, requests := newOverpassChainProvider(t, now)
@@ -508,6 +512,27 @@ func (p overpassChainBoundary) Boundary(context.Context) (exposurecollection.Adm
 		Geometry:        json.RawMessage(`{"type":"Polygon","coordinates":[[[115.99,38.99],[116.02,38.99],[116.02,39.02],[115.99,39.02],[115.99,38.99]]]}`),
 		CollectedAt:     p.now.Add(-3 * time.Minute),
 		InputReferences: []string{geoBoundaryMetadataURL, geoBoundaryAuditReference()}}, nil
+}
+
+func overpassChainCoverage(t *testing.T, now time.Time) *hazard.Coverage {
+	t.Helper()
+	boundary, err := (overpassChainBoundary{now: now}).Boundary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var geometry spatial.Geometry
+	if err = json.Unmarshal(boundary.Geometry, &geometry); err != nil {
+		t.Fatal(err)
+	}
+	geometryDigest, err := hazard.BoundaryGeometryDigest(geometry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &hazard.Coverage{Mode: hazard.CoverageAdministrativeBoundary,
+		RegionCode: boundary.RegionCode, BoundaryID: boundary.BoundaryID,
+		BoundaryType: boundary.BoundaryType, BoundaryVersion: boundary.BoundaryYear,
+		Source: boundary.Source, License: boundary.License, Reference: boundary.Reference,
+		SHA256: boundary.Digest, GeometrySHA256: geometryDigest, CollectedAt: boundary.CollectedAt}
 }
 
 type overpassChainPopulation struct{ now time.Time }

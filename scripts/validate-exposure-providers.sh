@@ -16,7 +16,7 @@ LIVE_EXPOSURE="${AI_GDM_LIVE_EXPOSURE:-0}"
 . "$ROOT/scripts/validate-exposure-gates.lib.sh"
 
 cleanup() {
-  docker rm -f "$POSTGRES_NAME" >/dev/null 2>&1 || true
+  docker rm -fv "$POSTGRES_NAME" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM

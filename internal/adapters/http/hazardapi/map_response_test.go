@@ -38,6 +38,11 @@ func TestLatestMapSortsLimitsAndReportsTotal(t *testing.T) {
 		payload.Data.OmittedComplexZoneCount+payload.Data.OmittedPayloadZoneCount != payload.Data.OmittedZoneCount {
 		t.Fatalf("地图计数无效: %+v", payload.Data)
 	}
+	if payload.Data.Coverage.Mode != string(domainhazard.CoverageAdministrativeBoundary) ||
+		payload.Data.Coverage.Label != "CHN ADM0 边界（2024）" ||
+		payload.Data.Coverage.Source != "fixture" || payload.Data.Coverage.License != "Public Domain" {
+		t.Fatalf("地图覆盖范围无效: %+v", payload.Data.Coverage)
+	}
 	if payload.Data.Zones[0].Level != domainhazard.RiskVeryHigh {
 		t.Fatalf("风险区未按等级排序: %+v", payload.Data.Zones[0])
 	}
@@ -127,12 +132,32 @@ func TestProjectMapRiskRejectsSourceZoneOverflow(t *testing.T) {
 	}
 }
 
+func TestProjectMapRiskLabelsLegacyBoundingBox(t *testing.T) {
+	result := mapRiskFixture(nil)
+	result.Snapshot.Coverage = nil
+	value, err := projectMapRisk(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Coverage.Mode != "bounding_box" ||
+		!strings.Contains(value.Coverage.Label, "包含部分境外区域") {
+		t.Fatalf("旧快照范围说明无效: %+v", value.Coverage)
+	}
+}
+
 func mapRiskFixture(zones []domainhazard.RiskZone) applicationhazard.MapRiskResult {
 	validTo := time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC)
 	return applicationhazard.MapRiskResult{
 		RiskResult: applicationhazard.RiskResult{
 			Snapshot: domainhazard.Snapshot{ID: "snapshot-map", HazardType: domainhazard.TypeLandslide,
-				ValidTo: validTo, Status: domainhazard.SnapshotAvailable},
+				ValidTo: validTo, Status: domainhazard.SnapshotAvailable,
+				Coverage: &domainhazard.Coverage{
+					Mode: domainhazard.CoverageAdministrativeBoundary, RegionCode: "CN",
+					BoundaryID: "CHN-ADM0-1", BoundaryType: "ADM0", BoundaryVersion: "2024",
+					Source: "fixture", License: "Public Domain", Reference: "https://example.test/china.geojson",
+					SHA256: strings.Repeat("a", 64), GeometrySHA256: strings.Repeat("b", 64),
+					CollectedAt: validTo.Add(-time.Hour),
+				}},
 			Zones: zones,
 			Assessment: risk.Assessment{ID: "risk-map", SnapshotID: "snapshot-map",
 				DataStatus: risk.DataCurrent, Status: risk.AssessmentAvailable},

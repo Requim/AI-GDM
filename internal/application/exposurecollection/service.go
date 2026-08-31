@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -14,7 +15,9 @@ import (
 
 	applicationloss "github.com/Requim/AI-GDM/internal/application/loss"
 	"github.com/Requim/AI-GDM/internal/domain"
+	domainhazard "github.com/Requim/AI-GDM/internal/domain/hazard"
 	"github.com/Requim/AI-GDM/internal/domain/provenance"
+	"github.com/Requim/AI-GDM/internal/domain/spatial"
 	"github.com/Requim/AI-GDM/internal/domain/spatialanalysis"
 	"github.com/Requim/AI-GDM/internal/ports"
 )
@@ -64,6 +67,9 @@ func (c *Collector) Collect(ctx context.Context, snapshotID, analysisID string) 
 		return ExposureProjection{}, fmt.Errorf("采集 geoBoundaries 行政边界: %w", err)
 	}
 	boundary.CollectedAt = canonicalTime(boundary.CollectedAt)
+	if err = validateSnapshotBoundary(input, boundary); err != nil {
+		return ExposureProjection{}, err
+	}
 	providerNow, err := collectionNow(c.clock)
 	if err != nil {
 		return ExposureProjection{}, err
@@ -242,6 +248,11 @@ func canonicalizeGeometryInput(value *GeometryInput) {
 	value.Snapshot.ValidFrom = canonicalTime(value.Snapshot.ValidFrom)
 	value.Snapshot.ValidTo = canonicalTime(value.Snapshot.ValidTo)
 	canonicalizeProvenance(&value.Snapshot.Source)
+	if value.Snapshot.Coverage != nil {
+		coverage := *value.Snapshot.Coverage
+		coverage.CollectedAt = canonicalTime(coverage.CollectedAt)
+		value.Snapshot.Coverage = &coverage
+	}
 	value.Analysis.CalculatedAt = canonicalTime(value.Analysis.CalculatedAt)
 }
 
@@ -339,6 +350,28 @@ func ValidateExposureScopeIdentity(value ExposureScope, zones []applicationloss.
 	if value.ID != existingID || math.Abs(value.AreaCoverageRatio-existingRatio) > 1e-12 ||
 		value.CompleteCoverage != existingComplete {
 		return fmt.Errorf("%w: 暴露局部范围身份不一致", domain.ErrInvalidInput)
+	}
+	return nil
+}
+
+func validateSnapshotBoundary(input GeometryInput, boundary AdministrativeBoundary) error {
+	coverage := input.Snapshot.Coverage
+	if coverage == nil || coverage.Validate() != nil {
+		return fmt.Errorf("%w: 风险快照未绑定有效行政边界", domain.ErrInsufficientData)
+	}
+	var geometry spatial.Geometry
+	if err := json.Unmarshal(boundary.Geometry, &geometry); err != nil {
+		return fmt.Errorf("%w: 暴露采集行政边界几何无效", domain.ErrInsufficientData)
+	}
+	geometryDigest, err := domainhazard.BoundaryGeometryDigest(geometry)
+	if err != nil {
+		return fmt.Errorf("%w: 暴露采集行政边界几何无效", domain.ErrInsufficientData)
+	}
+	if coverage.RegionCode != boundary.RegionCode || coverage.BoundaryID != boundary.BoundaryID ||
+		coverage.BoundaryType != boundary.BoundaryType || coverage.BoundaryVersion != boundary.BoundaryYear ||
+		coverage.SHA256 != boundary.Digest || coverage.GeometrySHA256 != geometryDigest ||
+		coverage.Reference != boundary.Reference {
+		return fmt.Errorf("%w: 风险快照与暴露采集行政边界版本不一致", domain.ErrInsufficientData)
 	}
 	return nil
 }

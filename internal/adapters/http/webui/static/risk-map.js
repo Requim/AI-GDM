@@ -32,6 +32,8 @@
       refresh: document.getElementById("risk-map-refresh"),
       message: document.getElementById("risk-map-message"),
       visibleCount: document.getElementById("risk-visible-count"),
+      totalCount: document.getElementById("risk-total-count"),
+      coverageScope: document.getElementById("risk-coverage-scope"),
       decision: document.getElementById("risk-decision-level"),
       assessment: document.getElementById("risk-assessment-status"),
       dataStatus: document.getElementById("risk-data-status"),
@@ -82,13 +84,28 @@
   function validateRiskPayload(payload) {
     const data = payload && payload.data;
     if (!data || !data.snapshot || !validSnapshotID(data.snapshot.id) ||
-      !Array.isArray(data.zones) || !validLimits(data.limits)) {
+      !Array.isArray(data.zones) || !validLimits(data.limits) || !validCoverage(data.coverage)) {
       throw new Error("风险地图接口契约不完整，已按不可用处理");
     }
     validateCounts(data);
     requireValidTo(data);
     validateGeometryLimits(data.zones, data.limits);
     return data;
+  }
+
+  function validCoverage(value) {
+    if (!value || value.viewportIndependent !== true || typeof value.label !== "string" ||
+      value.label.trim() === "" || value.label.length > 256) return false;
+    if (value.mode === "bounding_box") return true;
+    return value.mode === "administrative_boundary" && value.regionCode === "CN" &&
+      value.boundaryType === "ADM0" && validSnapshotID(value.boundaryId) &&
+      typeof value.boundaryVersion === "string" && value.boundaryVersion.trim() !== "" &&
+      validCoverageText(value.source) && validCoverageText(value.license) &&
+      value.label.includes("（" + value.boundaryVersion + "）");
+  }
+
+  function validCoverageText(value) {
+    return typeof value === "string" && value.trim() === value && value !== "" && value.length <= 2048;
   }
 
   function validateCounts(data) {
@@ -219,7 +236,7 @@
     const state = snapshotState(data);
     renderMetadata(data, state);
     publishRiskSnapshot(data, state);
-    elements.visibleCount.textContent = "已显示 " + drawn + " / " + data.totalZoneCount + " 个风险区";
+    renderCountSummary(data, drawn);
     scheduleExpiry(data);
     if (data.zones.length === 0) {
       renderEmptyRiskMap(data, state);
@@ -229,15 +246,27 @@
       renderUnavailable("风险区几何无效，未绘制任何图层");
       return;
     }
-    const truncated = data.totalZoneCount > drawn ? "，服务端已按风险优先级限制地图负载" : "";
+    const truncated = data.totalZoneCount > drawn ? "，风险较高区域优先显示；未绘制不代表无风险" : "";
     const messages = { expired: "当前展示已过期的最后成功数据", stale: "当前展示陈旧的最后成功数据",
       fallback: "当前使用未过期的最后成功回退数据", current: "风险图层已更新" };
     setState(state === "expired" ? "stale" : state, messages[state] + truncated + "。" );
   }
 
+  function renderCountSummary(data, drawn) {
+    const omitted = Math.max(0, data.totalZoneCount - drawn);
+    const reasons = omitted > 0 ? "（几何复杂 " + data.omittedComplexZoneCount.toLocaleString("zh-CN") +
+      "；数量、顶点或响应大小上限 " + data.omittedPayloadZoneCount.toLocaleString("zh-CN") + "）" : "";
+    elements.visibleCount.textContent = "本次地图绘制 " + drawn.toLocaleString("zh-CN") + " 个风险区";
+    elements.totalCount.textContent = "本快照范围内共 " + data.totalZoneCount.toLocaleString("zh-CN") +
+      " · 未绘制 " + omitted.toLocaleString("zh-CN") + reasons;
+    const provenance = data.coverage.mode === "administrative_boundary" ?
+      "；来源：" + data.coverage.source + "；许可：" + data.coverage.license : "";
+    elements.coverageScope.textContent = "处理范围：" + data.coverage.label + provenance +
+      "；与地图缩放和拖动无关，非官方国界依据";
+  }
+
   function renderEmptyRiskMap(data, state) {
     if (data.totalZoneCount > 0 && data.omittedZoneCount === data.totalZoneCount) {
-      elements.visibleCount.textContent = "已显示 0 / " + data.totalZoneCount + " 个风险区（全部省略）";
       const expired = state === "expired" ? "风险数据已过期，且" : "";
       setState("unavailable", expired + "风险快照包含风险区，但全部因地图安全上限被省略，地图当前不可用，不得据此降低风险判断。" );
       return;
@@ -404,6 +433,8 @@
     map.setView([35.5, 104.5], 4);
     setState("unavailable", sentence(message) + " 页面不会使用模拟风险区替代。" );
     elements.visibleCount.textContent = "未显示风险区";
+    elements.totalCount.textContent = "总数不可用";
+    elements.coverageScope.textContent = "统计范围不可用";
     elements.decision.textContent = "不可用";
     elements.assessment.textContent = "没有可用的当前风险结果";
     elements.dataStatus.textContent = "不可用";

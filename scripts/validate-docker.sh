@@ -154,7 +154,7 @@ verify_runtime_contracts() {
   compose exec -T postgres psql -U ai_gdm -d ai_gdm -Atc \
     "SELECT extversion FROM pg_extension WHERE extname='postgis'" | grep -E '^3\.5([.]|$)' >/dev/null || \
     security_fail 'PostGIS 版本无效'
-  assert_equal "$(compose exec -T postgres psql -U ai_gdm -d ai_gdm -Atc 'SELECT count(*) FROM schema_migrations')" 9 '数据库迁移数量'
+  assert_equal "$(compose exec -T postgres psql -U ai_gdm -d ai_gdm -Atc 'SELECT count(*) FROM schema_migrations')" 11 '数据库迁移数量'
   assert_equal "$(compose exec -T redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping')" PONG 'Redis 探针'
 }
 

@@ -62,6 +62,7 @@ type Snapshot struct {
 	Thresholds           []RiskThreshold       `json:"thresholds"`
 	Status               SnapshotStatus        `json:"status"`
 	Source               provenance.Provenance `json:"source"`
+	Coverage             *Coverage             `json:"coverage,omitempty"`
 	Limitations          []string              `json:"limitations"`
 }
 

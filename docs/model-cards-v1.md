@@ -11,7 +11,7 @@ AI-GDM 的风险等级、路线排序、损失金额和生还评分均由版本�
 | 损失公式 | `ai-gdm-loss-formula-v2` |
 | 生还回放 | `ai-gdm-survival-rules-v1` |
 | AI Authority 封包 | `ai-gdm-authority-v1` |
-| LHASA 栅格转换 | `lhasa-gdal-1-gdal-3.13.3` |
+| LHASA 栅格转换 | `lhasa-gdal-2-gdal-3.13.3-china-adm0` |
 
 ## 风险分级规则
 

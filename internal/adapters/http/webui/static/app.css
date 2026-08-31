@@ -289,7 +289,19 @@ main { padding: 24px clamp(18px, 4vw, 56px) 44px; }
 
 .risk-toolbar span { display: inline-flex; align-items: center; gap: 6px; }
 .risk-toolbar i { width: 11px; height: 11px; border: 1px solid rgba(255, 255, 255, .45); }
-.risk-toolbar strong { margin-left: auto; color: var(--ink); font: 12px Consolas, monospace; }
+.risk-count-summary {
+  min-width: 280px;
+  margin-left: auto;
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  color: var(--muted);
+  text-align: right;
+}
+.risk-count-summary > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.risk-count-summary strong { color: var(--ink); font: 12px Consolas, monospace; }
+.risk-count-summary > span { display: block; font: 11px Consolas, monospace; }
+.risk-count-summary small { max-width: 440px; font-size: 10px; line-height: 1.45; }
 .legend-low { background: #4ecb71; }
 .legend-moderate { background: #f0b85a; }
 .legend-high { background: #ef6a5b; }
@@ -376,7 +388,7 @@ main { padding: 24px clamp(18px, 4vw, 56px) 44px; }
   .operations-strip div:nth-child(2) { border-right: 0; }
   .operations-strip div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .risk-toolbar { align-items: flex-start; flex-wrap: wrap; }
-  .risk-toolbar strong { width: 100%; margin-left: 0; }
+  .risk-count-summary { width: 100%; min-width: 0; margin-left: 0; justify-items: start; text-align: left; }
   .risk-workspace { grid-template-columns: 1fr; }
   .risk-map-canvas { min-height: 430px; }
   .risk-inspector { border-top: 1px solid var(--line); border-left: 0; }

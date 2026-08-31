@@ -51,6 +51,56 @@ func TestHazardRepositorySaveAnalysisSurvivesRepositoryRestart(t *testing.T) {
 	}
 }
 
+func TestHazardRepositoryCoverageRoundTripAndImmutability(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC()
+	snapshot, zone := storageFixture(now)
+	renameStorageFixture(&snapshot, &zone, snapshot.ID+"-coverage")
+	snapshot.Coverage = storageCoverage(now)
+	cleanupSnapshot(t, repository, snapshot.ID)
+	if err := repository.SaveAnalysis(ctx, snapshot, []hazard.RiskZone{zone}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := NewHazardRepository(repository.pool).GetSnapshot(ctx, snapshot.ID)
+	if err != nil || stored.Coverage == nil || stored.Coverage.Identity() != snapshot.Coverage.Identity() {
+		t.Fatalf("GetSnapshot()=%+v error=%v", stored, err)
+	}
+	var isNull bool
+	if err = repository.pool.QueryRow(ctx,
+		`SELECT coverage IS NULL FROM hazard_snapshots WHERE id=$1`, snapshot.ID).Scan(&isNull); err != nil || isNull {
+		t.Fatalf("coverage SQL NULL=%v error=%v", isNull, err)
+	}
+	changed := snapshot
+	changed.Coverage = storageCoverage(now)
+	changed.Coverage.SHA256 = strings.Repeat("b", 64)
+	if err = repository.SaveAnalysis(ctx, changed,
+		[]hazard.RiskZone{zone}); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("同 ID 覆盖范围变化未拒绝: %v", err)
+	}
+}
+
+func TestHazardRepositoryLegacyCoverageRemainsSQLNullAndIdempotent(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	snapshot, zone := storageFixture(time.Now().UTC())
+	renameStorageFixture(&snapshot, &zone, snapshot.ID+"-legacy-coverage")
+	cleanupSnapshot(t, repository, snapshot.ID)
+	if err := repository.SaveAnalysis(ctx, snapshot, []hazard.RiskZone{zone}); err != nil {
+		t.Fatal(err)
+	}
+	var isNull bool
+	if err := repository.pool.QueryRow(ctx,
+		`SELECT coverage IS NULL FROM hazard_snapshots WHERE id=$1`, snapshot.ID).Scan(&isNull); err != nil || !isNull {
+		t.Fatalf("legacy coverage SQL NULL=%v error=%v", isNull, err)
+	}
+	stored, err := NewHazardRepository(repository.pool).GetSnapshot(ctx, snapshot.ID)
+	if err != nil || stored.Coverage != nil {
+		t.Fatalf("GetSnapshot()=%+v error=%v", stored, err)
+	}
+	if err = repository.SaveAnalysis(ctx, snapshot, []hazard.RiskZone{zone}); err != nil {
+		t.Fatalf("旧式空覆盖范围未保持幂等: %v", err)
+	}
+}
+
 func TestHazardRepositorySaveAnalysisRollsBackOnZoneFailure(t *testing.T) {
 	ctx, repository := integrationHazardRepository(t)
 	snapshot, zone := storageFixture(time.Now().UTC())
@@ -130,6 +180,270 @@ func TestHazardRepositoryLatestRiskOnlyReturnsCompleteReadableAnalysis(t *testin
 	}
 	if len(zones) != 1 || zones[0].ID != staleZone.ID {
 		t.Fatalf("LatestRisk() zones = %+v", zones)
+	}
+}
+
+func TestHazardRepositoryReconcilesAllAnalysesThroughAuditWaterline(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	hazardType := hazard.Type("integration_superseded_" + riskTypeTimestamp(now))
+	older, olderZone := saveSupersessionAnalysis(t, ctx, repository, now.Add(-time.Minute), "older", hazardType, "a")
+	latest, latestZone := saveSupersessionAnalysis(t, ctx, repository, now, "latest", hazardType, "a")
+	replacement := supersessionCoverage(now, "b")
+	if err := repository.ReconcileAnalysisCoverage(ctx, storageSelector(latest), replacement, now); err != nil {
+		t.Fatal(err)
+	}
+	assertSupersededSnapshotHiddenFromLatest(t, ctx, repository, latest)
+	for _, item := range []struct {
+		snapshot hazard.Snapshot
+		zone     hazard.RiskZone
+	}{{older, olderZone}, {latest, latestZone}} {
+		assertSupersededHistoryReadable(t, ctx, repository, item.snapshot, item.zone)
+		assertSnapshotSuperseded(t, ctx, repository, item.snapshot.ID, true, replacement.SHA256)
+	}
+}
+
+func TestHazardRepositoryGlobalLatestRejectsLegacyFallbackAfterCoverageChange(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	hazardType := hazard.Type("integration_legacy_fallback_" + riskTypeTimestamp(now))
+	legacy, legacyZone := storageFixture(now.Add(-2 * time.Hour))
+	renameStorageFixture(&legacy, &legacyZone, legacy.ID+"-legacy-v1")
+	legacy.HazardType, legacy.Source.TransformVersion = hazardType, "lhasa-gdal-1-gdal-3.13.3"
+	cleanupSnapshot(t, repository, legacy.ID)
+	if err := repository.SaveAnalysis(ctx, legacy, []hazard.RiskZone{legacyZone}); err != nil {
+		t.Fatal(err)
+	}
+
+	current, currentZone := storageFixture(now.Add(-time.Hour))
+	renameStorageFixture(&current, &currentZone, current.ID+"-current-v2")
+	current.HazardType = hazardType
+	current.Source.TransformVersion = "lhasa-gdal-2-gdal-3.13.3-china-adm0"
+	current.Coverage = storageCoverage(current.RunAt)
+	cleanupSnapshot(t, repository, current.ID)
+	if err := repository.SaveAnalysis(ctx, current, []hazard.RiskZone{currentZone}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := supersessionCoverage(now, "b")
+	if err := repository.ReconcileAnalysisCoverage(ctx, storageSelector(current), replacement, now); err != nil {
+		t.Fatal(err)
+	}
+
+	assertSupersededSnapshotHiddenFromLatest(t, ctx, repository, current)
+	assertSnapshotSuperseded(t, ctx, repository, legacy.ID, false, "")
+	stored, zones, err := repository.LatestAnalysis(ctx, storageSelector(legacy))
+	if err != nil || stored.ID != legacy.ID || len(zones) != 1 || zones[0].ID != legacyZone.ID {
+		t.Fatalf("旧转换版本审计读取错误: snapshot=%+v zones=%+v err=%v", stored, zones, err)
+	}
+}
+
+func TestHazardRepositoryCoverageReconciliationIsIdempotent(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	hazardType := hazard.Type("integration_supersession_retry_" + riskTypeTimestamp(now))
+	snapshot, _ := saveSupersessionAnalysis(t, ctx, repository, now, "anchor", hazardType, "a")
+	replacements := []hazard.Coverage{supersessionCoverage(now.Add(-time.Minute), "b"),
+		supersessionCoverage(now, "b")}
+	for _, replacement := range replacements {
+		if err := repository.ReconcileAnalysisCoverage(ctx, storageSelector(snapshot), replacement, now); err != nil {
+			t.Fatalf("同一边界身份重复协调失败: %v", err)
+		}
+	}
+	assertSnapshotSuperseded(t, ctx, repository, snapshot.ID, true, replacements[0].SHA256)
+}
+
+func TestHazardRepositoryCoverageReconciliationDoesNotCrossSelector(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	hazardType := hazard.Type("integration_supersession_scope_" + riskTypeTimestamp(now))
+	selected, _ := saveSupersessionAnalysis(t, ctx, repository, now.Add(-time.Minute), "selected", hazardType, "a")
+	otherType := hazard.Type(string(hazardType) + "_other")
+	other, _ := saveSupersessionAnalysis(t, ctx, repository, now, "other", otherType, "a")
+	replacement := supersessionCoverage(now, "b")
+	if err := repository.ReconcileAnalysisCoverage(ctx, storageSelector(selected), replacement, now); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, err := repository.LatestAnalysis(ctx, storageSelector(other))
+	if err != nil || stored.ID != other.ID {
+		t.Fatalf("其他分析族被误伤: snapshot=%+v err=%v", stored, err)
+	}
+	assertSnapshotSuperseded(t, ctx, repository, selected.ID, true, replacement.SHA256)
+	assertSnapshotSuperseded(t, ctx, repository, other.ID, false, "")
+}
+
+func TestHazardRepositorySupersessionReactivatesMatchingCoverage(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	hazardType := hazard.Type("integration_supersession_return_" + riskTypeTimestamp(now))
+	oldB, _ := saveSupersessionAnalysis(t, ctx, repository, now.Add(-2*time.Minute), "old-b", hazardType, "b")
+	coverageA := supersessionCoverage(now.Add(-time.Minute), "a")
+	if err := repository.ReconcileAnalysisCoverage(ctx, storageSelector(oldB),
+		coverageA, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	latestA, _ := saveSupersessionAnalysis(t, ctx, repository, now.Add(-time.Minute), "latest-a", hazardType, "a")
+	coverageB := supersessionCoverage(now, "b")
+	if err := repository.ReconcileAnalysisCoverage(ctx, storageSelector(latestA), coverageB, now); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, err := repository.LatestAnalysis(ctx, storageSelector(latestA))
+	if err != nil || stored.ID != oldB.ID {
+		t.Fatalf("回切边界后未恢复匹配快照: snapshot=%+v err=%v", stored, err)
+	}
+	assertSnapshotSuperseded(t, ctx, repository, oldB.ID, false, "")
+	assertSnapshotSuperseded(t, ctx, repository, latestA.ID, true, coverageB.SHA256)
+}
+
+func TestHazardRepositoryCoverageReconciliationRecoversWithoutVisibleLatest(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	hazardType := hazard.Type("integration_supersession_hidden_" + riskTypeTimestamp(now))
+	hiddenB, _ := saveSupersessionAnalysis(t, ctx, repository, now, "hidden-b", hazardType, "b")
+	if err := repository.ReconcileAnalysisCoverage(ctx, storageSelector(hiddenB),
+		supersessionCoverage(now, "a"), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repository.LatestAnalysis(ctx, storageSelector(hiddenB)); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("旧边界快照未隐藏: %v", err)
+	}
+	if err := repository.ReconcileAnalysisCoverage(ctx, storageSelector(hiddenB),
+		supersessionCoverage(now, "b"), now); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, err := repository.LatestAnalysis(ctx, storageSelector(hiddenB))
+	if err != nil || stored.ID != hiddenB.ID {
+		t.Fatalf("无可见 latest 时未恢复匹配边界: snapshot=%+v err=%v", stored, err)
+	}
+}
+
+func TestHazardRepositoryAnalysisRefreshLockSerializesSelector(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	snapshot, _ := storageFixture(time.Now().UTC())
+	selector := storageSelector(snapshot)
+	first, err := repository.LockAnalysisRefresh(ctx, selector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	acquired, releaseSecond := make(chan error, 1), make(chan struct{})
+	go func() {
+		second, lockErr := repository.LockAnalysisRefresh(waitCtx, selector)
+		acquired <- lockErr
+		if lockErr == nil {
+			<-releaseSecond
+			_ = second.Release()
+		}
+	}()
+	select {
+	case lockErr := <-acquired:
+		t.Fatalf("第二个刷新未被串行化: %v", lockErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err = first.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-acquired; err != nil {
+		t.Fatalf("释放首个锁后第二个刷新未获取锁: %v", err)
+	}
+	close(releaseSecond)
+}
+
+func TestHazardRepositoryAnalysisRefreshLockKeepsSingleConnectionPoolUsable(t *testing.T) {
+	ctx, repository := integrationHazardRepositoryWithMaxConns(t, 1)
+	snapshot, zone := storageFixture(time.Now().UTC())
+	renameStorageFixture(&snapshot, &zone, snapshot.ID+"-single-connection")
+	cleanupSnapshot(t, repository, snapshot.ID)
+
+	lease, err := repository.LockAnalysisRefresh(ctx, storageSelector(snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lease.Release() })
+
+	operationCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err = repository.SaveAnalysis(operationCtx, snapshot, []hazard.RiskZone{zone}); err != nil {
+		t.Fatalf("持有刷新锁时单连接池无法保存分析: %v", err)
+	}
+	stored, zones, err := repository.LatestAnalysis(operationCtx, storageSelector(snapshot))
+	if err != nil {
+		t.Fatalf("持有刷新锁时单连接池无法读取分析: %v", err)
+	}
+	if stored.ID != snapshot.ID || len(zones) != 1 || zones[0].ID != zone.ID {
+		t.Fatalf("单连接池分析往返不完整: snapshot=%+v zones=%+v", stored, zones)
+	}
+	if err = lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertSupersededSnapshotHiddenFromLatest(t *testing.T, ctx context.Context,
+	repository *HazardRepository, snapshot hazard.Snapshot,
+) {
+	t.Helper()
+	if _, err := repository.Latest(ctx, snapshot.HazardType); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Latest() 未隐藏已取代快照: %v", err)
+	}
+	if _, _, err := repository.LatestRisk(ctx, snapshot.HazardType); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("LatestRisk() 未隐藏已取代快照: %v", err)
+	}
+	if _, err := repository.LatestMapRisk(ctx, snapshot.HazardType, 100); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("LatestMapRisk() 未隐藏已取代快照: %v", err)
+	}
+	if _, _, err := repository.LatestAnalysis(ctx, storageSelector(snapshot)); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("LatestAnalysis() 未隐藏已取代快照: %v", err)
+	}
+}
+
+func saveSupersessionAnalysis(t *testing.T, ctx context.Context, repository *HazardRepository,
+	runAt time.Time, suffix string, hazardType hazard.Type, coverageDigest string,
+) (hazard.Snapshot, hazard.RiskZone) {
+	t.Helper()
+	snapshot, zone := storageFixture(runAt)
+	renameStorageFixture(&snapshot, &zone, snapshot.ID+"-"+suffix)
+	snapshot.HazardType = hazardType
+	snapshot.Coverage = storageCoverage(runAt)
+	snapshot.Coverage.SHA256 = strings.Repeat(coverageDigest, 64)
+	cleanupSnapshot(t, repository, snapshot.ID)
+	if err := repository.SaveAnalysis(ctx, snapshot, []hazard.RiskZone{zone}); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot, zone
+}
+
+func supersessionCoverage(collectedAt time.Time, digest string) hazard.Coverage {
+	value := *storageCoverage(collectedAt.Add(-time.Minute))
+	value.SHA256 = strings.Repeat(digest, 64)
+	return value
+}
+
+func assertSupersededHistoryReadable(t *testing.T, ctx context.Context,
+	repository *HazardRepository, snapshot hazard.Snapshot, zone hazard.RiskZone,
+) {
+	t.Helper()
+	stored, zones, err := repository.RiskDetail(ctx, snapshot.ID)
+	if err != nil || stored.ID != snapshot.ID || len(zones) != 1 || zones[0].ID != zone.ID {
+		t.Fatalf("已取代快照历史详情丢失: snapshot=%+v zones=%+v err=%v", stored, zones, err)
+	}
+	stored, err = repository.GetSnapshot(ctx, snapshot.ID)
+	if err != nil || stored.Coverage == nil || stored.Coverage.Identity() != snapshot.Coverage.Identity() {
+		t.Fatalf("已取代快照审计读取错误: snapshot=%+v err=%v", stored, err)
+	}
+}
+
+func assertSnapshotSuperseded(t *testing.T, ctx context.Context, repository *HazardRepository,
+	snapshotID string, expected bool, expectedSHA string,
+) {
+	t.Helper()
+	var superseded bool
+	var replacementSHA string
+	err := repository.pool.QueryRow(ctx, `SELECT superseded_at IS NOT NULL,
+		COALESCE(superseded_by_coverage->>'sha256','') FROM hazard_snapshots WHERE id=$1`, snapshotID).
+		Scan(&superseded, &replacementSHA)
+	if err != nil || superseded != expected || replacementSHA != expectedSHA {
+		t.Fatalf("覆盖范围失效状态错误: id=%s superseded=%v sha=%v err=%v",
+			snapshotID, superseded, replacementSHA, err)
 	}
 }
 
@@ -234,6 +548,7 @@ func saveRiskFixture(t *testing.T, ctx context.Context, repository *HazardReposi
 	snapshot, zone := storageFixture(runAt)
 	renameStorageFixture(&snapshot, &zone, snapshot.ID+"-"+suffix)
 	snapshot.HazardType, snapshot.Status = hazardType, status
+	snapshot.Coverage = storageCoverage(runAt)
 	cleanupSnapshot(t, repository, snapshot.ID)
 	var err error
 	if complete {
@@ -301,18 +616,33 @@ func assertConcurrentRiskRead(t *testing.T, result <-chan riskReadResult, expect
 }
 
 func integrationHazardRepository(t *testing.T) (context.Context, *HazardRepository) {
+	return integrationHazardRepositoryWithMaxConns(t, 0)
+}
+
+func integrationHazardRepositoryWithMaxConns(t *testing.T, maxConns int32) (context.Context, *HazardRepository) {
 	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("未配置 TEST_DATABASE_URL")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	pool, err := Open(ctx, databaseURL)
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if maxConns > 0 {
+		config.MaxConns = maxConns
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { pool.Close(); cancel() })
+	if err = pool.Ping(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if err = Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
@@ -378,4 +708,15 @@ func storageFixture(now time.Time) (hazard.Snapshot, hazard.RiskZone) {
 		AreaSquareM: 100, InputReferences: []string{"fixture.tif"}, Limitations: []string{"仅用于测试"},
 	}
 	return snapshot, zone
+}
+
+func storageCoverage(now time.Time) *hazard.Coverage {
+	return &hazard.Coverage{
+		Mode: hazard.CoverageAdministrativeBoundary, RegionCode: "CN",
+		BoundaryID: "CHN-ADM0-351020", BoundaryType: "ADM0", BoundaryVersion: "2019",
+		Source: "geoBoundaries", License: "Public Domain",
+		Reference: "https://example.test/china.geojson", SHA256: strings.Repeat("a", 64),
+		GeometrySHA256: strings.Repeat("c", 64),
+		CollectedAt:    now.Add(-time.Hour),
+	}
 }
