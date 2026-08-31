@@ -7,6 +7,7 @@
   const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
   const DIGEST = /^sha256:[0-9a-f]{64}$/;
   const SHA256 = /^[0-9a-f]{64}$/;
+  const RISK_SNAPSHOT_EVENT = "ai-gdm:risk-snapshot";
   const PUBLIC_EVIDENCE_CITATION = "公开搜索证据；原始条目已转换为不可逆审计引用";
   const PUBLIC_EVIDENCE_LICENSE = "来源许可需在公开站点人工核验";
   const PUBLIC_EVIDENCE_LIMITATION = "证据文本、地址路径和未配置子域已最小化；条目身份与批次响应审计分别使用不可逆摘要";
@@ -38,6 +39,7 @@
   const elements = collectElements();
   const STRICT_UTC_RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
   const state = { caseRequest: 0, replayRequest: 0, aiRequest: 0, lossRequest: 0,
+    lossPending: false, lossAutoSnapshotID: "", lossAutoSnapshotState: "",
     caseDetail: null, caseBindings: new Map(), modelCard: null, modelCardState: "loading",
     modelCardError: "", references: new Map() };
 
@@ -132,6 +134,7 @@
   }
 
   function bindLoss() {
+    elements.lossButton.disabled = true;
     elements.lossButton.addEventListener("click", runLoss);
     elements.lossInput.addEventListener("keydown", function (event) {
       if (event.key !== "Enter") return;
@@ -139,19 +142,30 @@
       runLoss();
     });
     elements.lossInput.addEventListener("input", function () {
+      state.lossAutoSnapshotID = "";
+      state.lossAutoSnapshotState = "";
       clearLossResult("风险快照引用已改变，旧损失评估已清除。");
     });
+    document.addEventListener(RISK_SNAPSHOT_EVENT, function (event) {
+      bindRiskSnapshot(event && event.detail);
+    });
+    syncRiskSnapshot();
   }
 
   async function runLoss() {
     const snapshotID = elements.lossInput.value.trim();
+    if (snapshotID === "") {
+      clearLossResult("请等待风险地图加载有效快照，或手动输入已知有效的快照 ID。", "warning");
+      return;
+    }
     if (!validID(snapshotID) || !elements.lossInput.checkValidity()) {
       clearLossResult("风险快照标识无效，请检查后重试。", "error");
       elements.lossInput.reportValidity();
       return;
     }
     const request = ++state.lossRequest;
-    elements.lossButton.disabled = true;
+    state.lossPending = true;
+    updateLossButton();
     clearLossValues();
     removeReference("loss_assessment");
     setAssessmentState(elements.lossStatus, "loading", "正在读取服务端权威输入并计算损失区间...");
@@ -167,8 +181,66 @@
       removeReference("loss_assessment");
       setAssessmentState(elements.lossStatus, "error", errorMessage(error));
     } finally {
-      if (request === state.lossRequest) elements.lossButton.disabled = false;
+      if (request === state.lossRequest) {
+        state.lossPending = false;
+        updateLossButton();
+      }
     }
+  }
+
+  function syncRiskSnapshot() {
+    const riskMap = document.getElementById("risk-map");
+    if (!riskMap || !riskMap.dataset.currentSnapshotId) return;
+    bindRiskSnapshot({ available: true, snapshotId: riskMap.dataset.currentSnapshotId,
+      state: riskMap.dataset.currentSnapshotState });
+  }
+
+  function bindRiskSnapshot(detail) {
+    if (!detail || detail.available !== true || !validID(detail.snapshotId)) {
+      clearAutoBoundSnapshot("风险地图当前没有可用于评估的快照，请等待刷新或手动输入已知有效 ID。");
+      return;
+    }
+    const current = elements.lossInput.value.trim();
+    if (current && current !== state.lossAutoSnapshotID) {
+      updateLossButton();
+      return;
+    }
+    const changed = current !== detail.snapshotId || state.lossAutoSnapshotID !== detail.snapshotId ||
+      state.lossAutoSnapshotState !== detail.state;
+    state.lossAutoSnapshotID = detail.snapshotId;
+    state.lossAutoSnapshotState = detail.state;
+    elements.lossInput.value = detail.snapshotId;
+    if (!changed) {
+      updateLossButton();
+      return;
+    }
+    const message = detail.state === "fallback" ?
+      "已绑定风险地图最后成功快照，评估结果需人工复核。" :
+      "已绑定风险地图当前有效快照，可计算损失区间。";
+    clearLossResult(message);
+    state.lossAutoSnapshotID = detail.snapshotId;
+    state.lossAutoSnapshotState = detail.state;
+  }
+
+  function clearAutoBoundSnapshot(message) {
+    if (!state.lossAutoSnapshotID) {
+      updateLossButton();
+      return;
+    }
+    const shouldClear = elements.lossInput.value.trim() === state.lossAutoSnapshotID;
+    state.lossAutoSnapshotID = "";
+    state.lossAutoSnapshotState = "";
+    if (!shouldClear) {
+      updateLossButton();
+      return;
+    }
+    elements.lossInput.value = "";
+    clearLossResult(message, "warning");
+  }
+
+  function updateLossButton() {
+    const snapshotID = elements.lossInput.value.trim();
+    elements.lossButton.disabled = state.lossPending || !validID(snapshotID) || !elements.lossInput.checkValidity();
   }
 
   async function createLossAssessment(snapshotID) {
@@ -232,9 +304,10 @@
 
   function clearLossResult(message, status) {
     state.lossRequest++;
+    state.lossPending = false;
     clearLossValues();
     removeReference("loss_assessment");
-    elements.lossButton.disabled = false;
+    updateLossButton();
     setAssessmentState(elements.lossStatus, status || "idle", message || "请选择当前有效风险快照。");
   }
 

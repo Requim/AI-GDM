@@ -40,7 +40,7 @@ func TestAssessmentSpecScenarioLiteralsAreRegistered(t *testing.T) {
 
 func unregisteredScenarioLiterals(matches [][]string) []string {
 	nonScenarios := map[string]struct{}{
-		"ai_report": {}, "ai_structured_attempt": {}, "loss_get": {}, "loss_sources": {},
+		"ai_report": {}, "ai_structured_attempt": {}, "loss_get": {}, "loss_post": {}, "loss_sources": {},
 		"survival_assessment": {},
 	}
 	missing := map[string]struct{}{}

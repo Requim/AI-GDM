@@ -3,7 +3,7 @@ package main
 import "fmt"
 
 const (
-	shortValidTo   = "2026-08-28T00:00:02Z"
+	shortValidTo   = "2026-08-28T00:10:00Z"
 	defaultValidTo = "2099-01-01T00:00:00Z"
 )
 

@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 const API_PATH = "/api/v1/hazards/landslide/risks/latest/map";
 const FIXED_NOW = new Date("2026-08-28T00:00:00Z");
+const SNAPSHOT_ID = "snapshot-browser";
 
 test.beforeEach(async ({ page }) => {
   await page.route(/^https:\/\/[a-z]\.tile\.openstreetmap\.org\//, async (route) => {
@@ -36,20 +37,35 @@ test("snapshot 与 source 有效期不一致时执行 fail-closed", async ({ pag
   await expectClearedMetadata(page);
 });
 
+test("当前有效风险快照自动回填损失输入并启用评估按钮", async ({ page, request }) => {
+  await setScenario(request, "success");
+  await page.clock.install({ time: FIXED_NOW });
+  await page.goto("/");
+
+  await expect(page.locator("#risk-map-message")).toHaveClass(/map-state-current/);
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue(SNAPSHOT_ID);
+  expect(await page.locator("#loss-snapshot-id").evaluate((input) => input.checkValidity())).toBe(true);
+  await expect(page.locator("#loss-assessment-run")).toBeEnabled();
+  await expect(page.locator("#loss-assessment-status")).toContainText("已绑定风险地图当前有效快照");
+});
+
 test("假时钟跨过 validTo 后同步转为 expired", async ({ page, request }) => {
   await setScenario(request, "short_validity");
   await page.clock.install({ time: FIXED_NOW });
   await page.goto("/");
   await expect(page.locator("#risk-map-message")).toHaveClass(/map-state-current/);
   await expect(page.locator("#risk-data-status")).toHaveText("当前数据");
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue(SNAPSHOT_ID);
 
-  await page.clock.fastForward(2_100);
+  await page.clock.fastForward(600_100);
 
   await expect(page.locator("#risk-map-message")).toHaveClass(/map-state-stale/);
   await expect(page.locator("#risk-decision-level")).toHaveText("已过期 / 高");
   await expect(page.locator("#risk-data-status")).toHaveText("数据已过期");
   await expect(page.locator("#risk-assessment-status")).toContainText("数据已过期");
   await expect(page.locator("#risk-limitations-list")).toContainText("已跨过有效期");
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue("");
+  await expect(page.locator("#loss-assessment-run")).toBeDisabled();
 });
 
 test("风险区全部被省略时明确显示地图不可用", async ({ page, request }) => {
@@ -76,7 +92,7 @@ test("风险区全部省略后跨期仍保持不可用并保留双重事实", as
   await expect(message).toHaveClass(/map-state-unavailable/);
   await expect(message).toContainText("全部因地图安全上限被省略");
 
-  await page.clock.fastForward(2_100);
+  await page.clock.fastForward(600_100);
 
   await expect(message).toHaveClass(/map-state-unavailable/);
   await expect(message).toContainText("风险数据已过期");
@@ -106,7 +122,7 @@ test("fallback 跨过 validTo 后 expired 优先", async ({ page, request }) => 
   await page.goto("/");
   await expect(page.locator("#risk-map-message")).toHaveClass(/map-state-fallback/);
 
-  await page.clock.fastForward(2_100);
+  await page.clock.fastForward(600_100);
 
   await expect(page.locator("#risk-map-message")).toHaveClass(/map-state-stale/);
   await expect(page.locator("#risk-decision-level")).toHaveText("已过期 / 高");
@@ -117,11 +133,27 @@ test("成功结果后 503 清除旧模型、来源、置信度和规则", async 
   await setScenario(request, "success_then_503");
   await page.goto("/");
   await expectLoadedMetadata(page);
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue(SNAPSHOT_ID);
 
   await page.locator("#risk-map-refresh").click();
 
   await expectUnavailable(page, "实时风险数据暂时不可用");
   await expectClearedMetadata(page);
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue("");
+  await expect(page.locator("#loss-assessment-run")).toBeDisabled();
+});
+
+test("风险地图刷新失败时保留人工输入的快照标识", async ({ page, request }) => {
+  await setScenario(request, "success_then_503");
+  await page.goto("/");
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue(SNAPSHOT_ID);
+  await page.locator("#loss-snapshot-id").fill("snapshot-manual-input");
+
+  await page.locator("#risk-map-refresh").click();
+
+  await expectUnavailable(page, "实时风险数据暂时不可用");
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue("snapshot-manual-input");
+  await expect(page.locator("#loss-assessment-run")).toBeEnabled();
 });
 
 test("成功结果后请求超时同样清除旧结论", async ({ page, request }) => {

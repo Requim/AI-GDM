@@ -8,6 +8,8 @@
   const MAX_GEOMETRY_BYTES = 512 * 1024;
   const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
   const MAX_EXPIRY_TIMER_MS = 60 * 60 * 1000;
+  const RISK_SNAPSHOT_EVENT = "ai-gdm:risk-snapshot";
+  const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
   const STRICT_UTC_RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
   const LEVEL_TEXT = { low: "低", moderate: "中", high: "高", very_high: "很高" };
   const LEVEL_COLOR = { low: "#4ecb71", moderate: "#f0b85a", high: "#ef6a5b", very_high: "#d64882" };
@@ -78,7 +80,8 @@
 
   function validateRiskPayload(payload) {
     const data = payload && payload.data;
-    if (!data || !data.snapshot || !Array.isArray(data.zones) || !validLimits(data.limits)) {
+    if (!data || !data.snapshot || !validSnapshotID(data.snapshot.id) ||
+      !Array.isArray(data.zones) || !validLimits(data.limits)) {
       throw new Error("风险地图接口契约不完整，已按不可用处理");
     }
     validateCounts(data);
@@ -214,6 +217,7 @@
     const drawn = renderLayer(data.zones);
     const state = snapshotState(data);
     renderMetadata(data, state);
+    publishRiskSnapshot(data, state);
     elements.visibleCount.textContent = "已显示 " + drawn + " / " + data.totalZoneCount + " 个风险区";
     scheduleExpiry(data);
     if (data.zones.length === 0) {
@@ -354,6 +358,7 @@
 
   function renderExpiredRisk(data) {
     renderMetadata(data, "expired");
+    publishRiskSnapshot(data, "expired");
     if (data.zones.length === 0) {
       renderEmptyRiskMap(data, "expired");
       return;
@@ -378,6 +383,7 @@
 
   function renderUnavailable(message) {
     activeData = null;
+    publishRiskSnapshot(null, "unavailable");
     clearExpiryTimer();
     clearRiskLayer();
     map.setView([35.5, 104.5], 4);
@@ -399,6 +405,18 @@
   function clearRiskLayer() {
     if (riskLayer) map.removeLayer(riskLayer);
     riskLayer = window.L.layerGroup().addTo(map);
+  }
+
+  function publishRiskSnapshot(data, state) {
+    const snapshot = data && data.snapshot;
+    const available = Boolean(snapshot && validSnapshotID(snapshot.id) &&
+      (state === "current" || state === "fallback"));
+    const snapshotID = available ? snapshot.id : "";
+    root.dataset.currentSnapshotId = snapshotID;
+    root.dataset.currentSnapshotState = state;
+    document.dispatchEvent(new CustomEvent(RISK_SNAPSHOT_EVENT, {
+      detail: { available: available, snapshotId: snapshotID, state: state }
+    }));
   }
 
   function setState(state, message) {
@@ -450,4 +468,6 @@
   function textValue(value) {
     return value === undefined || value === null || String(value).trim() === "" ? "未提供" : String(value);
   }
+
+  function validSnapshotID(value) { return typeof value === "string" && IDENTIFIER.test(value); }
 })();

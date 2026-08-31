@@ -14,6 +14,17 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("风险地图不可用且快照输入为空时损失按钮禁用且不得发送 POST", async ({ page, request }) => {
+  await setScenario(request, "success");
+  await openAssessment(page);
+
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue("");
+  await expect(page.locator("#loss-assessment-run")).toBeDisabled();
+  await page.locator("#loss-snapshot-id").press("Enter");
+  await expect(page.locator("#loss-assessment-status")).toContainText("请等待风险地图加载有效快照");
+  await expectFixtureCall(request, "loss_post", 0);
+});
+
 test("损失评估仅提交 snapshotId，并跟随 Location 与 sources 审计", async ({ page, request }) => {
   await setScenario(request, "success");
   await openAssessment(page);
