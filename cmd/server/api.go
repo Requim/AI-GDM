@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/Requim/AI-GDM/internal/adapters/http/aiapi"
 	"github.com/Requim/AI-GDM/internal/adapters/http/hazardapi"
 	"github.com/Requim/AI-GDM/internal/adapters/http/lossapi"
@@ -104,5 +106,8 @@ func requestWithPath(request *http.Request, path string) *http.Request {
 	clone := request.Clone(request.Context())
 	clone.URL.Path = path
 	clone.URL.RawPath = ""
+	if routeContext := chi.RouteContext(clone.Context()); routeContext != nil {
+		routeContext.RoutePath = path
+	}
 	return clone
 }
