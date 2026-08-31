@@ -63,8 +63,21 @@ func TestLiveEarthdataChinaAcquisition(t *testing.T) {
 	if len(stored.Provenance.SourceParts) != 12 || stored.LocalPath == "" || stored.Provenance.SHA256 == "" {
 		t.Fatalf("Earthdata 中国区域组合制品无效：%+v", stored)
 	}
-	t.Logf("Earthdata 中国区域获取通过：parts=%d bytes=%d sha256=%s",
-		len(stored.Provenance.SourceParts), stored.SizeBytes, stored.Provenance.SHA256)
+	processor, err := New(Config{ArtifactRoot: directory, TemporaryDir: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, zones, err := processor.Process(ctx, stored, boundary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEarthdataSnapshot(t, snapshot, len(zones))
+	if len(zones) == 0 || snapshot.Coverage == nil ||
+		snapshot.Coverage.Identity() != boundary.Coverage.Identity() {
+		t.Fatalf("Earthdata 中国区域风险结果无效：snapshot=%+v zones=%d", snapshot, len(zones))
+	}
+	t.Logf("Earthdata 中国区域获取和处理通过：parts=%d bytes=%d zones=%d sha256=%s",
+		len(stored.Provenance.SourceParts), stored.SizeBytes, len(zones), stored.Provenance.SHA256)
 }
 
 func TestLiveEarthdataPipeline(t *testing.T) {

@@ -8,10 +8,14 @@ type pipelinePaths struct {
 	boundary       string
 	rawPolygons    string
 	polygons       string
-	statistics     string
+	levelPolygons  [3]string
+	levelRaster    [3]string
+	statistics     [3]string
 	boundaryErrors string
 	geometryErrors string
 }
+
+var statisticsLevels = [3]int{1, 2, 3}
 
 func vectorClipArguments(input, boundary, output string) []string {
 	return []string{
@@ -52,8 +56,27 @@ func polygonizeArguments(input, output string) []string {
 func statisticsArguments(raster, polygons, output string) []string {
 	return []string{
 		"raster", "zonal-stats", raster, output, "--zones", polygons,
+		"--pixels", "fractional",
 		"--stat", "min", "--stat", "mean", "--stat", "max",
 		"--include-field", "level", "--include-geom", "--output-format", "GeoJSON", "--overwrite",
+	}
+}
+
+func levelFilterArguments(input, output string, level int) []string {
+	return []string{
+		"vector", "filter", "--input-format", "GeoJSON", "--where", "level = " + strconv.Itoa(level),
+		"--output-format", "GeoJSON", "--overwrite", input, output,
+	}
+}
+
+func levelProbabilityArguments(input, classified, output string, level int) []string {
+	value := strconv.Itoa(level)
+	return []string{
+		"raster", "calc", "--input-format", "GTiff", "--input", "X=" + input,
+		"--input", "C=" + classified, "--calc", "((C==" + value + ")*X)+((C!=" + value + ")*-9999)",
+		"--output-data-type", "Float32", "--nodata", "-9999", "--output-format", "GTiff",
+		"--creation-option", "TILED=YES", "--creation-option", "COMPRESS=ZSTD",
+		"--creation-option", "PREDICTOR=3", "--overwrite", "--output", output,
 	}
 }
 

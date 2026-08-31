@@ -79,24 +79,36 @@ func (p *Processor) Process(ctx context.Context, artifact provenance.Artifact,
 	if err != nil {
 		return hazard.Snapshot{}, nil, err
 	}
-	features, err := readFeatures(paths.statistics, p.config.MaxGeoJSON, p.config.MaxZoneCount)
-	if err != nil {
-		return hazard.Snapshot{}, nil, err
+	features := []feature{}
+	if stats.clippedZoneCount > 0 {
+		features, err = readFeatureFiles(paths.statistics[:], statisticsLevels[:],
+			p.config.MaxGeoJSON, p.config.MaxZoneCount)
+		if err != nil {
+			return hazard.Snapshot{}, nil, err
+		}
+		if len(features) != stats.clippedZoneCount {
+			return hazard.Snapshot{}, nil, fmt.Errorf("%w: 统计风险区数量与裁剪结果不一致", domain.ErrInvalidInput)
+		}
 	}
 	snapshot := p.snapshot(artifact, boundary, stats)
 	return snapshot, zones(snapshot, artifact, boundary, features), nil
 }
 
 func newPipelinePaths(directory string) pipelinePaths {
-	return pipelinePaths{
+	paths := pipelinePaths{
 		clipped: filepath.Join(directory, "china-clipped.tif"), classified: filepath.Join(directory, "risk-class.tif"),
 		boundary:       filepath.Join(directory, "china-adm0.geojson"),
 		rawPolygons:    filepath.Join(directory, "risk-polygons-raw.geojson"),
 		polygons:       filepath.Join(directory, "risk-polygons-china.geojson"),
-		statistics:     filepath.Join(directory, "risk-statistics.geojson"),
 		boundaryErrors: filepath.Join(directory, "boundary-errors.gpkg"),
 		geometryErrors: filepath.Join(directory, "geometry-errors.gpkg"),
 	}
+	for index, level := range statisticsLevels {
+		paths.levelPolygons[index] = filepath.Join(directory, fmt.Sprintf("risk-polygons-level-%d.geojson", level))
+		paths.levelRaster[index] = filepath.Join(directory, fmt.Sprintf("risk-probability-level-%d.tif", level))
+		paths.statistics[index] = filepath.Join(directory, fmt.Sprintf("risk-statistics-level-%d.geojson", level))
+	}
+	return paths
 }
 
 type pipelineStats struct {
@@ -116,9 +128,12 @@ func (p *Processor) runPipeline(ctx context.Context, input string,
 	rawCount, clippedCount, err := p.prepareClippedPolygons(ctx, paths)
 	stats := pipelineStats{rawZoneCount: rawCount, clippedZoneCount: clippedCount}
 	if err != nil || clippedCount == 0 {
-		return stats, prepareEmptyStatistics(paths.statistics, clippedCount, err)
+		return stats, err
 	}
-	return stats, p.calculateStatistics(ctx, paths)
+	if err = p.checkGeometry(ctx, paths); err != nil {
+		return stats, err
+	}
+	return stats, p.calculateStatistics(ctx, paths, clippedCount)
 }
 
 func (p *Processor) prepareClassifiedRaster(ctx context.Context, input string,
@@ -165,16 +180,53 @@ func (p *Processor) prepareClippedPolygons(ctx context.Context,
 	return rawCount, clippedCount, err
 }
 
-func (p *Processor) calculateStatistics(ctx context.Context, paths pipelinePaths) error {
-	if _, err := p.run(ctx, paths.clipped,
-		statisticsArguments(paths.clipped, paths.polygons, paths.statistics)); err != nil {
-		return fmt.Errorf("执行 GDAL 分区统计: %w", err)
+func (p *Processor) calculateStatistics(ctx context.Context, paths pipelinePaths, expected int) error {
+	total := 0
+	for index, level := range statisticsLevels {
+		count, err := p.calculateLevelStatistics(ctx, paths, index, level)
+		if err != nil {
+			return err
+		}
+		total += count
 	}
-	return p.checkGeometry(ctx, paths)
+	if total != expected {
+		return fmt.Errorf("%w: 分级风险区数量 %d 与裁剪后数量 %d 不一致", domain.ErrInvalidInput, total, expected)
+	}
+	return nil
+}
+
+func (p *Processor) calculateLevelStatistics(ctx context.Context, paths pipelinePaths,
+	index, level int,
+) (int, error) {
+	if _, err := p.run(ctx, paths.clipped,
+		levelFilterArguments(paths.polygons, paths.levelPolygons[index], level)); err != nil {
+		return 0, fmt.Errorf("筛选第 %d 级风险区: %w", level, err)
+	}
+	count, err := countFeatures(paths.levelPolygons[index], p.config.MaxGeoJSON, p.config.MaxZoneCount)
+	if err != nil || count == 0 {
+		return count, prepareEmptyStatistics(paths.statistics[index], count, err)
+	}
+	if _, err = p.run(ctx, paths.clipped, levelProbabilityArguments(paths.clipped,
+		paths.classified, paths.levelRaster[index], level)); err != nil {
+		return 0, fmt.Errorf("生成第 %d 级概率栅格: %w", level, err)
+	}
+	if _, err = p.run(ctx, paths.clipped, statisticsArguments(paths.levelRaster[index],
+		paths.levelPolygons[index], paths.statistics[index])); err != nil {
+		return 0, fmt.Errorf("执行第 %d 级 GDAL 分区统计: %w", level, err)
+	}
+	statisticsCount, err := countFeatures(paths.statistics[index], p.config.MaxGeoJSON, p.config.MaxZoneCount)
+	if err != nil {
+		return 0, err
+	}
+	if statisticsCount != count {
+		return 0, fmt.Errorf("%w: 第 %d 级统计输出 %d 与输入 %d 不一致",
+			domain.ErrInvalidInput, level, statisticsCount, count)
+	}
+	return count, nil
 }
 
 func (p *Processor) checkGeometry(ctx context.Context, paths pipelinePaths) error {
-	return p.checkGeometryFile(ctx, paths.clipped, paths.statistics,
+	return p.checkGeometryFile(ctx, paths.clipped, paths.polygons,
 		paths.geometryErrors, "风险区")
 }
 
@@ -250,7 +302,7 @@ func (p *Processor) ensureCapabilities(ctx context.Context, workingDir string) e
 	}
 	commands := [][]string{{"raster", "info"}, {"raster", "clip"}, {"raster", "calc"},
 		{"raster", "polygonize"}, {"raster", "zonal-stats"}, {"vector", "clip"},
-		{"vector", "check-geometry"}, {"vector", "info"}}
+		{"vector", "filter"}, {"vector", "check-geometry"}, {"vector", "info"}}
 	for _, command := range commands {
 		arguments := append(append([]string(nil), command...), "--json-usage")
 		if _, err = p.runner.Run(ctx, workingDir, arguments...); err != nil {
@@ -275,13 +327,14 @@ func (p *Processor) snapshot(artifact provenance.Artifact,
 		ID: p.snapshotID(artifact, boundary), HazardType: hazard.TypeLandslide, ModelName: p.ModelName(),
 		ModelVersion: source.DatasetVersion, RunAt: checkedAt, ValidFrom: source.ValidFrom, ValidTo: source.ValidTo,
 		RasterReference:      artifact.Reference + "#sha256=" + source.SHA256,
-		ProbabilitySemantics: "固定 30 弧秒目标网格最近邻导出的日尺度滑坡发生概率模型估计；源网格存在亚像元偏移，等级由 AI-GDM 按严格大于阈值派生",
+		ProbabilitySemantics: "固定 30 弧秒目标网格最近邻导出的日尺度滑坡发生概率模型估计；等级按严格大于阈值派生，边界均值按像元相交比例加权，最小和最大值取相交的同等级像元",
 		Thresholds:           defaultThresholds(), Status: status, Source: source,
 		Coverage: &boundary.Coverage,
 		Limitations: []string{
 			"辅助研判结果，不是中国官方预警",
 			"RunAt 表示 AI-GDM 本地确定性处理时刻，NASA 精确模型运行时刻未知",
 			"数据先按 WGS84 中国外接矩形下载，再按版本化 CHN ADM0 行政边界精确裁剪",
+			"国界处亚像元风险区的均值按几何相交比例加权，最小和最大值取所有相交的同等级像元",
 			"geoBoundaries 公开数据仅用于风险计算范围约束，不作为中国法定国界或官方地图依据",
 			boundaryCountLimitation(stats),
 		},
@@ -306,10 +359,11 @@ func zones(snapshot hazard.Snapshot, artifact provenance.Artifact,
 	inputs := zoneInputReferences(artifact, boundary)
 	values := make([]hazard.RiskZone, 0, len(features))
 	for _, value := range features {
+		minimum, mean, maximum := featureStatistics(value)
 		values = append(values, hazard.RiskZone{
 			ID: zoneID(snapshot.ID, value), SnapshotID: snapshot.ID,
-			Geometry: value.Geometry, Minimum: value.Property.Min, Mean: value.Property.Mean,
-			Maximum: value.Property.Max, Level: riskLevel(value.Property.Level), AreaCalculated: false,
+			Geometry: value.Geometry, Minimum: minimum, Mean: mean,
+			Maximum: maximum, Level: riskLevel(value.Property.Level), AreaCalculated: false,
 			AdminCodes: []string{boundary.Coverage.RegionCode}, InputReferences: append([]string(nil), inputs...),
 			Limitations: []string{"面积、人口、道路和行政区暴露信息将在空间分析阶段计算"},
 		})

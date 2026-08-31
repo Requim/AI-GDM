@@ -41,8 +41,9 @@ func TestProcessBuildsSnapshotAndZones(t *testing.T) {
 	if snapshot.Coverage == nil || snapshot.Coverage.BoundaryID != "CHN-ADM0-1" {
 		t.Fatalf("Coverage = %+v", snapshot.Coverage)
 	}
-	if len(runner.calls) != 9 || !strings.Contains(strings.Join(runner.calls[2], " "), bboxValue(chinaBBox)) ||
-		!strings.Contains(strings.Join(runner.calls[6], " "), "vector clip --input-format GeoJSON --like") {
+	if len(runner.calls) != 13 || !hasCall(runner.calls, "raster clip --input-format GTiff --bbox "+bboxValue(chinaBBox)) ||
+		!hasCall(runner.calls, "vector clip --input-format GeoJSON --like") ||
+		!hasCall(runner.calls, "--pixels fractional") || !hasCall(runner.calls, "((C==2)*X)+((C!=2)*-9999)") {
 		t.Fatalf("Calls = %+v", runner.calls)
 	}
 }
@@ -97,6 +98,79 @@ func TestDecodeFeaturesRejectsInvalidStatistics(t *testing.T) {
 	_, err := decodeFeatures([]byte(payload), 10)
 	if !errors.Is(err, domain.ErrInvalidInput) {
 		t.Fatalf("decodeFeatures() error = %v", err)
+	}
+}
+
+func TestDecodeFeaturesRejectsMissingStatistics(t *testing.T) {
+	payload := strings.Replace(validGeoJSON, `,"min":0.51,"mean":0.62,"max":0.77`, "", 1)
+	_, err := decodeFeatures([]byte(payload), 10)
+	if !errors.Is(err, domain.ErrInvalidInput) || !strings.Contains(err.Error(), "统计字段缺失") {
+		t.Fatalf("decodeFeatures() error = %v", err)
+	}
+}
+
+func TestDecodeFeaturesNormalizesMachinePrecisionMean(t *testing.T) {
+	payload := strings.Replace(validGeoJSON, `"min":0.51,"mean":0.62,"max":0.77`,
+		`"min":0.55325239896774292,"mean":0.55325239896774303,"max":0.55325239896774292`, 1)
+	features, err := decodeFeatures([]byte(payload), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mean, maximum := featureStatistics(features[0])
+	if mean != maximum {
+		t.Fatalf("mean=%0.18f maximum=%0.18f", mean, maximum)
+	}
+}
+
+func TestReadFeatureFilesEnforcesAggregateLimitsAndLevels(t *testing.T) {
+	directory := t.TempDir()
+	paths := []string{filepath.Join(directory, "one.json"), filepath.Join(directory, "two.json")}
+	if _, err := readFeatureFiles([]string{filepath.Join(directory, "missing.json")}, []int{2}, 1024, 1); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file error=%v", err)
+	}
+	for _, path := range paths {
+		if err := os.WriteFile(path, []byte(validGeoJSON), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := readFeatureFiles(paths, []int{2, 2}, int64(len(validGeoJSON)*2-1), 2); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("aggregate bytes error=%v", err)
+	}
+	if _, err := readFeatureFiles(paths, []int{2, 2}, int64(len(validGeoJSON)*2), 1); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("aggregate count error=%v", err)
+	}
+	if _, err := readFeatureFiles(paths[:1], []int{1}, int64(len(validGeoJSON)), 1); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("level mismatch error=%v", err)
+	}
+}
+
+func TestProcessRejectsIncompleteLevelStatistics(t *testing.T) {
+	directory := t.TempDir()
+	input := filepath.Join(directory, "input.tif")
+	if err := os.WriteFile(input, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{geoJSON: emptyGeoJSON}
+	processor := newProcessor(applyDefaults(Config{ArtifactRoot: directory, TemporaryDir: directory}), runner)
+	_, _, err := processor.Process(context.Background(), fixtureArtifact(input), processingBoundaryFixture())
+	if !errors.Is(err, domain.ErrInvalidInput) || !strings.Contains(err.Error(), "统计输出") {
+		t.Fatalf("Process() error=%v", err)
+	}
+}
+
+func TestProcessRejectsStatisticsLevelMismatch(t *testing.T) {
+	directory := t.TempDir()
+	input := filepath.Join(directory, "input.tif")
+	if err := os.WriteFile(input, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wrongLevel := strings.Replace(validGeoJSON,
+		`"level":2,"min":0.51,"mean":0.62,"max":0.77`, `"level":1,"min":0.2,"mean":0.3,"max":0.4`, 1)
+	runner := &recordingRunner{geoJSON: wrongLevel}
+	processor := newProcessor(applyDefaults(Config{ArtifactRoot: directory, TemporaryDir: directory}), runner)
+	_, _, err := processor.Process(context.Background(), fixtureArtifact(input), processingBoundaryFixture())
+	if !errors.Is(err, domain.ErrInvalidInput) || !strings.Contains(err.Error(), "输出等级不一致") {
+		t.Fatalf("Process() error=%v", err)
 	}
 }
 
@@ -195,6 +269,17 @@ func TestVectorClipArgumentsBindBoundaryAndOutputOrder(t *testing.T) {
 	}
 }
 
+func TestLevelStatisticsArgumentsBindClassAndFractionalPixels(t *testing.T) {
+	filter := strings.Join(levelFilterArguments("zones.geojson", "level.geojson", 2), " ")
+	probability := strings.Join(levelProbabilityArguments("risk.tif", "class.tif", "level.tif", 2), " ")
+	statistics := strings.Join(statisticsArguments("level.tif", "level.geojson", "stats.geojson"), " ")
+	if !strings.Contains(filter, "--where level = 2") ||
+		!strings.Contains(probability, "((C==2)*X)+((C!=2)*-9999)") ||
+		!strings.Contains(statistics, "--pixels fractional") {
+		t.Fatalf("filter=%q probability=%q statistics=%q", filter, probability, statistics)
+	}
+}
+
 func TestRasterInfoRejectsEPSG3857(t *testing.T) {
 	payload := strings.Replace(validRasterInfo,
 		`"authority":"EPSG","code":4326`, `"authority":"EPSG","code":3857`, 1)
@@ -236,7 +321,26 @@ func (r *recordingRunner) Run(_ context.Context, _ string, arguments ...string) 
 		}
 		return nil, os.WriteFile(arguments[len(arguments)-1], []byte(payload), 0o600)
 	}
+	if len(arguments) > 1 && arguments[0] == "vector" && arguments[1] == "filter" {
+		payload := emptyGeoJSON
+		if strings.Contains(argumentValue(arguments, "--where"), "2") {
+			payload = validPolygonGeoJSON
+			if r.clippedGeoJSON != "" {
+				payload = r.clippedGeoJSON
+			}
+		}
+		return nil, os.WriteFile(arguments[len(arguments)-1], []byte(payload), 0o600)
+	}
 	return nil, nil
+}
+
+func hasCall(calls [][]string, fragment string) bool {
+	for _, call := range calls {
+		if strings.Contains(strings.Join(call, " "), fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsText(values []string, expected string) bool {

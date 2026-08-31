@@ -13,7 +13,7 @@ const (
 	DefaultBinary       = "gdal"
 	DefaultVersion      = "3.13.3"
 	ModelName           = "NASA LHASA"
-	TransformVersion    = "lhasa-gdal-2-gdal-3.13.3-china-adm0"
+	TransformVersion    = "lhasa-gdal-3-gdal-3.13.3-china-adm0-fractional-stats"
 	defaultMaxGeoJSON   = 128 << 20
 	defaultMaxZoneCount = 100000
 	defaultMaxInput     = 512 << 20

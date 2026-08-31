@@ -21,13 +21,15 @@ type featureCollection struct {
 }
 
 type feature struct {
-	Geometry spatial.Geometry `json:"geometry"`
-	Property struct {
-		Level int     `json:"level"`
-		Min   float64 `json:"min"`
-		Mean  float64 `json:"mean"`
-		Max   float64 `json:"max"`
-	} `json:"properties"`
+	Geometry spatial.Geometry  `json:"geometry"`
+	Property featureProperties `json:"properties"`
+}
+
+type featureProperties struct {
+	Level int      `json:"level"`
+	Min   *float64 `json:"min"`
+	Mean  *float64 `json:"mean"`
+	Max   *float64 `json:"max"`
 }
 
 func readFeatures(path string, maxBytes int64, maxCount int) ([]feature, error) {
@@ -46,6 +48,42 @@ func readFeatures(path string, maxBytes int64, maxCount int) ([]feature, error) 
 	return decodeFeatures(payload, maxCount)
 }
 
+func readFeatureFiles(paths []string, levels []int, maxBytes int64, maxCount int) ([]feature, error) {
+	if len(paths) != len(levels) {
+		return nil, fmt.Errorf("%w: GDAL 分级统计文件配置无效", domain.ErrInvalidInput)
+	}
+	values := make([]feature, 0)
+	remainingBytes := maxBytes
+	for index, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("检查 GDAL 分级统计文件: %w", err)
+		}
+		if !info.Mode().IsRegular() || info.Size() > remainingBytes {
+			return nil, fmt.Errorf("%w: GDAL 分级统计文件类型或总大小无效", domain.ErrInvalidInput)
+		}
+		features, err := readFeatures(path, info.Size(), maxCount-len(values))
+		if err != nil {
+			return nil, err
+		}
+		if err = validateFeatureLevels(features, levels[index]); err != nil {
+			return nil, err
+		}
+		remainingBytes -= info.Size()
+		values = append(values, features...)
+	}
+	return values, nil
+}
+
+func validateFeatureLevels(values []feature, expected int) error {
+	for _, value := range values {
+		if value.Property.Level != expected {
+			return fmt.Errorf("%w: GDAL 分级统计输出等级不一致", domain.ErrInvalidInput)
+		}
+	}
+	return nil
+}
+
 func decodeFeatures(payload []byte, maxCount int) ([]feature, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	var collection featureCollection
@@ -56,21 +94,51 @@ func decodeFeatures(payload []byte, maxCount int) ([]feature, error) {
 		return nil, fmt.Errorf("%w: GDAL GeoJSON 类型或要素数量无效", domain.ErrInvalidInput)
 	}
 	for index := range collection.Features {
-		if err := validateFeature(collection.Features[index]); err != nil {
+		if err := validateFeature(&collection.Features[index]); err != nil {
 			return nil, fmt.Errorf("第 %d 个风险区: %w", index, err)
 		}
 	}
 	return collection.Features, nil
 }
 
-func validateFeature(value feature) error {
+func validateFeature(value *feature) error {
 	if value.Property.Level < 1 || value.Property.Level > 3 {
 		return fmt.Errorf("%w: 风险分类值无效", domain.ErrInvalidInput)
 	}
-	if !validStatistics(value.Property.Level, value.Property.Min, value.Property.Mean, value.Property.Max) {
-		return fmt.Errorf("%w: 分区概率统计无效", domain.ErrInvalidInput)
+	if err := normalizeStatistics(&value.Property); err != nil {
+		return err
 	}
 	return validateGeometry(value.Geometry)
+}
+
+func normalizeStatistics(value *featureProperties) error {
+	if value.Min == nil || value.Mean == nil || value.Max == nil {
+		return fmt.Errorf("%w: 分区概率统计字段缺失", domain.ErrInvalidInput)
+	}
+	minimum, mean, maximum := *value.Min, *value.Mean, *value.Max
+	if invalidNumber(minimum) || invalidNumber(mean) || invalidNumber(maximum) {
+		return fmt.Errorf("%w: 分区概率统计无效", domain.ErrInvalidInput)
+	}
+	const tolerance = 1e-9
+	if mean < minimum && minimum-mean <= tolerance {
+		mean = minimum
+	}
+	if mean > maximum && mean-maximum <= tolerance {
+		mean = maximum
+	}
+	if !validStatistics(value.Level, minimum, mean, maximum) {
+		return fmt.Errorf("%w: 分区概率统计无效", domain.ErrInvalidInput)
+	}
+	value.Min, value.Mean, value.Max = &minimum, &mean, &maximum
+	return nil
+}
+
+func invalidNumber(value float64) bool {
+	return math.IsNaN(value) || math.IsInf(value, 0)
+}
+
+func featureStatistics(value feature) (float64, float64, float64) {
+	return *value.Property.Min, *value.Property.Mean, *value.Property.Max
 }
 
 func riskLevel(value int) hazard.RiskLevel {

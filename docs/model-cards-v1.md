@@ -11,7 +11,7 @@ AI-GDM 的风险等级、路线排序、损失金额和生还评分均由版本�
 | 损失公式 | `ai-gdm-loss-formula-v2` |
 | 生还回放 | `ai-gdm-survival-rules-v1` |
 | AI Authority 封包 | `ai-gdm-authority-v1` |
-| LHASA 栅格转换 | `lhasa-gdal-2-gdal-3.13.3-china-adm0` |
+| LHASA 栅格转换 | `lhasa-gdal-3-gdal-3.13.3-china-adm0-fractional-stats` |
 
 ## 风险分级规则
 
@@ -19,7 +19,7 @@ AI-GDM 的风险等级、路线排序、损失金额和生还评分均由版本�
 - 适用灾种：当前生产数据链仅为 `landslide`。
 - 输入：内容寻址的 LHASA 快照、风险区、来源时效和可用的气象上下文。
 - 输出：风险等级、置信度、触发因素、数据状态和规则版本。
-- 方法：按固定阈值和时效规则确定性计算，不使用 LLM 评分。
+- 方法：按固定阈值和时效规则确定性计算，不使用 LLM 评分；CHN ADM0 边界亚像元使用同等级概率掩膜，均值按几何相交比例加权，最小和最大值取所有相交的同等级像元。
 - 限制：置信度表示数据质量，不是灾害概率。Open-Meteo 只形成 `context_only`，不得提升 LHASA 等级。LHASA 是近实时模型输出而非现场观测；当前阈值是 AI-GDM 演示规则，不是 NASA 或国家正式预警标准。
 
 详细口径见 `docs/risk-policy-v1.md`。
