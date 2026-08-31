@@ -18,13 +18,40 @@ func TestAreaAllowsUnionBelowZoneSum(t *testing.T) {
 	}
 }
 
+func TestAreaAllowsPostGISGeographyRoundingDifference(t *testing.T) {
+	input := validAnalysisInput()
+	input.Zones[0].Area.SquareMeters = 500_000_000_000
+	input.Zones[1].Area.SquareMeters = 419_475_536_209.18
+	input.Area.TotalSquareMeters = 919_479_967_102.69
+	if _, err := NewAnalysis(input); err != nil {
+		t.Fatalf("PostGIS geography 数值误差应被接受: %v", err)
+	}
+}
+
+func TestAreaAllowsDifferenceWithinConfiguredTolerance(t *testing.T) {
+	input := validAnalysisInput()
+	sum := input.Zones[0].Area.SquareMeters + input.Zones[1].Area.SquareMeters
+	input.Area.TotalSquareMeters = sum * (1 + 0.99*areaRelationRelativeTolerance)
+	if _, err := NewAnalysis(input); err != nil {
+		t.Fatalf("配置容差内的面积差异应被接受: %v", err)
+	}
+}
+
+func TestAreaRejectsDifferenceAboveGeographyTolerance(t *testing.T) {
+	input := validAnalysisInput()
+	sum := input.Zones[0].Area.SquareMeters + input.Zones[1].Area.SquareMeters
+	input.Area.TotalSquareMeters = sum * (1 + 1.01*areaRelationRelativeTolerance)
+	_, err := NewAnalysis(input)
+	assertInvalid(t, err)
+}
+
 func TestAreaRejectsImpossibleTotals(t *testing.T) {
 	tests := []struct {
 		name  string
 		total float64
 	}{
-		{name: "above sum", total: 151},
-		{name: "below largest zone", total: 89},
+		{name: "above sum", total: 152},
+		{name: "below largest zone", total: 88},
 		{name: "negative", total: -1},
 		{name: "not finite", total: math.NaN()},
 	}

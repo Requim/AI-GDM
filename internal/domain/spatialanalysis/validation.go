@@ -9,6 +9,12 @@ import (
 	"github.com/Requim/AI-GDM/internal/domain"
 )
 
+const (
+	areaRelationAbsoluteTolerance = 1e-6
+	// PostGIS geography 对分区逐项面积和合并面积的计算路径不同，允许百分之一以内的相对误差。
+	areaRelationRelativeTolerance = 1e-2
+)
+
 // Validate 校验空间分析的完整性、规范顺序和确定性标识。
 func (a Analysis) Validate() error {
 	if err := validateAnalysisContent(a); err != nil {
@@ -99,7 +105,7 @@ func validateAreaRelation(total float64, zones []ZoneResult) error {
 	if !finite(sum) {
 		return invalid("风险区面积之和不是有限数值")
 	}
-	tolerance := math.Max(1e-6, sum*1e-9)
+	tolerance := math.Max(areaRelationAbsoluteTolerance, sum*areaRelationRelativeTolerance)
 	if total <= 0 || total > sum+tolerance || total+tolerance < maximum {
 		return invalid("合并面积与风险区面积之和不一致")
 	}
