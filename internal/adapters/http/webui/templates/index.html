@@ -265,16 +265,22 @@
         aria-labelledby="assessment-title">
         <div class="section-heading assessment-heading">
           <div>
-            <p>DETERMINISTIC ASSESSMENT</p>
-            <h2 id="assessment-title">智能评估与历史回放</h2>
+            <p>DECISION SUPPORT</p>
+            <h2 id="assessment-title">灾损估算、历史案例与 AI 解读</h2>
           </div>
-          <span>确定性数值与非权威 AI 解释严格隔离，全部结果需人工复核</span>
+          <span>先由固定规则计算，再由 AI 帮你读懂；AI 不会更改金额、评分或优先级</span>
         </div>
 
+        <ul class="assessment-purpose-grid" aria-label="三个功能的用途">
+          <li><span>当前风险快照</span><strong>估算条件直接损失</strong><p>假设当前风险情景成立，估算风险区内道路和设施的直接物理损失范围。</p></li>
+          <li><span>历史案例</span><strong>检查规则如何评分</strong><p>回放公开历史事件生成的合成匿名场景，查看各类输入如何影响辅助评分。</p></li>
+          <li><span>AI 解读</span><strong>解释前两类结果</strong><p>可选择条件灾损估算或历史案例回放，生成摘要、依据、限制和人工核对建议。</p></li>
+        </ul>
+
         <div class="assessment-tabs" role="tablist" aria-label="评估类型">
-          <button id="assessment-tab-loss" type="button" role="tab" aria-selected="true" aria-controls="assessment-panel-loss" data-assessment-tab="loss">损失评估</button>
-          <button id="assessment-tab-survival" type="button" role="tab" aria-selected="false" aria-controls="assessment-panel-survival" data-assessment-tab="survival">历史生还回放</button>
-          <button id="assessment-tab-ai" type="button" role="tab" aria-selected="false" aria-controls="assessment-panel-ai" data-assessment-tab="ai">AI 解释</button>
+          <button id="assessment-tab-loss" type="button" role="tab" aria-selected="true" aria-controls="assessment-panel-loss" data-assessment-tab="loss">条件灾损估算</button>
+          <button id="assessment-tab-survival" type="button" role="tab" aria-selected="false" aria-controls="assessment-panel-survival" data-assessment-tab="survival">历史案例回放</button>
+          <button id="assessment-tab-ai" type="button" role="tab" aria-selected="false" aria-controls="assessment-panel-ai" data-assessment-tab="ai">AI 通俗解读</button>
         </div>
 
         <div class="assessment-workspace">
@@ -282,43 +288,44 @@
             <div id="loss-assessment-form" class="assessment-control-column" role="group" aria-labelledby="assessment-tab-loss">
               <div class="assessment-panel-heading">
                 <span>01</span>
-                <div><strong>服务端权威损失输入</strong><small>浏览器仅提交风险快照标识</small></div>
+                <div><strong>当前风险数据</strong><small>通常由风险地图自动带入</small></div>
               </div>
-              <label>风险快照 ID
-                  <input id="loss-snapshot-id" type="text" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}" autocomplete="off" placeholder="等待风险地图或手动输入受约束 ID" required>
+              <label>风险数据快照（通常无需手动填写）
+                  <input id="loss-snapshot-id" type="text" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}" autocomplete="off" placeholder="等待风险地图自动填入；仅排障时手动输入" required>
               </label>
-              <p class="assessment-control-note">风险区、行政区、去重面积、道路、设施和已批准基线均由服务端读取。缺少真实输入时返回数据不足，不使用演示数值补齐。</p>
-              <button id="loss-assessment-run" class="primary-command" type="button" disabled>计算确定性损失区间</button>
+              <p class="assessment-control-note"><strong>它的作用：</strong>根据当前风险区，估算道路和设施的直接物理损失。系统不会用演示数据补齐空缺；基础数据不够时只说明缺少什么。</p>
+              <button id="loss-assessment-run" class="primary-command" type="button" disabled>估算条件直接损失</button>
             </div>
 
             <div class="assessment-result-column" aria-label="损失评估结果">
               <div class="assessment-panel-heading">
                 <span>02</span>
-                <div><strong>确定性结果</strong><small id="loss-assessment-id">尚未生成评估</small></div>
+                <div><strong>直接损失范围</strong><small id="loss-assessment-id">尚未生成估算</small></div>
               </div>
-              <div id="loss-assessment-status" class="assessment-state assessment-state-idle" role="status" aria-live="polite">请选择当前有效风险快照。</div>
-              <div class="loss-amount-grid" aria-label="人民币损失区间">
-                <div><span>低位</span><strong id="loss-low-amount">--</strong></div>
-                <div><span>中位</span><strong id="loss-central-amount">--</strong></div>
-                <div><span>高位</span><strong id="loss-high-amount">--</strong></div>
+              <div id="loss-assessment-status" class="assessment-state assessment-state-idle" role="status" aria-live="polite">等待有效风险数据；风险地图加载成功后会自动填入。</div>
+              <p class="assessment-result-note">三档表示损坏程度假设，不是风险等级；金额是在当前风险情景成立的前提下，估算的道路和设施直接物理损失。它没有乘以灾害发生概率，因此不是概率加权的期望损失，也不是现场核损、保险赔付或法定灾损金额。</p>
+              <div class="loss-amount-grid" aria-label="道路和设施直接物理损失估算范围">
+                <div><span>较轻损坏<small>条件情景</small></span><strong id="loss-low-amount">--</strong></div>
+                <div><span>中等损坏<small>条件情景</small></span><strong id="loss-central-amount">--</strong></div>
+                <div><span>较重损坏<small>条件情景</small></span><strong id="loss-high-amount">--</strong></div>
               </div>
               <dl class="assessment-metrics">
-                <div><dt>评估状态</dt><dd id="loss-result-state">未知</dd></div>
-                <div><dt>影响面积</dt><dd id="loss-impact-area">未知</dd></div>
-                <div><dt>影响人口</dt><dd id="loss-population">未知</dd></div>
-                <div><dt>道路长度</dt><dd id="loss-road-length">未知</dd></div>
-                <div><dt>设施数量</dt><dd id="loss-facilities">未知</dd></div>
-                <div><dt>公式版本</dt><dd id="loss-formula-version">未提供</dd></div>
+                <div><dt>数据完整度<small>能否计算，以及输入质量</small></dt><dd id="loss-result-state">未知</dd></div>
+                <div><dt>风险覆盖面积<small>风险区去重后的面积</small></dt><dd id="loss-impact-area">未知</dd></div>
+                <div><dt>风险区内人口<small>不是伤亡人数</small></dt><dd id="loss-population">未知</dd></div>
+                <div><dt>风险区内道路<small>不是已损毁长度</small></dt><dd id="loss-road-length">未知</dd></div>
+                <div><dt>风险区内设施<small>不是已损毁数量</small></dt><dd id="loss-facilities">未知</dd></div>
+                <div><dt>计算规则版本<small>用于复核同一套算法</small></dt><dd id="loss-formula-version">未提供</dd></div>
               </dl>
             </div>
 
             <aside class="assessment-audit-column" aria-label="损失来源与限制">
               <div class="assessment-panel-heading">
                 <span>03</span>
-                <div><strong>来源与限制</strong><small>完整、脱敏且有界</small></div>
+                <div><strong>数据依据与未计算项</strong><small>核对来源、缺口和适用边界</small></div>
               </div>
-              <div id="loss-source-list" class="assessment-source-list"><p>尚未获得来源审计。</p></div>
-              <ul id="loss-limitation-list" class="assessment-limitations"><li>损失金额不包含无法由当前公开基线量化的间接损失。</li></ul>
+              <div id="loss-source-list" class="assessment-source-list"><p>完成估算后，这里会列出风险快照、空间分析、人口、道路、设施和成本基线来源。</p></div>
+              <ul id="loss-limitation-list" class="assessment-limitations"><li>当前金额只计算道路和风险区内设施的直接物理损失，不含建筑、人员伤亡、停工等间接损失。</li></ul>
             </aside>
           </section>
 
@@ -326,41 +333,42 @@
             <div class="assessment-control-column">
               <div class="assessment-panel-heading">
                 <span>01</span>
-                <div><strong>公开历史案例</strong><small>合成匿名场景，不接收真实人员资料</small></div>
+                <div><strong>历史合成场景</strong><small>由公开历史事件生成，不用于实时人员评估</small></div>
               </div>
-              <label>历史案例
+              <label>选择一个公开历史案例
                 <select id="survival-case-select"><option value="">正在读取案例目录...</option></select>
               </label>
-              <div id="survival-case-summary" class="scenario-summary"><p>请选择公开历史案例查看合成输入。</p></div>
-              <button id="survival-assessment-run" class="primary-command" type="button" disabled>运行历史回放</button>
+              <div id="survival-case-summary" class="scenario-summary"><p>选择后会展示匿名化的合成场景，不会读取或录入真实人员信息。</p></div>
+              <button id="survival-assessment-run" class="primary-command" type="button" disabled>回放规则如何评分</button>
             </div>
 
             <div class="assessment-result-column" aria-label="生还历史回放结果">
               <div class="assessment-panel-heading">
                 <span>02</span>
-                <div><strong>确定性辅助评分</strong><small id="survival-scenario-id">尚未绑定合成场景</small></div>
+                <div><strong>历史场景规则结果</strong><small id="survival-scenario-id">尚未绑定合成场景</small></div>
               </div>
-              <div id="survival-assessment-status" class="assessment-state assessment-state-idle" role="status" aria-live="polite">仅支持公开历史案例与合成匿名场景回放。</div>
+              <div id="survival-assessment-status" class="assessment-state assessment-state-idle" role="status" aria-live="polite">这是模型演示和复核工具，不能用于判断现实中的某个人。</div>
+              <p class="assessment-result-note">固定规则会按失联时间、输入完整度、环境和受困信号加减分。分数与参考概率只用于历史场景复核，不是临床生还预测。</p>
               <div class="survival-score-band">
-                <div><span>辅助评分</span><strong id="survival-score">--</strong></div>
-                <div><span>概率区间</span><strong id="survival-probability">--</strong></div>
-                <div><span>搜救优先级</span><strong id="survival-priority">--</strong></div>
+                <div><span>规则综合分<small>0-100，各类输入按不同权重加减分</small></span><strong id="survival-score">--</strong></div>
+                <div><span>参考概率范围<small>宽区间，不是个人概率</small></span><strong id="survival-probability">--</strong></div>
+                <div><span>建议复核顺序<small>供人工排序，不能自动放弃</small></span><strong id="survival-priority">--</strong></div>
               </div>
               <dl class="assessment-metrics">
-                <div><dt>评分等级</dt><dd id="survival-score-band">未知</dd></div>
-                <div><dt>概率等级</dt><dd id="survival-probability-band">未知</dd></div>
-                <div><dt>模型版本</dt><dd id="survival-model-version">未提供</dd></div>
-                <div><dt>人工复核</dt><dd id="survival-review-status">必须复核</dd></div>
+                <div><dt>综合分档位<small>规则分数的文字分组</small></dt><dd id="survival-score-band">未知</dd></div>
+                <div><dt>概率档位<small>参考区间的文字分组</small></dt><dd id="survival-probability-band">未知</dd></div>
+                <div><dt>规则版本<small>用于复现同一次计算</small></dt><dd id="survival-model-version">未提供</dd></div>
+                <div><dt>复核要求<small>所有结果都需专业人员确认</small></dt><dd id="survival-review-status">必须复核</dd></div>
               </dl>
             </div>
 
             <aside class="assessment-audit-column" aria-label="历史回放因素与限制">
               <div class="assessment-panel-heading">
                 <span>03</span>
-                <div><strong>因素与科学限制</strong><small>不得用于实时人员决策</small></div>
+                <div><strong>哪些因素影响了结果</strong><small>同时列出科学限制</small></div>
               </div>
-              <ul id="survival-factor-list" class="assessment-factor-list"><li>尚未运行历史回放。</li></ul>
-              <ul id="survival-limitation-list" class="assessment-limitations"><li>概率未经个体校准，不能替代专业搜救判断。</li></ul>
+              <ul id="survival-factor-list" class="assessment-factor-list"><li>回放后会列出哪些输入让分数升高或降低。</li></ul>
+              <ul id="survival-limitation-list" class="assessment-limitations"><li>参考概率没有针对个人做临床校准，不能替代现场搜救判断。</li></ul>
             </aside>
           </section>
 
@@ -368,37 +376,42 @@
             <form id="ai-report-form" class="assessment-control-column">
               <div class="assessment-panel-heading">
                 <span>01</span>
-                <div><strong>权威分析引用</strong><small>不接受浏览器自由 JSON</small></div>
+                <div><strong>选择要解释的结果</strong><small>支持条件灾损估算和历史案例回放</small></div>
               </div>
-              <label>确定性结果
-                <select id="ai-analysis-reference"><option value="">先完成损失评估或历史回放</option></select>
+              <label>要解释哪一项
+                <select id="ai-analysis-reference"><option value="">先完成条件灾损估算或历史案例回放</option></select>
               </label>
-              <p class="assessment-control-note">系统只会按权威分析类型生成固定、非个人化检索词，不接收姓名、电话、详细地址或自由 JSON，也不会把浏览器文本作为确定性结论。</p>
-              <button id="ai-report-run" class="primary-command" type="submit" disabled>生成非权威解释</button>
+              <div class="ai-supported-results" aria-label="AI 可解释的结果">
+                <p><strong>条件灾损估算：</strong>说明金额区间、数据依据和未计算项。</p>
+                <p><strong>历史案例回放：</strong>说明评分因素、参考概率和使用限制。</p>
+              </div>
+              <p class="assessment-control-note">AI 只把已保存的固定规则结果翻译成摘要和人工建议，不会重新计算，也不能修改金额、分数、概率范围或优先级。</p>
+              <button id="ai-report-run" class="primary-command" type="submit" disabled>生成通俗说明</button>
             </form>
 
             <div class="assessment-result-column ai-narrative-column" aria-label="非权威 AI 解释">
               <div class="assessment-panel-heading">
                 <span>02</span>
-                <div><strong>非权威 AI 解释</strong><small>不得覆盖左侧确定性数值</small></div>
+                <div><strong>非权威 AI 通俗说明</strong><small>只解释，不改动固定结果</small></div>
               </div>
-              <div id="ai-report-status" class="assessment-state assessment-state-idle" role="status" aria-live="polite">请选择服务端已保存的确定性结果。</div>
+              <div id="ai-report-status" class="assessment-state assessment-state-idle" role="status" aria-live="polite">先在前两个页签完成任一结果，再回来选择解释。</div>
+              <p class="ai-boundary-note" role="note">AI 文字可能出错或与固定结果冲突；请以前两个页签显示的固定规则结果为准。</p>
               <article id="ai-report-narrative" class="ai-narrative">
-                <h3>尚未生成解释</h3>
-                <p>模型只可汇总证据、限制和人工行动建议。</p>
+                <h3>尚未生成通俗说明</h3>
+                <p>可输出结果概述、主要依据、使用限制和建议人工核对事项。</p>
               </article>
             </div>
 
             <aside class="assessment-audit-column" aria-label="AI 证据与审计">
               <div class="assessment-panel-heading">
                 <span>03</span>
-                <div><strong>证据与审计</strong><small>来源链接只允许严格 HTTPS</small></div>
+                <div><strong>解释依据与记录</strong><small>保留结果编号、摘要和公开证据</small></div>
               </div>
               <dl class="assessment-audit-meta">
-                <div><dt>分析类型</dt><dd id="ai-authority-kind">未提供</dd></div>
-                <div><dt>分析标识</dt><dd id="ai-authority-id">未提供</dd></div>
-                <div><dt>分析摘要</dt><dd id="ai-analysis-digest">未提供</dd></div>
-                <div><dt>解释来源</dt><dd id="ai-provider-status">未调用</dd></div>
+                <div><dt>解释对象</dt><dd id="ai-authority-kind">未提供</dd></div>
+                <div><dt>结果编号</dt><dd id="ai-authority-id">未提供</dd></div>
+                <div><dt>结果校验摘要</dt><dd id="ai-analysis-digest">未提供</dd></div>
+                <div><dt>AI 服务状态</dt><dd id="ai-provider-status">未调用</dd></div>
               </dl>
               <div id="ai-evidence-list" class="assessment-source-list"><p>尚未获得搜索证据。</p></div>
             </aside>

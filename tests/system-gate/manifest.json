@@ -10,7 +10,7 @@
     {"id": "evacuation-postgis", "script": "scripts/validate-evacuation.sh", "mode": "required"},
     {"id": "evacuation-chromium", "script": "scripts/validate-evacuation-browser.sh", "mode": "required", "passCount": 42, "auditMarker": "疏散工作台 fail-closed 浏览器回归通过"},
     {"id": "assessment-ui", "script": "scripts/validate-assessment-ui.sh", "mode": "required"},
-    {"id": "assessment-chromium", "script": "scripts/validate-assessment-browser.sh", "mode": "required", "passCount": 120, "auditMarker": "评估界面 Playwright 结果审计通过: passed=120 failed=0 skipped=0"},
+    {"id": "assessment-chromium", "script": "scripts/validate-assessment-browser.sh", "mode": "required", "passCount": 121, "auditMarker": "评估界面 Playwright 结果审计通过: passed=121 failed=0 skipped=0"},
     {"id": "validate-go", "script": "scripts/validate-go.sh", "mode": "required"},
     {"id": "live-earthdata", "script": "scripts/validate-earthdata.sh", "mode": "live", "liveEnv": "AI_GDM_SYSTEM_LIVE_EARTHDATA"},
     {"id": "live-weather", "script": "scripts/validate-weather.sh", "mode": "live", "liveEnv": "AI_GDM_SYSTEM_LIVE_WEATHER"},

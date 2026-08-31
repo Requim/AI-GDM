@@ -1,6 +1,23 @@
 .assessment-section { margin-top: 34px; border-top: 1px solid var(--line); }
 .assessment-heading { align-items: center; }
 
+.assessment-purpose-grid {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  list-style: none;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  background: #101714;
+}
+
+.assessment-purpose-grid > li { min-width: 0; padding: 14px 16px; border-right: 1px solid var(--line); }
+.assessment-purpose-grid > li:last-child { border-right: 0; }
+.assessment-purpose-grid span { display: block; color: var(--cyan); font: 10px/1.4 Consolas, monospace; }
+.assessment-purpose-grid strong { display: block; margin-top: 5px; color: var(--ink); font-size: 12px; }
+.assessment-purpose-grid p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+
 .assessment-tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -102,6 +119,15 @@
   line-height: 1.6;
 }
 
+.assessment-control-note strong { color: var(--amber); font-weight: 650; }
+
+.assessment-result-note {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
 .assessment-state {
   min-height: 40px;
   margin-bottom: 16px;
@@ -130,7 +156,8 @@
 .loss-amount-grid div,
 .survival-score-band div { min-width: 0; padding: 16px 12px; border-right: 1px solid var(--line); }
 .loss-amount-grid div:last-child, .survival-score-band div:last-child { border-right: 0; }
-.loss-amount-grid span, .survival-score-band span { display: block; color: var(--muted); font-size: 10px; }
+.loss-amount-grid span, .survival-score-band span { display: block; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.loss-amount-grid span small, .survival-score-band span small { display: block; margin-top: 3px; color: #7f928b; font-size: 10px; }
 .loss-amount-grid strong, .survival-score-band strong {
   display: block;
   margin-top: 7px;
@@ -146,12 +173,13 @@
   min-height: 48px;
   padding: 9px 0;
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
+  grid-template-columns: 132px minmax(0, 1fr);
   gap: 12px;
   border-bottom: 1px solid rgba(52, 65, 60, .7);
 }
 
-.assessment-metrics dt, .assessment-audit-meta dt { color: var(--muted); font-size: 10px; }
+.assessment-metrics dt, .assessment-audit-meta dt { color: var(--muted); font-size: 10px; line-height: 1.4; }
+.assessment-metrics dt small { display: block; margin-top: 3px; color: #71847d; font-size: 10px; line-height: 1.4; }
 .assessment-metrics dd, .assessment-audit-meta dd { margin: 0; color: var(--ink); font: 12px/1.5 Consolas, monospace; overflow-wrap: anywhere; }
 
 .assessment-source-list { display: grid; gap: 8px; }
@@ -180,10 +208,15 @@
 .scenario-summary dd { margin: 0; color: var(--ink); font: 11px/1.5 Consolas, monospace; overflow-wrap: anywhere; }
 
 .ai-narrative { border-left: 3px solid var(--cyan); padding: 16px 18px; background: #101a18; }
+.ai-boundary-note { margin: 0 0 12px; padding: 10px 12px; border-left: 3px solid var(--amber); color: var(--amber); background: #211c12; font-size: 11px; line-height: 1.55; }
 .ai-narrative h3 { margin: 0 0 10px; font-size: 15px; }
 .ai-narrative p { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.65; white-space: pre-wrap; }
 .ai-narrative ul { margin: 0 0 14px; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .ai-narrative-label { display: block; margin-bottom: 6px; color: var(--cyan); font: 10px Consolas, monospace; }
+
+.ai-supported-results { margin: 0 0 16px; border-top: 1px solid var(--line); }
+.ai-supported-results p { margin: 0; padding: 9px 0; border-bottom: 1px solid rgba(52, 65, 60, .7); color: var(--muted); font-size: 10px; line-height: 1.5; }
+.ai-supported-results strong { color: var(--ink); font-weight: 650; }
 
 @media (max-width: 1180px) {
   .assessment-panel { grid-template-columns: 310px minmax(0, 1fr); }
@@ -192,6 +225,9 @@
 }
 
 @media (max-width: 780px) {
+  .assessment-purpose-grid { grid-template-columns: 1fr; }
+  .assessment-purpose-grid > li { border-right: 0; border-bottom: 1px solid var(--line); }
+  .assessment-purpose-grid > li:last-child { border-bottom: 0; }
   .assessment-panel { grid-template-columns: 1fr; }
   .assessment-control-column, .assessment-result-column { border-right: 0; border-bottom: 1px solid var(--line); }
   .assessment-audit-column { grid-column: auto; }

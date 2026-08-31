@@ -275,8 +275,8 @@ run_gate assessment-ui scripts/validate-assessment-ui.sh required '' false null 
 ASSESSMENT_E2E_TREE_SHA=$SECURITY_TREE_SHA
 ASSESSMENT_E2E_SOURCE_SHA256=$(assessment_source_sha256 "$SNAPSHOT_DIR")
 export ASSESSMENT_E2E_TREE_SHA ASSESSMENT_E2E_SOURCE_SHA256
-run_gate assessment-chromium scripts/validate-assessment-browser.sh required '' false 120 \
-  '评估界面 Playwright 结果审计通过: passed=120 failed=0 skipped=0' \
+run_gate assessment-chromium scripts/validate-assessment-browser.sh required '' false 121 \
+  '评估界面 Playwright 结果审计通过: passed=121 failed=0 skipped=0' \
   sh "$SNAPSHOT_DIR/scripts/validate-assessment-browser.sh"
 unset ASSESSMENT_E2E_TREE_SHA ASSESSMENT_E2E_SOURCE_SHA256
 run_gate validate-go scripts/validate-go.sh required '' false null '' \

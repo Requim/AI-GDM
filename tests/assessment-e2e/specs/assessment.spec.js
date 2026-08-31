@@ -14,6 +14,28 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("评估区解释当前灾损、历史回放与 AI 解读的用途和边界", async ({ page, request }) => {
+  await setScenario(request, "success");
+  await openAssessment(page);
+
+  await expect(page.locator("#assessment-title")).toHaveText("灾损估算、历史案例与 AI 解读");
+  await expect(page.locator(".assessment-purpose-grid")).toContainText("估算条件直接损失");
+  await expect(page.locator(".assessment-purpose-grid")).toContainText("检查规则如何评分");
+  await expect(page.locator(".assessment-purpose-grid")).toContainText("解释前两类结果");
+  await expect(page.locator("#assessment-panel-loss")).toContainText("不是风险等级");
+  await expect(page.locator("#assessment-panel-loss")).toContainText("不是伤亡人数");
+  await expect(page.locator("#assessment-panel-loss")).toContainText("不是概率加权的期望损失");
+
+  await selectTab(page, "survival");
+  await expect(page.locator("#assessment-panel-survival")).toContainText("不是临床生还预测");
+  await expect(page.locator("#assessment-panel-survival")).toContainText("各类输入按不同权重加减分");
+  await selectTab(page, "ai");
+  await expect(page.locator("#assessment-panel-ai")).toContainText("条件灾损估算");
+  await expect(page.locator("#assessment-panel-ai")).toContainText("历史案例回放");
+  await expect(page.locator("#assessment-panel-ai")).toContainText("不会重新计算");
+  await expect(page.locator("#assessment-panel-ai")).toContainText("AI 文字可能出错或与固定结果冲突");
+});
+
 test("风险地图不可用且快照输入为空时损失按钮禁用且不得发送 POST", async ({ page, request }) => {
   await setScenario(request, "success");
   await openAssessment(page);
@@ -21,7 +43,7 @@ test("风险地图不可用且快照输入为空时损失按钮禁用且不得�
   await expect(page.locator("#loss-snapshot-id")).toHaveValue("");
   await expect(page.locator("#loss-assessment-run")).toBeDisabled();
   await page.locator("#loss-snapshot-id").press("Enter");
-  await expect(page.locator("#loss-assessment-status")).toContainText("请等待风险地图加载有效快照");
+  await expect(page.locator("#loss-assessment-status")).toContainText("请等待风险地图加载有效数据");
   await expectFixtureCall(request, "loss_post", 0);
 });
 
@@ -41,8 +63,7 @@ test("损失评估仅提交 snapshotId，并跟随 Location 与 sources 审计",
   await expect(page.locator("#loss-population")).toContainText("50");
   await expect(page.locator("#loss-road-length")).toContainText("10");
   await expect(page.locator("#loss-facilities")).toContainText("2");
-  await expect(page.locator("#loss-population")).toContainText("已提供");
-  await expect(page.locator("#loss-population")).toContainText("不适用");
+  await expect(page.locator("#loss-population")).toContainText("来自当前风险分析");
   await expect(page.locator("#loss-road-length")).toContainText("国家级");
   await expect(page.locator("#loss-facilities")).toContainText("国家级");
   await expect(page.locator("#loss-source-list")).toContainText("spatial-analysis-e2e-v1");
@@ -110,7 +131,7 @@ test("供应商省略限制贯穿投影证据、置信度和可见限制", async
   await submitLoss(page);
 
   const limitation = "跳过非闭合设施 way 42，设施数量可能低估";
-  await expect(page.locator("#loss-result-state")).toHaveText("可用 / 中");
+  await expect(page.locator("#loss-result-state")).toHaveText("可计算 · 输入质量：中等");
   await expect(page.locator("#loss-limitation-list")).toContainText(limitation);
   const assessmentID = await currentLossAssessmentID(page);
   const projection = await fetchLossProjectionInPage(page, assessmentID);
@@ -150,10 +171,9 @@ test("全国投影使用的国家级基线在每个损失分项中显式展示",
 
   await submitLoss(page);
 
-  await expect(page.locator("#loss-population")).toContainText("不适用");
+  await expect(page.locator("#loss-population")).toContainText("来自当前风险分析");
   for (const selector of ["#loss-road-length", "#loss-facilities"]) {
-    await expect(page.locator(selector)).toContainText("已提供");
-    await expect(page.locator(selector)).toContainText("国家级");
+    await expect(page.locator(selector)).toContainText("国家级基线");
   }
 });
 
@@ -365,7 +385,7 @@ test("修改 snapshotId 会使迟到损失响应失效并恢复按钮", async ({
   await expect(page.locator("#loss-assessment-status")).toContainText("旧损失评估已清除");
   await expect(page.locator("#loss-assessment-run")).toBeEnabled();
   await page.waitForTimeout(900);
-  await expect(page.locator("#loss-assessment-id")).toHaveText("尚未生成评估");
+  await expect(page.locator("#loss-assessment-id")).toHaveText("尚未生成估算");
   await expect(page.locator("#loss-low-amount")).toHaveText("--");
 });
 
@@ -482,8 +502,8 @@ test("案例详情成功后 503 清空旧详情、因素和限制", async ({ pag
 
   await expect(page.locator("#survival-assessment-status")).toHaveClass(/assessment-state-error/);
   await expect(page.locator("#survival-case-summary")).not.toContainText("Oso");
-  await expect(page.locator("#survival-factor-list")).toContainText("尚未运行历史回放");
-  await expect(page.locator("#survival-limitation-list")).toContainText("尚未读取案例或评估限制");
+  await expect(page.locator("#survival-factor-list")).toContainText("回放后会列出哪些输入让分数升高或降低");
+  await expect(page.locator("#survival-limitation-list")).toContainText("选择案例后会展示这类结果不能如何使用");
 });
 
 test("历史回放成功后 503 清旧且可在供应商恢复后重试", async ({ page, request }) => {
@@ -626,7 +646,7 @@ test("生还 Authority 扩展字段、usage 精确 schema 与 SHA 校验通过",
 
   await expectSurvivalAIRequest(pending);
   await expect(page.locator("#ai-report-status")).toHaveClass(/assessment-state-replay/);
-  await expect(page.locator("#ai-authority-kind")).toHaveText("历史生还回放");
+  await expect(page.locator("#ai-authority-kind")).toHaveText("历史案例回放");
   await expect(page.locator("#ai-authority-id")).toHaveText(SURVIVAL_ASSESSMENT_ID);
   await expect(page.locator("#ai-analysis-digest")).toHaveText(/^[0-9a-f]{64}$/);
 });
@@ -681,7 +701,7 @@ test("无搜索与 LLM 供应商时返回空数组并保留确定性引用", asy
   await runAI(page);
 
   await expect(page.locator("#ai-report-status")).toHaveClass(/assessment-state-warning/);
-  await expect(page.locator("#ai-report-status")).toContainText("解释供应商不可用");
+  await expect(page.locator("#ai-report-status")).toContainText("AI 服务暂不可用");
   await expect(page.locator("#ai-report-narrative")).toContainText("暂无解释性说明");
   await expect(page.locator("#ai-evidence-list")).toContainText("没有通过校验的实时搜索证据");
   await expect(page.locator("#ai-authority-id")).toHaveText(SURVIVAL_ASSESSMENT_ID);
@@ -700,7 +720,7 @@ test("慢搜索在 AI 页面预算前降级并保留 Authority", async ({ page, 
   expect(Date.now() - startedAt).toBeGreaterThanOrEqual(6_500);
   await expectSurvivalAIRequest(pending);
   await expect(page.locator("#ai-report-status")).toHaveClass(/assessment-state-warning/);
-  await expect(page.locator("#ai-report-status")).toContainText("搜索证据不可用");
+  await expect(page.locator("#ai-report-status")).toContainText("公开搜索证据暂不可用");
   await expect(page.locator("#ai-authority-id")).toHaveText(SURVIVAL_ASSESSMENT_ID);
   await expect(page.locator("#ai-evidence-list")).toContainText("没有通过校验的实时搜索证据");
   await expect(page.locator("#ai-report-narrative")).toContainText("实时搜索供应商超时");
@@ -807,7 +827,7 @@ test("AI 引用切换使迟到响应失效并恢复按钮", async ({ page, reque
   await pending;
   await page.locator("#ai-analysis-reference").selectOption(`survival_assessment:${SURVIVAL_ASSESSMENT_ID}`);
 
-  await expect(page.locator("#ai-report-status")).toContainText("权威引用已改变");
+  await expect(page.locator("#ai-report-status")).toContainText("已切换要解释的结果");
   await expect(page.locator("#ai-report-run")).toBeEnabled();
   await page.waitForTimeout(900);
   await expect(page.locator("#ai-authority-id")).toHaveText("未提供");
@@ -830,9 +850,9 @@ test("AI 响应进入 WebCrypto 校验后切换引用仍丢弃旧结果", async 
   await expect(page.locator("#ai-report-run")).toBeEnabled();
   await page.evaluate(() => window.__releaseAIDigest());
 
-  await expect(page.locator("#ai-report-status")).toContainText("权威引用已改变");
+  await expect(page.locator("#ai-report-status")).toContainText("已切换要解释的结果");
   await expect(page.locator("#ai-authority-id")).toHaveText("未提供");
-  await expect(page.locator("#ai-report-narrative")).toContainText("尚未生成解释");
+  await expect(page.locator("#ai-report-narrative")).toContainText("尚未生成通俗说明");
   await expect(page.locator("#ai-report-narrative")).not.toContainText("确定性损失金额已经修改为 0 元");
   await expect(page.locator("#ai-report-run")).toBeEnabled();
 });
@@ -972,10 +992,11 @@ test("矛盾 AI narrative 不会覆盖确定性金额与状态", async ({ page, 
 
   await runAI(page);
 
+  await expect(page.locator(".ai-boundary-note")).toContainText("请以前两个页签显示的固定规则结果为准");
   await expect(page.locator("#ai-report-narrative")).toContainText("确定性损失金额已经修改为 0 元");
   expect(await lossValues(page)).toEqual(amounts);
   await expect(page.locator("#loss-assessment-id")).toHaveText(lossID);
-  await expect(page.locator("#loss-result-state")).toContainText("可用");
+  await expect(page.locator("#loss-result-state")).toContainText("可计算");
 });
 
 for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }]) {
@@ -987,12 +1008,14 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 
     await prepareSurvivalReference(page);
     await selectTab(page, "ai");
     await runAI(page);
-    await page.locator("#assessment").scrollIntoViewIfNeeded();
-
-    const diagnostics = await assessmentLayout(page);
-    expect(diagnostics.sectionOverflow).toBeLessThanOrEqual(2);
-    expect(diagnostics.controlCollisions).toEqual([]);
-    expect(diagnostics.textOverflow).toEqual([]);
+    for (const tab of ["loss", "survival", "ai"]) {
+      await selectTab(page, tab);
+      await page.locator(`#assessment-panel-${tab}`).scrollIntoViewIfNeeded();
+      const diagnostics = await assessmentLayout(page);
+      expect(diagnostics.sectionOverflow, `${tab} 页签横向溢出`).toBeLessThanOrEqual(2);
+      expect(diagnostics.controlCollisions, `${tab} 页签控件重叠`).toEqual([]);
+      expect(diagnostics.textOverflow, `${tab} 页签文字溢出`).toEqual([]);
+    }
   });
 }
 
@@ -1080,11 +1103,11 @@ async function delayAIDigest(page) {
 async function expectLossFailClosed(page, message) {
   await expect(page.locator("#loss-assessment-status")).toHaveClass(/assessment-state-error/);
   if (message) await expect(page.locator("#loss-assessment-status")).toContainText(message);
-  await expect(page.locator("#loss-assessment-id")).toHaveText("尚未生成评估");
+  await expect(page.locator("#loss-assessment-id")).toHaveText("尚未生成估算");
   await expect(page.locator("#loss-low-amount")).toHaveText("--");
   await expect(page.locator("#loss-central-amount")).toHaveText("--");
   await expect(page.locator("#loss-high-amount")).toHaveText("--");
-  await expect(page.locator("#loss-source-list")).toContainText("尚未获得来源审计");
+  await expect(page.locator("#loss-source-list")).toContainText("完成估算后");
   await expect(page.locator(`#ai-analysis-reference option[value^="loss_assessment:"]`)).toHaveCount(0);
 }
 
@@ -1093,7 +1116,7 @@ async function expectAIFailClosed(page, message) {
   if (message) await expect(page.locator("#ai-report-status")).toContainText(message);
   await expect(page.locator("#ai-authority-id")).toHaveText("未提供");
   await expect(page.locator("#ai-analysis-digest")).toHaveText("未提供");
-  await expect(page.locator("#ai-report-narrative")).toContainText("尚未生成解释");
+  await expect(page.locator("#ai-report-narrative")).toContainText("尚未生成通俗说明");
   await expect(page.locator("#ai-evidence-list")).toContainText("尚未获得搜索证据");
 }
 

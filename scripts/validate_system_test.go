@@ -146,7 +146,7 @@ func assertSystemGateFragments(t *testing.T, script string) {
 
 func assertBrowserSentinels(t *testing.T, manifest systemManifest) {
 	t.Helper()
-	expected := map[string]int{"risk-map-chromium": 19, "evacuation-chromium": 42, "assessment-chromium": 120}
+	expected := map[string]int{"risk-map-chromium": 19, "evacuation-chromium": 42, "assessment-chromium": 121}
 	for _, gate := range manifest.Gates {
 		count, exists := expected[gate.ID]
 		if !exists {

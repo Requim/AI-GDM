@@ -155,7 +155,7 @@
   async function runLoss() {
     const snapshotID = elements.lossInput.value.trim();
     if (snapshotID === "") {
-      clearLossResult("请等待风险地图加载有效快照，或手动输入已知有效的快照 ID。", "warning");
+      clearLossResult("请等待风险地图加载有效数据；仅在排障时手动输入已知快照编号。", "warning");
       return;
     }
     if (!validID(snapshotID) || !elements.lossInput.checkValidity()) {
@@ -168,7 +168,7 @@
     updateLossButton();
     clearLossValues();
     removeReference("loss_assessment");
-    setAssessmentState(elements.lossStatus, "loading", "正在读取服务端权威输入并计算损失区间...");
+    setAssessmentState(elements.lossStatus, "loading", "正在读取风险区、道路、设施和已批准基线，并计算直接损失范围...");
     try {
       const created = await createLossAssessment(snapshotID);
       if (request !== state.lossRequest || elements.lossInput.value.trim() !== snapshotID) return;
@@ -197,7 +197,7 @@
 
   function bindRiskSnapshot(detail) {
     if (!detail || detail.available !== true || !validID(detail.snapshotId)) {
-      clearAutoBoundSnapshot("风险地图当前没有可用于评估的快照，请等待刷新或手动输入已知有效 ID。");
+      clearAutoBoundSnapshot("风险地图当前没有可用于估算的数据，请等待刷新；仅在排障时手动输入已知快照编号。");
       return;
     }
     const current = elements.lossInput.value.trim();
@@ -215,8 +215,8 @@
       return;
     }
     const message = detail.state === "fallback" ?
-      "已绑定风险地图最后成功快照，评估结果需人工复核。" :
-      "已绑定风险地图当前有效快照，可计算损失区间。";
+      "已使用风险地图最后一次成功数据，估算结果需要重点复核时效。" :
+      "已读取风险地图当前有效数据，可以估算直接损失。";
     clearLossResult(message);
     state.lossAutoSnapshotID = detail.snapshotId;
     state.lossAutoSnapshotState = detail.state;
@@ -285,13 +285,13 @@
   function renderLossResult(result, audit) {
     const available = result.status === "available";
     setAssessmentState(elements.lossStatus, available ? "current" : "warning", available ?
-      "确定性损失区间已保存；金额和影响范围来自服务端权威输入。" :
-      "损失评估输入不完整，结果仅用于说明数据不足。");
+      "估算完成。金额是道路和设施的直接物理损失范围，请结合右侧数据依据和未计算项复核。" :
+      "基础数据不齐，当前不能给出可靠金额；右侧会说明数据缺口。");
     elements.lossID.textContent = result.id;
     elements.lossLow.textContent = formatCNY(result.conditionalLowCents);
     elements.lossCentral.textContent = formatCNY(result.conditionalCentralCents);
     elements.lossHigh.textContent = formatCNY(result.conditionalHighCents);
-    elements.lossResultState.textContent = lossStatusText(result.status) + " / " + bandText(result.confidenceBand);
+    elements.lossResultState.textContent = lossStatusText(result.status) + " · 输入质量：" + confidenceBandText(result.confidenceBand);
     elements.lossArea.textContent = metricText(result.impactAreaSquareMeters, "平方米", result.metrics.impactArea);
     elements.lossPopulation.textContent = metricText(result.affectedPopulation, "人", result.metrics.affectedPopulation);
     elements.lossRoads.textContent = metricText(result.affectedRoadMeters, "米", result.metrics.affectedRoads);
@@ -299,7 +299,7 @@
     elements.lossFormula.textContent = result.formulaVersion;
     renderLossSources(result, audit);
     renderLossLimitations(result, audit);
-    rememberReference("loss_assessment", result.id, "损失评估 / " + result.id);
+    rememberReference("loss_assessment", result.id, "条件灾损估算 / " + result.id);
   }
 
   function clearLossResult(message, status) {
@@ -308,11 +308,11 @@
     clearLossValues();
     removeReference("loss_assessment");
     updateLossButton();
-    setAssessmentState(elements.lossStatus, status || "idle", message || "请选择当前有效风险快照。");
+    setAssessmentState(elements.lossStatus, status || "idle", message || "等待风险地图提供当前有效数据。");
   }
 
   function clearLossValues() {
-    elements.lossID.textContent = "尚未生成评估";
+    elements.lossID.textContent = "尚未生成估算";
     elements.lossLow.textContent = "--";
     elements.lossCentral.textContent = "--";
     elements.lossHigh.textContent = "--";
@@ -323,9 +323,9 @@
     elements.lossFacilities.textContent = "未知";
     elements.lossFormula.textContent = "未提供";
     const empty = document.createElement("p");
-    empty.textContent = "尚未获得来源审计。";
+    empty.textContent = "完成估算后，这里会列出风险数据、空间分析和基线来源。";
     elements.lossSources.replaceChildren(empty);
-    renderTextList(elements.lossLimitations, [], "损失金额不包含当前基线无法量化的间接损失。");
+    renderTextList(elements.lossLimitations, [], "当前金额只计算道路和风险区内设施的直接物理损失。");
   }
 
   function validateLossPayload(payload, snapshotID) {
@@ -897,14 +897,17 @@
 
   function metricText(value, unit, metric) {
     const formatted = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
-    return formatted + " " + unit + " · " + (metric.provided ? "已提供" : "未提供") +
-      "/" + lossStatusText(metric.status) + " · " + baselineLevelText(metric.baselineLevel);
+    if (!metric.provided || metric.status !== "available") return formatted + " " + unit + " · 数据不足";
+    const source = metric.baselineLevel === "not_applicable" ? "来自当前风险分析" :
+      "使用" + baselineLevelText(metric.baselineLevel);
+    return formatted + " " + unit + " · " + source;
   }
 
-  function lossStatusText(value) { return value === "available" ? "可用" : value === "insufficient_data" ? "数据不足" : "未知"; }
+  function lossStatusText(value) { return value === "available" ? "可计算" : value === "insufficient_data" ? "数据不足" : "未知"; }
   function baselineLevelText(value) {
-    return ({ not_applicable: "不适用", regional: "区域级", national: "国家级", mixed: "混合层级" })[value] || "未知";
+    return ({ not_applicable: "当前分析", regional: "区域级基线", national: "国家级基线", mixed: "混合层级基线" })[value] || "未知基线";
   }
+  function confidenceBandText(value) { return ({ very_low: "很低", low: "较低", moderate: "中等", high: "较高" })[value] || "未知"; }
   function confidenceBand(value) { return value >= 0.8 ? "high" : value >= 0.5 ? "moderate" : value >= 0.25 ? "low" : "very_low"; }
   function validFractionBand(low, middle, high) {
     return finiteRange(low, 0, 1) && finiteRange(middle, low, 1) && finiteRange(high, middle, 1);
@@ -918,7 +921,7 @@
       runAIReport();
     });
     elements.aiReference.addEventListener("change", function () {
-      clearAIResult("权威引用已改变，旧解释已清除。");
+      clearAIResult("已切换要解释的结果，上一份 AI 说明已清除。");
     });
   }
 
@@ -926,13 +929,13 @@
     const selected = elements.aiReference.value;
     const reference = parseReference(selected);
     if (!reference) {
-      clearAIResult("请选择服务端已保存的确定性结果。");
+      clearAIResult("请先完成条件灾损估算或历史案例回放，再选择要解释的结果。");
       return;
     }
     const request = ++state.aiRequest;
     elements.aiButton.disabled = true;
     clearAIValues();
-    setAssessmentState(elements.aiStatus, "loading", "正在按权威引用生成非权威解释...");
+    setAssessmentState(elements.aiStatus, "loading", "正在读取固定规则结果，并生成不改变原数值的通俗说明...");
     try {
       const payload = await requestJSON(root.dataset.aiEndpoint, {
         method: "POST", body: { analysisRef: reference, evidenceLimit: 5 },
@@ -1169,9 +1172,9 @@
     const narrative = result.narrative;
     const complete = narrative.available && result.evidenceAvailable;
     const status = complete ? "replay" : "warning";
-    const message = complete ? "非权威 AI 解释已生成；确定性数值保持不变。" : narrative.available ?
-      "实时搜索证据不可用；已保留服务端确定性分析与非权威解释。" :
-      "解释供应商不可用；已保留服务端确定性分析，未生成替代结论。";
+    const message = complete ? "非权威 AI 通俗说明已生成，原有金额、评分、概率范围和优先级均未改变。" : narrative.available ?
+      "公开搜索证据暂不可用；已保留固定规则结果和非权威 AI 通俗说明。" :
+      "AI 服务暂不可用；固定规则结果仍然保留，系统没有生成替代结论。";
     setAssessmentState(elements.aiStatus, status, message);
     elements.aiAuthorityKind.textContent = authorityKindText(result.authority.kind);
     elements.aiAuthorityID.textContent = result.authority.id;
@@ -1184,14 +1187,14 @@
   function renderNarrative(narrative, limitations) {
     const nodes = [];
     const title = document.createElement("h3");
-    title.textContent = narrative.available ? "非权威解释" : "暂无解释性说明";
+    title.textContent = narrative.available ? "结果概述" : "暂无通俗说明";
     nodes.push(title);
     const summary = document.createElement("p");
     summary.textContent = narrative.summary;
     nodes.push(summary);
-    appendNarrativeList(nodes, "关键发现", narrative.keyFindings);
-    appendNarrativeList(nodes, "人工行动建议", narrative.actions);
-    appendNarrativeList(nodes, "模型限制", narrative.caveats.concat(limitations));
+    appendNarrativeList(nodes, "主要信息", narrative.keyFindings);
+    appendNarrativeList(nodes, "建议人工核对", narrative.actions);
+    appendNarrativeList(nodes, "使用限制", narrative.caveats.concat(limitations));
     elements.aiNarrative.replaceChildren.apply(elements.aiNarrative, nodes);
   }
 
@@ -1234,7 +1237,7 @@
     state.aiRequest++;
     clearAIValues();
     elements.aiButton.disabled = !parseReference(elements.aiReference.value);
-    setAssessmentState(elements.aiStatus, status || "idle", message || "请选择服务端已保存的确定性结果。");
+    setAssessmentState(elements.aiStatus, status || "idle", message || "请先完成条件灾损估算或历史案例回放。");
   }
 
   function clearAIValues() {
@@ -1243,9 +1246,9 @@
     elements.aiDigest.textContent = "未提供";
     elements.aiProviderStatus.textContent = "未调用";
     const title = document.createElement("h3");
-    title.textContent = "尚未生成解释";
+    title.textContent = "尚未生成通俗说明";
     const paragraph = document.createElement("p");
-    paragraph.textContent = "模型只可汇总证据、限制和人工行动建议。";
+    paragraph.textContent = "可输出结果概述、主要依据、使用限制和建议人工核对事项。";
     elements.aiNarrative.replaceChildren(title, paragraph);
     const empty = document.createElement("p");
     empty.textContent = "尚未获得搜索证据。";
@@ -1319,7 +1322,7 @@
     if (!detail) return;
     const request = ++state.replayRequest;
     elements.replayButton.disabled = true;
-    setAssessmentState(elements.survivalStatus, "loading", "正在运行确定性历史回放...");
+    setAssessmentState(elements.survivalStatus, "loading", "正在用固定规则回放历史合成场景...");
     clearSurvivalValues();
     try {
       const endpoint = root.dataset.survivalCasesEndpoint.replace(/\/cases$/, "") +
@@ -1330,7 +1333,7 @@
       if (request !== state.replayRequest || state.caseDetail !== detail) return;
       renderReplay(replay);
       rememberReference("survival_assessment", replay.assessmentId,
-        "历史回放 / " + detail.event.adminArea + " / " + replay.assessment.modelVersion);
+        "历史案例回放 / " + detail.event.adminArea + " / " + replay.assessment.modelVersion);
     } catch (error) {
       if (request !== state.replayRequest) return;
       removeReference("survival_assessment");
@@ -1599,7 +1602,7 @@
 
   function renderReplay(replay) {
     const value = replay.assessment;
-    setAssessmentState(elements.survivalStatus, "replay", "公开历史案例与合成匿名场景回放完成；结果强制要求人工复核。" );
+    setAssessmentState(elements.survivalStatus, "replay", "历史合成场景回放完成。分数仅说明固定规则如何响应这些输入，必须人工复核。" );
     elements.scenarioID.textContent = replay.scenarioId;
     elements.score.textContent = String(value.score) + " / 100";
     elements.probability.textContent = percent(value.probabilityLow) + " - " + percent(value.probabilityHigh);
@@ -1637,7 +1640,7 @@
     updateReplayAvailability();
     if (!state.caseDetail) return;
     if (state.modelCardState === "ready") {
-      setAssessmentState(elements.survivalStatus, "replay", "公开历史案例与合成匿名场景已就绪；尚未运行回放。");
+      setAssessmentState(elements.survivalStatus, "replay", "历史合成场景已就绪，可以查看固定规则如何评分。");
       return;
     }
     if (state.modelCardState === "error") {
@@ -1651,7 +1654,7 @@
     state.replayRequest++;
     removeReference("survival_assessment");
     clearSurvivalValues();
-    setAssessmentState(elements.survivalStatus, "idle", message || "尚未运行历史回放。" );
+    setAssessmentState(elements.survivalStatus, "idle", message || "尚未回放历史合成场景。" );
   }
 
   function clearSurvivalValues() {
@@ -1662,8 +1665,8 @@
     elements.probabilityBand.textContent = "未知";
     elements.modelVersion.textContent = "未提供";
     elements.reviewStatus.textContent = "必须复核";
-    renderTextList(elements.factors, [], "尚未运行历史回放。");
-    renderTextList(elements.survivalLimitations, [], "尚未读取案例或评估限制。");
+    renderTextList(elements.factors, [], "回放后会列出哪些输入让分数升高或降低。");
+    renderTextList(elements.survivalLimitations, [], "选择案例后会展示这类结果不能如何使用。");
   }
 
   function replaceOptions(values) {
@@ -1689,7 +1692,7 @@
   function refreshReferences(selectedKind) {
     const current = elements.aiReference.value;
     const options = [];
-    if (state.references.size === 0) options.push({ value: "", label: "先完成损失评估或历史回放" });
+    if (state.references.size === 0) options.push({ value: "", label: "先完成条件灾损估算或历史案例回放" });
     state.references.forEach(function (value) { options.push({ value: value.kind + ":" + value.id, label: value.label }); });
     const nodes = options.map(function (value) {
       const option = document.createElement("option");
@@ -1704,7 +1707,7 @@
       elements.aiReference.value = preferredValue;
     }
     elements.aiButton.disabled = state.references.size === 0;
-    clearAIResult("权威引用列表已更新，请重新生成解释。");
+    clearAIResult("可解释结果列表已更新，请选择一项生成通俗说明。");
   }
 
   function renderTextList(container, values, emptyText) {
@@ -1976,6 +1979,6 @@
   function reportedCountText(value) { return value === null ? "未知 / 未按统一口径披露" : String(value); }
   function priorityText(value) { return ({ routine: "常规", elevated: "提高", urgent: "紧急", immediate: "立即" })[value] || value; }
   function bandText(value) { return ({ very_low: "很低", low: "低", moderate: "中", high: "高", very_high: "很高" })[value] || value; }
-  function authorityKindText(value) { return ({ hazard_snapshot: "风险快照", evacuation_route: "疏散路线", loss_assessment: "损失评估", survival_assessment: "历史生还回放" })[value] || "未知"; }
+  function authorityKindText(value) { return ({ hazard_snapshot: "风险快照", evacuation_route: "疏散路线", loss_assessment: "条件灾损估算", survival_assessment: "历史案例回放" })[value] || "未知"; }
   function errorMessage(error) { return error && error.message ? error.message : "接口暂时不可用"; }
 })();
