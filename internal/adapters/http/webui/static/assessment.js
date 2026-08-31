@@ -22,6 +22,8 @@
     "道路条件损失参数来自西藏吉隆藏布流域案例并按历史欧元汇率换算，跨区域外推不确定性高",
     "结果用于辅助研判，不替代法定灾损核定"
   ];
+  const LOSS_LAST_SUCCESS_STALE =
+    "风险与暴露投影已过期，当前仅使用最近 72 小时内最后一次成功数据生成研究参考区间，不代表实时情况";
   const AUTHORITY_SCHEMAS = {
     hazard_snapshot: "ai-gdm-authority-hazard-v1",
     evacuation_route: "ai-gdm-authority-route-v1",
@@ -196,13 +198,17 @@
 
   function syncRiskSnapshot() {
     const riskMap = document.getElementById("risk-map");
-    if (!riskMap || !riskMap.dataset.currentSnapshotId) return;
-    bindRiskSnapshot({ available: true, snapshotId: riskMap.dataset.currentSnapshotId,
-      state: riskMap.dataset.currentSnapshotState });
+    if (!riskMap) return;
+    const current = riskMap.dataset.currentSnapshotId;
+    const reference = riskMap.dataset.referenceSnapshotId;
+    if (!current && !reference) return;
+    bindRiskSnapshot({ available: Boolean(current), referenceEligible: Boolean(reference),
+      snapshotId: current || reference, state: riskMap.dataset.currentSnapshotState });
   }
 
   function bindRiskSnapshot(detail) {
-    if (!detail || detail.available !== true || !validID(detail.snapshotId)) {
+    const usable = detail && (detail.available === true || detail.referenceEligible === true);
+    if (!usable || !validID(detail.snapshotId)) {
       clearAutoBoundSnapshot("风险地图当前没有可用于估算的数据，请等待刷新；仅在排障时手动输入已知快照编号。");
       return;
     }
@@ -220,7 +226,9 @@
       updateLossButton();
       return;
     }
-    const message = detail.state === "fallback" ?
+    const message = detail.referenceEligible === true ?
+      "已绑定最近 72 小时内最后一次成功快照，只能生成很低置信度的非实时研究参考区间。" :
+      detail.state === "fallback" ?
       "已使用风险地图最后一次成功数据，估算结果需要重点复核时效。" :
       "已绑定风险地图当前有效快照，可以估算直接损失。";
     clearLossResult(message);
@@ -290,14 +298,16 @@
 
   function renderLossResult(result, audit) {
     const available = result.status === "available";
+    const stale = staleLossReference(result);
     setAssessmentState(elements.lossStatus, available ? "current" : "warning", available ?
       "估算完成。金额是道路和设施的直接物理损失范围，请结合右侧数据依据和未计算项复核。" :
-      "局部热点研究参考区间已生成。金额仅覆盖道路案例参数，不能外推为全国或法定灾损。");
+      stale ? "最后成功数据研究参考区间已生成。风险与暴露投影已过期，结果不代表实时情况。" :
+        "局部热点研究参考区间已生成。金额仅覆盖道路案例参数，不能外推为全国或法定灾损。");
     elements.lossID.textContent = result.id;
     elements.lossLow.textContent = formatCNY(result.conditionalLowCents);
     elements.lossCentral.textContent = formatCNY(result.conditionalCentralCents);
     elements.lossHigh.textContent = formatCNY(result.conditionalHighCents);
-    elements.lossResultState.textContent = lossStatusText(result.status) + " · 输入质量：" + confidenceBandText(result.confidenceBand);
+    elements.lossResultState.textContent = lossStatusText(result) + " · 输入质量：" + confidenceBandText(result.confidenceBand);
     elements.lossArea.textContent = metricText(result.impactAreaSquareMeters, "平方米", result.metrics.impactArea);
     elements.lossPopulation.textContent = metricText(result.affectedPopulation, "人", result.metrics.affectedPopulation);
     elements.lossRoads.textContent = metricText(result.affectedRoadMeters, "米", result.metrics.affectedRoads);
@@ -305,7 +315,8 @@
     elements.lossFormula.textContent = result.formulaVersion;
     renderLossSources(result, audit);
     renderLossLimitations(result, audit);
-    const referenceLabel = available ? "条件灾损估算" : "局部热点研究参考区间";
+    const referenceLabel = available ? "条件灾损估算" : stale ?
+      "最后成功数据研究参考区间" : "局部热点研究参考区间";
     rememberReference("loss_assessment", result.id, referenceLabel + " / " + result.id);
   }
 
@@ -355,12 +366,13 @@
     validateLossAmounts(value);
     validateLossTotals(value);
     validateLossMetrics(value.metrics, value.status);
-    const bindings = validateLossEvidence(value.evidence, value);
     value.inputReferences = validateLossReferences(value.inputReferences, "损失输入引用");
     value.includedAssets = validateEnumArray(value.includedAssets, ["building", "road", "facility"], "计入资产");
     value.excludedLosses = validateTextArray(value.excludedLosses, 1000, 4096, "排除损失");
     value.limitations = validateTextArray(value.limitations, 1000, 4096, "损失限制");
-    const requiredLimitations = requiredLossLimitations(value.status);
+    validateStaleLossReference(value);
+    const bindings = validateLossEvidence(value.evidence, value);
+    const requiredLimitations = requiredLossLimitations(value);
     if (!sameStringArray(value.includedAssets, bindings.includedAssets) ||
       !sameStringArray(value.inputReferences, bindings.inputReferences) ||
       !requiredLimitations.every(function (item) { return value.limitations.includes(item); }) ||
@@ -490,7 +502,7 @@
       Date.parse(value.validFrom) >= Date.parse(value.validTo) || Date.parse(value.runAt) > Date.parse(result.calculatedAt) ||
       Date.parse(value.validTo) <= Date.parse(result.calculatedAt)) throw new Error("损失快照证据无效或已过期");
     validateLossSource(value.source, undefined, result.calculatedAt);
-    if (value.source.stale || !strictUTC(value.source.validTo, false) ||
+    if ((value.source.stale && !staleLossReference(result)) || !strictUTC(value.source.validTo, false) ||
       Date.parse(value.source.validTo) <= Date.parse(result.calculatedAt)) throw new Error("损失快照来源已过期");
   }
 
@@ -564,6 +576,7 @@
     let expectedConfidence = evidence.spatialAnalysis.projectionLimitations.length > 0 ?
       Math.min(coverageConfidence, 0.79) : coverageConfidence;
     if (result.status === "reference_only") expectedConfidence = Math.min(expectedConfidence, 0.49);
+    if (staleLossReference(result)) expectedConfidence = Math.min(expectedConfidence, 0.24);
     if (!approximatelyEqual(sumQuantity(population), result.affectedPopulation) ||
       !approximatelyEqual(sumQuantity(roads), result.affectedRoadMeters) ||
       !approximatelyEqual(sumQuantity(facilities), result.affectedFacilities) ||
@@ -870,7 +883,7 @@
 
   function renderLossLimitations(result, audit) {
     const values = uniqueTextValues(result.limitations.concat(result.excludedLosses, audit.limitations));
-    const requiredLimitations = requiredLossLimitations(result.status);
+    const requiredLimitations = requiredLossLimitations(result);
     const required = requiredLimitations.filter(function (value) { return values.includes(value); });
     const visible = required.concat(values.filter(function (value) {
       return !requiredLimitations.includes(value);
@@ -950,12 +963,25 @@
     return formatted + " " + unit + " · " + source;
   }
 
-  function requiredLossLimitations(status) {
-    return status === "reference_only" ? LOSS_REFERENCE_LIMITATIONS : LOSS_AVAILABLE_LIMITATIONS;
+  function requiredLossLimitations(result) {
+    const required = result.status === "reference_only" ? LOSS_REFERENCE_LIMITATIONS.slice() : LOSS_AVAILABLE_LIMITATIONS.slice();
+    if (staleLossReference(result)) required.push(LOSS_LAST_SUCCESS_STALE);
+    return required;
+  }
+  function staleLossReference(value) {
+    return value && value.status === "reference_only" && Array.isArray(value.limitations) &&
+      value.limitations.includes(LOSS_LAST_SUCCESS_STALE);
+  }
+  function validateStaleLossReference(value) {
+    if (value.limitations.includes(LOSS_LAST_SUCCESS_STALE) &&
+      (!staleLossReference(value) || value.confidence > 0.24 || value.confidenceBand !== "very_low")) {
+      throw new Error("最后成功数据降级状态或置信度无效");
+    }
   }
   function lossStatusText(value) {
-    return value === "available" ? "可计算" : value === "reference_only" ? "局部热点研究参考区间" :
-      value === "insufficient_data" ? "数据不足" : "未知";
+    return value.status === "available" ? "可计算" : staleLossReference(value) ? "最后成功数据研究参考区间" :
+      value.status === "reference_only" ? "局部热点研究参考区间" :
+        value.status === "insufficient_data" ? "数据不足" : "未知";
   }
   function baselineLevelText(value) {
     return ({ not_applicable: "当前分析", regional: "区域级基线", national: "国家级基线",

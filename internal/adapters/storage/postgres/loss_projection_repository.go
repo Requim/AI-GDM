@@ -144,7 +144,7 @@ func preflightLossProjection(ctx context.Context, tx pgx.Tx, snapshotID, analysi
 		return lossProjectionBudget{}, domain.ErrNotFound
 	}
 	value, err := scanLossProjectionBudget(tx.QueryRow(ctx, lossProjectionBudgetSQL,
-		snapshotID, analysisID, now))
+		snapshotID, analysisID, now, now.Add(-loss.MaxReferenceProjectionStaleness)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return lossProjectionBudget{}, lossProjectionMissing("没有可用空间分析")
 	}
@@ -540,8 +540,8 @@ const lossProjectionBudgetSQL = `WITH target_analysis AS (
     FROM target_analysis sa JOIN spatial_exposure_projections ep ON ep.analysis_id=sa.id
     WHERE sa.status IN ('area_only','partial','available')
 		AND ep.complete=TRUE AND ep.collected_at<=$3
-		AND ep.valid_from<=$3 AND ep.valid_to>$3
-	ORDER BY ep.collected_at DESC,ep.id DESC LIMIT 1
+		AND ep.valid_from<=$3 AND ep.valid_to>=$4
+	ORDER BY (ep.valid_to>$3) DESC,sa.calculated_at DESC,ep.collected_at DESC,ep.id DESC LIMIT 1
 ), zone_stats AS (
     SELECT COUNT(pz.zone_id)::BIGINT AS zone_count,
         COUNT(pz.zone_id) FILTER (WHERE JSONB_TYPEOF(pz.admin_codes)='array'

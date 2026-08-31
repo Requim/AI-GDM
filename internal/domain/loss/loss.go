@@ -177,6 +177,10 @@ const (
 	LimitationReferenceRoadOnly = "研究参考金额仅计算道路；人口和设施仅作暴露背景，未货币化"
 	// LimitationReferenceTransfer 明确参考参数的地域和换算限制。
 	LimitationReferenceTransfer = "道路条件损失参数来自西藏吉隆藏布流域案例并按历史欧元汇率换算，跨区域外推不确定性高"
+	// LimitationLastSuccessStale 明确当前结果来自已过期但仍在降级窗口内的最后成功数据。
+	LimitationLastSuccessStale = "风险与暴露投影已过期，当前仅使用最近 72 小时内最后一次成功数据生成研究参考区间，不代表实时情况"
+	// MaxStaleReferenceConfidence 限制最后成功数据降级结果的最高置信度。
+	MaxStaleReferenceConfidence = 0.24
 )
 
 // Validate 校验风险区暴露记录的数值、单位和来源。
@@ -243,6 +247,10 @@ func validateAssessmentCore(a Assessment) error {
 	if a.Status == AssessmentReferenceOnly && (a.Confidence >= 0.5 ||
 		(a.ConfidenceBand != "low" && a.ConfidenceBand != "very_low")) {
 		return fmt.Errorf("%w: 研究参考损失评估置信度过高", domain.ErrInvalidInput)
+	}
+	if containsString(a.Limitations, LimitationLastSuccessStale) &&
+		(a.Status != AssessmentReferenceOnly || a.Confidence > MaxStaleReferenceConfidence || a.ConfidenceBand != "very_low") {
+		return fmt.Errorf("%w: 最后成功数据降级状态或置信度无效", domain.ErrInvalidInput)
 	}
 	if err := validateStringList("损失评估输入引用", a.InputReferences, true); err != nil {
 		return err

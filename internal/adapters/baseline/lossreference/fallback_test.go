@@ -46,6 +46,25 @@ func TestFallbackReaderUsesReferenceOnlyForNotFound(t *testing.T) {
 	}
 }
 
+func TestFallbackReaderForcesReferenceForLastSuccessData(t *testing.T) {
+	primaryCalled := false
+	reader := NewFallback(baselineReaderFunc(func(context.Context,
+		applicationloss.BaselineQuery,
+	) (lossdomain.BaselineSet, error) {
+		primaryCalled = true
+		return lossdomain.BaselineSet{Version: "approved-v1"}, nil
+	}))
+	query := mixedQuery()
+	query.ReferenceOnly = true
+	got, err := reader.BaselineSet(context.Background(), query)
+	if err != nil {
+		t.Fatalf("强制读取研究参考失败: %v", err)
+	}
+	if primaryCalled || got.Costs[0].Status != lossdomain.BaselineDemoOnly {
+		t.Fatalf("最后成功数据未绕过正式基线: primary=%t status=%s", primaryCalled, got.Costs[0].Status)
+	}
+}
+
 func TestFallbackReaderDoesNotMaskPrimaryFailure(t *testing.T) {
 	want := errors.New("database unavailable")
 	reader := NewFallback(baselineReaderFunc(func(context.Context,

@@ -8,6 +8,7 @@
   const MAX_GEOMETRY_BYTES = 512 * 1024;
   const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
   const MAX_EXPIRY_TIMER_MS = 60 * 60 * 1000;
+  const MAX_LOSS_REFERENCE_AGE_MS = 72 * 60 * 60 * 1000;
   const RISK_SNAPSHOT_EVENT = "ai-gdm:risk-snapshot";
   const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
   const STRICT_UTC_RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
@@ -349,6 +350,20 @@
       const remaining = validTo - Date.now();
       if (remaining <= 0) {
         renderExpiredRisk(data);
+        scheduleReferenceExpiry(data, validTo);
+        return;
+      }
+      expiryTimer = window.setTimeout(check, Math.min(remaining + 25, MAX_EXPIRY_TIMER_MS));
+    };
+    check();
+  }
+
+  function scheduleReferenceExpiry(data, validTo) {
+    const check = function () {
+      if (activeData !== data) return;
+      const remaining = validTo + MAX_LOSS_REFERENCE_AGE_MS - Date.now();
+      if (remaining <= 0) {
+        publishRiskSnapshot(data, "expired");
         return;
       }
       expiryTimer = window.setTimeout(check, Math.min(remaining + 25, MAX_EXPIRY_TIMER_MS));
@@ -411,11 +426,14 @@
     const snapshot = data && data.snapshot;
     const available = Boolean(snapshot && validSnapshotID(snapshot.id) &&
       (state === "current" || state === "fallback"));
-    const snapshotID = available ? snapshot.id : "";
-    root.dataset.currentSnapshotId = snapshotID;
+    const referenceEligible = Boolean(snapshot && validSnapshotID(snapshot.id) && state === "expired" &&
+      Date.now() - requireValidTo(data) <= MAX_LOSS_REFERENCE_AGE_MS);
+    const snapshotID = available || referenceEligible ? snapshot.id : "";
+    root.dataset.currentSnapshotId = available ? snapshot.id : "";
     root.dataset.currentSnapshotState = state;
+    root.dataset.referenceSnapshotId = referenceEligible ? snapshot.id : "";
     document.dispatchEvent(new CustomEvent(RISK_SNAPSHOT_EVENT, {
-      detail: { available: available, snapshotId: snapshotID, state: state }
+      detail: { available: available, referenceEligible: referenceEligible, snapshotId: snapshotID, state: state }
     }));
   }
 

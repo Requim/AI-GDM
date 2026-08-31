@@ -62,7 +62,9 @@ func (e *fixtureLossEstimator) Estimate(ctx context.Context,
 		return lossdomain.Assessment{}, err
 	}
 	var baselines applicationloss.BaselineSetReader = fixtureBaselineReader{value: fixtureBaselineSet(now, name)}
-	if strings.HasPrefix(name, "loss_reference_") {
+	if staleLossScenario(name) {
+		baselines = lossreference.NewFallback(baselines)
+	} else if strings.HasPrefix(name, "loss_reference_") {
 		baselines = lossreference.New()
 	}
 	service, err := applicationloss.NewService(
@@ -371,6 +373,8 @@ func applyLossMutation(name string, data map[string]any) bool {
 		lossEvidenceArray(data, "costBaselines")[0].(map[string]any)["status"] = "approved"
 	case "loss_reference_bad_vulnerability_level":
 		lossEvidenceArray(data, "vulnerabilities")[0].(map[string]any)["baselineLevel"] = "national"
+	case "loss_reference_bad_stale_confidence":
+		data["confidence"], data["confidenceBand"] = 0.49, "low"
 	default:
 		return applyLossSemanticMutation(name, data)
 	}
@@ -452,6 +456,11 @@ func fixtureServiceNow() time.Time {
 func fixtureLossProjection(now time.Time, name string) (applicationloss.LossInputProjection, error) {
 	calculatedAt := now.Add(-12 * time.Hour)
 	snapshot := fixtureLossSnapshot(calculatedAt, now)
+	if staleLossScenario(name) {
+		expires := now.Add(-time.Hour)
+		snapshot.ValidTo, snapshot.Source.ValidTo = expires, expires
+		snapshot.Source.Stale = true
+	}
 	zones := []applicationloss.LossRiskZone{
 		{ID: "zone-low", SnapshotID: lossSnapshotID, Level: hazarddomain.RiskLow,
 			AreaSquareM: 700.5, AreaCalculated: true, AdminCodes: []string{"510100", "CN"}},
@@ -475,6 +484,9 @@ func fixtureLossProjection(now time.Time, name string) (applicationloss.LossInpu
 		InputReferences:       []string{"https://data.mnr.gov.cn/spatial/input"},
 		DatasetReferences:     []string{"https://data.mnr.gov.cn/spatial/dataset"}, Features: features,
 	}
+	if staleLossScenario(name) {
+		analysis.ProjectionValidTo = now.Add(-time.Hour)
+	}
 	stats := applicationloss.RiskProjectionStats{ZoneCount: len(zones), MaxGeometryPoints: 5,
 		MaxGeometryBytes: 100, TotalGeometryPoints: 10, TotalGeometryBytes: 200, SpatialJSONBytes: 400,
 		FeatureCount: len(features), ReferenceCount: 9, UniqueReferenceCount: 7, ProjectionBytes: 4096,
@@ -484,6 +496,10 @@ func fixtureLossProjection(now time.Time, name string) (applicationloss.LossInpu
 		return applicationloss.LossInputProjection{}, err
 	}
 	return result, nil
+}
+
+func staleLossScenario(name string) bool {
+	return name == "loss_reference_stale_projection" || name == "loss_reference_bad_stale_confidence"
 }
 
 func fixtureLossFeatures(name string) []applicationloss.LossExposureFeature {

@@ -150,6 +150,11 @@ test("局部热点研究参考区间使用琥珀状态并严格绑定道路案�
   const assessmentID = await currentLossAssessmentID(page);
   const result = await fetchLossAssessmentInPage(page, assessmentID);
   expect(result.status).toBe("reference_only");
+  expect(result.confidence).toBe(0.49);
+  expect(result.confidenceBand).toBe("low");
+  expect(result.limitations).not.toContain(
+    "风险与暴露投影已过期，当前仅使用最近 72 小时内最后一次成功数据生成研究参考区间，不代表实时情况"
+  );
   expect(result.includedAssets).toEqual(["road"]);
   expect(result.metrics.affectedRoads.baselineLevel).toBe("reference_case");
   expect(result.metrics.conditionalDirectLoss.baselineLevel).toBe("reference_case");
@@ -162,6 +167,42 @@ test("局部热点研究参考区间使用琥珀状态并严格绑定道路案�
     expect(baseline.baselineLevel).toBe("reference_case");
     expect(baseline).not.toHaveProperty("approvedBy");
   }
+});
+
+test("最近72小时最后成功投影生成很低置信度研究参考且明确非实时", async ({ page, request }) => {
+  await setScenario(request, "loss_reference_stale_projection");
+  await openAssessment(page);
+
+  await submitLoss(page);
+
+  const staleLimitation =
+    "风险与暴露投影已过期，当前仅使用最近 72 小时内最后一次成功数据生成研究参考区间，不代表实时情况";
+  await expect(page.locator("#loss-assessment-status")).toHaveClass(/assessment-state-warning/);
+  await expect(page.locator("#loss-assessment-status")).not.toHaveClass(/assessment-state-current/);
+  await expect(page.locator("#loss-assessment-status")).toContainText("最后成功数据研究参考区间");
+  await expect(page.locator("#loss-result-state")).toHaveText("最后成功数据研究参考区间 · 输入质量：很低");
+  await expect(page.locator("#loss-limitation-list")).toContainText(staleLimitation);
+  await expect(page.locator("#loss-central-amount")).not.toHaveText("--");
+  const assessmentID = await currentLossAssessmentID(page);
+  const result = await fetchLossAssessmentInPage(page, assessmentID);
+  expect(result.status).toBe("reference_only");
+  expect(result.confidence).toBe(0.24);
+  expect(result.confidenceBand).toBe("very_low");
+  expect(result.limitations).toContain(staleLimitation);
+  await fetchLossAuditInPage(page, assessmentID);
+  await expect(page.locator(`#ai-analysis-reference option[value="loss_assessment:${assessmentID}"]`))
+    .toContainText("最后成功数据研究参考区间");
+});
+
+test("最后成功投影高置信度篡改时浏览器 fail-closed", async ({ page, request }) => {
+  await setScenario(request, "loss_reference_bad_stale_confidence");
+  await openAssessment(page);
+
+  await page.locator("#loss-snapshot-id").fill(LOSS_SNAPSHOT_ID);
+  await page.locator("#loss-assessment-run").click();
+
+  await expectLossFailClosed(page, "最后成功数据降级状态或置信度无效");
+  await expect(page.locator(`#ai-analysis-reference option[value^="loss_assessment:"]`)).toHaveCount(0);
 });
 
 for (const [scenario, message] of [

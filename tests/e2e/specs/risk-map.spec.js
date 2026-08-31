@@ -49,7 +49,7 @@ test("当前有效风险快照自动回填损失输入并启用评估按钮", as
   await expect(page.locator("#loss-assessment-status")).toContainText("已绑定风险地图当前有效快照");
 });
 
-test("假时钟跨过 validTo 后同步转为 expired", async ({ page, request }) => {
+test("假时钟跨过 validTo 后保留72小时研究参考快照但不冒充当前", async ({ page, request }) => {
   await setScenario(request, "short_validity");
   await page.clock.install({ time: FIXED_NOW });
   await page.goto("/");
@@ -64,6 +64,34 @@ test("假时钟跨过 validTo 后同步转为 expired", async ({ page, request }
   await expect(page.locator("#risk-data-status")).toHaveText("数据已过期");
   await expect(page.locator("#risk-assessment-status")).toContainText("数据已过期");
   await expect(page.locator("#risk-limitations-list")).toContainText("已跨过有效期");
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue(SNAPSHOT_ID);
+  await expect(page.locator("#loss-assessment-run")).toBeEnabled();
+  await expect(page.locator("#loss-assessment-status")).toContainText("最近 72 小时内最后一次成功快照");
+});
+
+test("长期开页跨过72小时降级窗口后自动清除损失评估快照", async ({ page, request }) => {
+  await setScenario(request, "short_validity");
+  await page.clock.install({ time: FIXED_NOW });
+  await page.goto("/");
+
+  await page.clock.fastForward(600_100);
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue(SNAPSHOT_ID);
+  await expect(page.locator("#loss-assessment-run")).toBeEnabled();
+
+  await page.clock.fastForward(72 * 60 * 60 * 1000 + 100);
+
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue("");
+  await expect(page.locator("#loss-assessment-run")).toBeDisabled();
+  await expect(page.locator("#loss-assessment-status")).toContainText("当前没有可用于估算的数据");
+});
+
+test("超过72小时的过期风险快照不再自动绑定损失评估", async ({ page, request }) => {
+  await setScenario(request, "too_old_for_loss_reference");
+  await page.clock.install({ time: FIXED_NOW });
+  await page.goto("/");
+
+  await expect(page.locator("#risk-map-message")).toHaveClass(/map-state-stale/);
+  await expect(page.locator("#risk-data-status")).toHaveText("数据已过期");
   await expect(page.locator("#loss-snapshot-id")).toHaveValue("");
   await expect(page.locator("#loss-assessment-run")).toBeDisabled();
 });

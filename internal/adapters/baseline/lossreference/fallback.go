@@ -22,10 +22,13 @@ func NewFallback(primary applicationloss.BaselineSetReader) *FallbackReader {
 	return &FallbackReader{primary: primary, reference: New()}
 }
 
-// BaselineSet 返回正式基线；仅 ErrNotFound 会触发研究参考读取。
+// BaselineSet 返回正式基线；最后成功数据或 ErrNotFound 会触发研究参考读取。
 func (r *FallbackReader) BaselineSet(ctx context.Context,
 	query applicationloss.BaselineQuery,
 ) (lossdomain.BaselineSet, error) {
+	if query.ReferenceOnly {
+		return r.reference.BaselineSet(ctx, query)
+	}
 	set, err := r.primary.BaselineSet(ctx, query)
 	if err == nil || !errors.Is(err, domain.ErrNotFound) {
 		return set, err

@@ -4,6 +4,7 @@ import "fmt"
 
 const (
 	shortValidTo   = "2026-08-28T00:10:00Z"
+	tooOldValidTo  = "2026-08-24T00:00:00Z"
 	defaultValidTo = "2099-01-01T00:00:00Z"
 )
 
@@ -114,6 +115,8 @@ func envelopeFor(name string) riskEnvelope {
 		value.Data.Snapshot.Source.ValidTo = "2099-01-01T00:00:01Z"
 	case "short_validity":
 		value = validEnvelope(shortValidTo)
+	case "too_old_for_loss_reference":
+		value = validEnvelope(tooOldValidTo)
 	case "fallback_unexpired":
 		markFallback(&value)
 	case "fallback_then_expiry":

@@ -39,8 +39,12 @@ const (
 	maxLossProjectionLimitationTotalBytes = 64 << 10
 	maxLimitedProjectionConfidence        = 0.79
 	maxReferenceConfidence                = 0.49
+	maxStaleReferenceConfidence           = lossdomain.MaxStaleReferenceConfidence
 	deduplicatedAreaToleranceRatio        = 0.01
 )
+
+// MaxReferenceProjectionStaleness 限制最后成功风险与暴露投影的降级使用窗口。
+const MaxReferenceProjectionStaleness = 72 * time.Hour
 
 // EstimateInput 只接受已持久化风险快照标识，禁止调用方提交计算数值。
 type EstimateInput struct {
@@ -208,10 +212,11 @@ func (r BaselineRequirements) Validate() error {
 
 // BaselineQuery 将权威区域、灾种、语义键和统一评估时间绑定为一次读取。
 type BaselineQuery struct {
-	RegionCode   string
-	HazardType   string
-	Requirements BaselineRequirements
-	At           time.Time
+	RegionCode    string
+	HazardType    string
+	Requirements  BaselineRequirements
+	At            time.Time
+	ReferenceOnly bool
 }
 
 // BaselineSetReader 在一次一致性读取中返回完整损失基线集合。
@@ -231,6 +236,7 @@ var _ AssessmentService = (*Service)(nil)
 type authoritativeInput struct {
 	snapshot      hazarddomain.Snapshot
 	analysis      LossSpatialProjection
+	stale         bool
 	regionCode    string
 	intensityBand string
 	riskZones     []lossdomain.RiskZoneEvidence
@@ -275,16 +281,19 @@ func (s *Service) Estimate(ctx context.Context, input EstimateInput) (lossdomain
 	if err = ValidateRiskProjectionIdentity(projection); err != nil {
 		return lossdomain.Assessment{}, insufficient("校验损失输入投影摘要", err)
 	}
-	if err = validateCurrentRisk(projection.Snapshot, projection.Zones, input.SnapshotID, now); err != nil {
+	riskStale, err := validateRiskForEstimate(projection.Snapshot, projection.Zones, input.SnapshotID, now)
+	if err != nil {
 		return lossdomain.Assessment{}, err
 	}
-	if err = validateAuthoritativeProjection(projection.Analysis, projection.Snapshot, projection.Zones, now); err != nil {
+	projectionStale, err := validateAuthoritativeProjection(projection.Analysis, projection.Snapshot, projection.Zones, now)
+	if err != nil {
 		return lossdomain.Assessment{}, err
 	}
 	derived, err := deriveAuthoritativeInput(projection)
 	if err != nil {
 		return lossdomain.Assessment{}, err
 	}
+	derived.stale = riskStale || projectionStale
 	return s.estimateDerived(ctx, derived, now)
 }
 
@@ -294,7 +303,7 @@ func (s *Service) estimateDerived(ctx context.Context, input authoritativeInput,
 		return lossdomain.Assessment{}, err
 	}
 	query := BaselineQuery{RegionCode: input.regionCode, HazardType: string(input.snapshot.HazardType),
-		Requirements: requirements, At: now}
+		Requirements: requirements, At: now, ReferenceOnly: input.stale}
 	set, err := s.baselines.BaselineSet(ctx, query)
 	if err != nil {
 		return lossdomain.Assessment{}, insufficient("读取一致损失基线", err)
@@ -413,41 +422,58 @@ func projectionReferences(value LossInputProjection) []string {
 	return result
 }
 
-func validateCurrentRisk(snapshot hazarddomain.Snapshot, zones []LossRiskZone, snapshotID string, now time.Time) error {
+func validateRiskForEstimate(snapshot hazarddomain.Snapshot, zones []LossRiskZone, snapshotID string,
+	now time.Time,
+) (bool, error) {
 	if snapshot.ID != snapshotID || !supportedHazard(snapshot.HazardType) || snapshot.Status != hazarddomain.SnapshotAvailable ||
 		strings.TrimSpace(snapshot.ModelName) == "" || strings.TrimSpace(snapshot.ModelVersion) == "" {
-		return insufficient("校验当前风险快照", domain.ErrInvalidInput)
+		return false, insufficient("校验风险快照", domain.ErrInvalidInput)
 	}
-	if !validSnapshotWindow(snapshot, now) {
-		return insufficient("校验风险快照有效期", domain.ErrInsufficientData)
+	stale, ok := snapshotWindowState(snapshot, now)
+	if !ok {
+		return false, insufficient("校验风险快照有效期", domain.ErrInsufficientData)
 	}
-	if err := validateCurrentSource(snapshot.Source, now); err != nil {
-		return insufficient("校验风险快照来源", err)
+	sourceStale, err := riskSourceState(snapshot.Source, now)
+	if err != nil {
+		return false, insufficient("校验风险快照来源", err)
 	}
 	if snapshot.ValidFrom.Before(snapshot.Source.ValidFrom) || snapshot.ValidTo.After(snapshot.Source.ValidTo) {
-		return insufficient("校验风险快照与来源时效", domain.ErrInsufficientData)
+		return false, insufficient("校验风险快照与来源时效", domain.ErrInsufficientData)
 	}
 	if len(zones) == 0 || len(zones) > maxLossZones {
-		return insufficient("校验风险区数量", domain.ErrInsufficientData)
+		return false, insufficient("校验风险区数量", domain.ErrInsufficientData)
 	}
 	seen := make(map[string]struct{}, len(zones))
 	for index, zone := range zones {
 		if index > 0 && zone.ID <= zones[index-1].ID {
-			return insufficient("校验风险区规范顺序", domain.ErrInvalidInput)
+			return false, insufficient("校验风险区规范顺序", domain.ErrInvalidInput)
 		}
 		if err := validateRiskZone(zone, snapshotID, seen); err != nil {
-			return insufficient("校验风险区", err)
+			return false, insufficient("校验风险区", err)
 		}
 	}
-	return nil
+	return stale || sourceStale, nil
 }
 
-func validSnapshotWindow(value hazarddomain.Snapshot, now time.Time) bool {
+func snapshotWindowState(value hazarddomain.Snapshot, now time.Time) (bool, bool) {
 	if value.RunAt.IsZero() || value.ValidFrom.IsZero() || value.ValidTo.IsZero() || value.RunAt.After(now) ||
-		value.ValidFrom.After(now) || !value.ValidTo.After(now) || value.RunAt.Before(value.ValidFrom) || !value.RunAt.Before(value.ValidTo) {
-		return false
+		value.ValidFrom.After(now) || value.RunAt.Before(value.ValidFrom) || !value.RunAt.Before(value.ValidTo) ||
+		value.ValidTo.Before(now.Add(-MaxReferenceProjectionStaleness)) {
+		return false, false
 	}
-	return utc(value.RunAt) && utc(value.ValidFrom) && utc(value.ValidTo)
+	valid := utc(value.RunAt) && utc(value.ValidFrom) && utc(value.ValidTo)
+	return !value.ValidTo.After(now), valid
+}
+
+func riskSourceState(value provenance.Provenance, now time.Time) (bool, error) {
+	if err := value.Validate(); err != nil {
+		return false, err
+	}
+	if provenance.LatestAuthorityTime(value).After(now) || value.ValidFrom.IsZero() || value.ValidFrom.After(now) ||
+		value.ValidTo.IsZero() || value.ValidTo.Before(now.Add(-MaxReferenceProjectionStaleness)) {
+		return false, domain.ErrInsufficientData
+	}
+	return value.Stale || !value.ValidTo.After(now), nil
 }
 
 func utc(value time.Time) bool {
@@ -471,43 +497,50 @@ func validateRiskZone(value LossRiskZone, snapshotID string, seen map[string]str
 }
 
 func validateAuthoritativeProjection(value LossSpatialProjection, snapshot hazarddomain.Snapshot,
-	zones []LossRiskZone, now time.Time) error {
+	zones []LossRiskZone, now time.Time,
+) (bool, error) {
 	if value.SnapshotID != snapshot.ID || !validProjectionIdentifier(value.ID) || !validProjectionIdentifier(value.Version) ||
 		value.RegionCode != "CN" || value.Status != spatialdomain.AnalysisAvailable ||
 		!validDigest(value.Digest) ||
 		!strings.HasPrefix(value.AdminBoundaryID, "CHN-ADM0-") || !validDigest(value.AdminBoundaryDigest) ||
 		!validProjectionStrings([]string{value.AdminBoundaryReference}, true) {
-		return insufficient("校验去重空间投影身份", domain.ErrInsufficientData)
+		return false, insufficient("校验去重空间投影身份", domain.ErrInsufficientData)
 	}
+	stale, windowOK := projectionWindowState(value, now)
 	if !finite(value.TotalAreaSquareMeters) || value.TotalAreaSquareMeters <= 0 || !utc(value.CalculatedAt) ||
 		value.CalculatedAt.Before(snapshot.RunAt) || value.CalculatedAt.After(now) ||
-		!validCurrentProjectionWindow(value, now) {
-		return insufficient("校验去重空间投影时效与面积", domain.ErrInsufficientData)
+		!windowOK {
+		return false, insufficient("校验去重空间投影时效与面积", domain.ErrInsufficientData)
 	}
 	if value.ProjectionValidFrom.Before(snapshot.ValidFrom) || value.ProjectionValidTo.After(snapshot.ValidTo) ||
 		value.ProjectionValidFrom.Before(snapshot.Source.ValidFrom) ||
 		value.ProjectionValidTo.After(snapshot.Source.ValidTo) {
-		return insufficient("校验空间投影与风险来源有效期", domain.ErrInsufficientData)
+		return false, insufficient("校验空间投影与风险来源有效期", domain.ErrInsufficientData)
 	}
 	if !validProjectionStrings(value.InputReferences, true) || !validProjectionStrings(value.DatasetReferences, false) {
-		return insufficient("校验去重空间投影来源", domain.ErrInsufficientData)
+		return false, insufficient("校验去重空间投影来源", domain.ErrInsufficientData)
 	}
 	if !validProjectionLimitations(value.ProjectionLimitations) {
-		return insufficient("校验空间投影限制", domain.ErrInsufficientData)
+		return false, insufficient("校验空间投影限制", domain.ErrInsufficientData)
 	}
 	zoneLevels, err := validateProjectionZones(zones, value.RegionCode)
 	if err != nil {
-		return insufficient("校验去重投影行政绑定", err)
+		return false, insufficient("校验去重投影行政绑定", err)
 	}
 	if !validDeduplicatedArea(value.TotalAreaSquareMeters, zones) {
-		return insufficient("校验去重投影总面积", domain.ErrInsufficientData)
+		return false, insufficient("校验去重投影总面积", domain.ErrInsufficientData)
 	}
-	return validateProjectionFeatures(value.Features, zoneLevels)
+	if err = validateProjectionFeatures(value.Features, zoneLevels); err != nil {
+		return false, err
+	}
+	return stale, nil
 }
 
-func validCurrentProjectionWindow(value LossSpatialProjection, now time.Time) bool {
-	return validProjectionWindow(value) && !value.ProjectionCollectedAt.After(now) &&
-		!value.ProjectionValidFrom.After(now) && value.ProjectionValidTo.After(now)
+func projectionWindowState(value LossSpatialProjection, now time.Time) (bool, bool) {
+	valid := validProjectionWindow(value) && !value.ProjectionCollectedAt.After(now) &&
+		!value.ProjectionValidFrom.After(now) &&
+		!value.ProjectionValidTo.Before(now.Add(-MaxReferenceProjectionStaleness))
+	return !value.ProjectionValidTo.After(now), valid
 }
 
 func validateProjectionZones(zones []LossRiskZone, region string) (map[string]hazarddomain.RiskLevel, error) {
@@ -690,6 +723,9 @@ func preparePlan(input authoritativeInput, set lossdomain.BaselineSet, now time.
 	referenceOnly, err := referenceBaselineSet(set)
 	if err != nil {
 		return calculationPlan{}, err
+	}
+	if input.stale && !referenceOnly {
+		return calculationPlan{}, insufficient("拒绝用过期投影生成已批准损失评估", domain.ErrInsufficientData)
 	}
 	monetized := input.exposures
 	if referenceOnly {
@@ -910,6 +946,9 @@ func calculate(plan calculationPlan, calculatedAt time.Time) (lossdomain.Assessm
 	if plan.referenceOnly && confidence > maxReferenceConfidence {
 		confidence = maxReferenceConfidence
 	}
+	if plan.input.stale && confidence > maxStaleReferenceConfidence {
+		confidence = maxStaleReferenceConfidence
+	}
 	excluded := sortedStrings([]string{"建筑物损失未纳入：缺少权威建筑暴露面积", "间接经济损失和人员伤亡未纳入"})
 	status, method := lossdomain.AssessmentAvailable, "暴露量/覆盖率 × 单位重置成本 × 影响比例 × 损伤率"
 	if plan.referenceOnly {
@@ -917,7 +956,7 @@ func calculate(plan calculationPlan, calculatedAt time.Time) (lossdomain.Assessm
 		excluded = sortedStrings(append(excluded, "人口和设施仅作暴露背景，未纳入研究参考金额"))
 	}
 	limitations := sortedUniqueStrings(append(cloneStrings(plan.input.analysis.ProjectionLimitations),
-		requiredLimitations(plan.referenceOnly)...))
+		requiredLimitations(plan.referenceOnly, plan.input.stale)...))
 	assessment := lossdomain.Assessment{SnapshotID: plan.input.snapshot.ID, HazardType: string(plan.input.snapshot.HazardType),
 		RegionCode: plan.input.regionCode, FormulaVersion: lossdomain.FormulaVersion,
 		ScenarioMethod:      method,
@@ -930,10 +969,14 @@ func calculate(plan calculationPlan, calculatedAt time.Time) (lossdomain.Assessm
 	return lossdomain.BindAssessmentIdentity(assessment)
 }
 
-func requiredLimitations(referenceOnly bool) []string {
+func requiredLimitations(referenceOnly, stale bool) []string {
 	if referenceOnly {
-		return []string{lossdomain.LimitationAdvisoryOnly, lossdomain.LimitationReferenceOnly,
+		result := []string{lossdomain.LimitationAdvisoryOnly, lossdomain.LimitationReferenceOnly,
 			lossdomain.LimitationReferenceRoadOnly, lossdomain.LimitationReferenceTransfer}
+		if stale {
+			result = append(result, lossdomain.LimitationLastSuccessStale)
+		}
+		return result
 	}
 	return []string{lossdomain.LimitationDirectPhysicalLoss, lossdomain.LimitationAdvisoryOnly}
 }

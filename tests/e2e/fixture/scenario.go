@@ -16,7 +16,7 @@ var supportedScenarios = map[string]struct{}{
 	"non_strict_valid_to": {}, "invalid_calendar_valid_to": {},
 	"source_valid_to_mismatch": {}, "all_zones_omitted": {}, "all_zones_omitted_then_expiry": {},
 	"fallback_unexpired": {}, "fallback_then_expiry": {},
-	"short_validity": {}, "success_then_503": {}, "success_then_timeout": {},
+	"short_validity": {}, "too_old_for_loss_reference": {}, "success_then_503": {}, "success_then_timeout": {},
 	"too_many_zones": {},
 }
 

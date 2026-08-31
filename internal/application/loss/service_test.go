@@ -41,15 +41,19 @@ func (r inputReaderStub) ReadLossInput(_ context.Context, _ string, now time.Tim
 }
 
 type baselineReaderStub struct {
-	set     lossdomain.BaselineSet
-	err     error
-	queries []BaselineQuery
+	set       lossdomain.BaselineSet
+	reference *lossdomain.BaselineSet
+	err       error
+	queries   []BaselineQuery
 }
 
 func (r *baselineReaderStub) BaselineSet(_ context.Context,
 	query BaselineQuery,
 ) (lossdomain.BaselineSet, error) {
 	r.queries = append(r.queries, query)
+	if query.ReferenceOnly && r.reference != nil {
+		return *r.reference, r.err
+	}
 	return r.set, r.err
 }
 
@@ -298,6 +302,62 @@ func TestServiceReturnsReferenceOnlyRoadRange(t *testing.T) {
 	assertReferenceEvidence(t, value)
 }
 
+func TestServiceUsesRecentLastSuccessProjectionAsVeryLowReference(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	projection := staleLossProjection(t, now, time.Hour)
+	value := estimateFixture(t, now, projection, referenceBaselineFixture(now))
+	if value.Status != lossdomain.AssessmentReferenceOnly ||
+		value.Confidence != lossdomain.MaxStaleReferenceConfidence || value.ConfidenceBand != "very_low" {
+		t.Fatalf("最后成功投影降级状态错误: %s %.2f %s", value.Status, value.Confidence, value.ConfidenceBand)
+	}
+	if !contains(value.Limitations, lossdomain.LimitationLastSuccessStale) {
+		t.Fatalf("最后成功投影降级缺少过期说明: %v", value.Limitations)
+	}
+	if value.ConditionalLowCents == 0 || value.ConditionalMidCents == 0 || value.ConditionalHighCents == 0 {
+		t.Fatalf("最后成功投影未生成参考金额: %+v", value)
+	}
+}
+
+func TestServiceRequestsReferenceBaselineForStaleProjection(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	projection := staleLossProjection(t, now, time.Hour)
+	reference := referenceBaselineFixture(now)
+	reader := &baselineReaderStub{set: approvedBaselineSet(now, "v2026"), reference: &reference}
+	service := mustService(t, inputReaderStub{value: projection}, reader, now)
+	value, err := service.Estimate(context.Background(), EstimateInput{SnapshotID: projection.Snapshot.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reader.queries) != 1 || !reader.queries[0].ReferenceOnly ||
+		value.Status != lossdomain.AssessmentReferenceOnly || value.Confidence != lossdomain.MaxStaleReferenceConfidence {
+		t.Fatalf("最后成功数据未强制研究参考: query=%+v value=%+v", reader.queries, value)
+	}
+}
+
+func TestServiceRejectsApprovedBaselineWhenReferenceRequired(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	projection := staleLossProjection(t, now, time.Hour)
+	assertEstimateError(t, now, projection,
+		&baselineReaderStub{set: approvedBaselineSet(now, "v2026")}, domain.ErrInsufficientData)
+}
+
+func TestServiceRejectsLastSuccessProjectionBeyondBound(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	projection := staleLossProjection(t, now, MaxReferenceProjectionStaleness+time.Microsecond)
+	assertEstimateError(t, now, projection,
+		&baselineReaderStub{set: referenceBaselineFixture(now)}, domain.ErrInsufficientData)
+}
+
+func TestServiceAcceptsLastSuccessProjectionAtExactBound(t *testing.T) {
+	now := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	projection := staleLossProjection(t, now, MaxReferenceProjectionStaleness)
+	value := estimateFixture(t, now, projection, referenceBaselineFixture(now))
+	if value.Status != lossdomain.AssessmentReferenceOnly ||
+		value.Confidence != lossdomain.MaxStaleReferenceConfidence {
+		t.Fatalf("恰好 72 小时的最后成功投影未保留: %+v", value)
+	}
+}
+
 func TestServiceReferenceOnlyRequiresRoadExposure(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	projection := validLossProjection(now)
@@ -538,6 +598,25 @@ func validLossProjection(now time.Time) LossInputProjection {
 		panic(err)
 	}
 	return result
+}
+
+func staleLossProjection(t *testing.T, now time.Time, age time.Duration) LossInputProjection {
+	t.Helper()
+	value := validLossProjection(now)
+	expires := now.Add(-age)
+	value.Snapshot.ValidFrom = expires.Add(-4 * time.Hour)
+	value.Snapshot.RunAt = expires.Add(-3 * time.Hour)
+	value.Snapshot.ValidTo = expires
+	value.Snapshot.Source.ValidFrom = expires.Add(-5 * time.Hour)
+	value.Snapshot.Source.FetchedAt = expires.Add(-4 * time.Hour)
+	value.Snapshot.Source.ValidTo = expires
+	value.Snapshot.Source.Stale = true
+	value.Analysis.CalculatedAt = expires.Add(-2 * time.Hour)
+	value.Analysis.ProjectionValidFrom = expires.Add(-4 * time.Hour)
+	value.Analysis.ProjectionCollectedAt = expires.Add(-time.Hour)
+	value.Analysis.ProjectionValidTo = expires
+	mustRebindLossProjection(t, &value)
+	return value
 }
 
 func projectionWithFeatureCount(now time.Time, count int) LossInputProjection {

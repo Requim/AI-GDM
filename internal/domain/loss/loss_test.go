@@ -2,6 +2,7 @@ package loss
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -123,6 +124,32 @@ func TestAssessmentValidateRejectsEvidenceMutationAndUnitMismatch(t *testing.T) 
 	exposure.Unit = "meters"
 	if err := exposure.Validate(); err == nil {
 		t.Fatal("Exposure.Validate() 未拒绝设施单位错配")
+	}
+}
+
+func TestAssessmentCoreBindsLastSuccessLimitationToVeryLowReference(t *testing.T) {
+	base := validAssessmentFixture(t)
+	base.Status = AssessmentReferenceOnly
+	base.Confidence = MaxStaleReferenceConfidence
+	base.ConfidenceBand = "very_low"
+	base.Limitations = append(base.Limitations, LimitationReferenceOnly,
+		LimitationReferenceRoadOnly, LimitationReferenceTransfer, LimitationLastSuccessStale)
+	sort.Strings(base.Limitations)
+	if err := validateAssessmentCore(base); err != nil {
+		t.Fatalf("合法最后成功数据降级被拒绝: %v", err)
+	}
+	for name, mutate := range map[string]func(*Assessment){
+		"状态冒充可用": func(value *Assessment) { value.Status = AssessmentAvailable },
+		"置信度过高":  func(value *Assessment) { value.Confidence = MaxStaleReferenceConfidence + 0.01 },
+		"等级过高":   func(value *Assessment) { value.ConfidenceBand = "low" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := base
+			mutate(&changed)
+			if err := validateAssessmentCore(changed); err == nil {
+				t.Fatal("validateAssessmentCore() 未拒绝损坏的最后成功数据降级")
+			}
+		})
 	}
 }
 

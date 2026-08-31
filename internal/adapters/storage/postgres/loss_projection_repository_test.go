@@ -122,6 +122,55 @@ func TestLossProjectionUsesOneLatestAvailableAnalysis(t *testing.T) {
 	}
 }
 
+func TestLossProjectionSelectsCurrentBeforeRecentLastSuccess(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	snapshot, zones := saveLossProjectionRiskWithWindow(t, ctx, repository, now.Add(-30*time.Hour),
+		"current-before-stale", 2, now.Add(-31*time.Hour), now.Add(25*time.Hour))
+	analysis := insertLossSpatialAnalysis(t, ctx, repository, snapshot, zones,
+		now.Add(-29*time.Hour), "shared", true)
+	stale := insertLossExposureProjection(t, ctx, repository, snapshot, analysis, zones,
+		"stale", 3, now.Add(-25*time.Hour), true)
+	current := insertLossExposureProjection(t, ctx, repository, snapshot, analysis, zones,
+		"current", 3, now.Add(-30*time.Minute), true)
+
+	got, err := repository.ReadLossInput(ctx, snapshot.ID, now, productionLossProjectionLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Analysis.ProjectionID != current.Analysis.ProjectionID ||
+		got.Analysis.ProjectionID == stale.Analysis.ProjectionID {
+		t.Fatalf("未优先选择当前投影: got=%s current=%s stale=%s", got.Analysis.ProjectionID,
+			current.Analysis.ProjectionID, stale.Analysis.ProjectionID)
+	}
+}
+
+func TestLossProjectionReadsRecentLastSuccessAndRejectsOlderThanBound(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	snapshot, zones := saveLossProjectionRiskWithWindow(t, ctx, repository, now.Add(-30*time.Hour),
+		"recent-last-success", 2, now.Add(-31*time.Hour), now.Add(-time.Hour))
+	analysis := insertLossSpatialAnalysis(t, ctx, repository, snapshot, zones,
+		now.Add(-29*time.Hour), "stale", true)
+	want := insertLossExposureProjection(t, ctx, repository, snapshot, analysis, zones,
+		"stale", 3, now.Add(-25*time.Hour), true)
+
+	got, err := repository.ReadLossInput(ctx, snapshot.ID, now, productionLossProjectionLimits())
+	if err != nil || got.Analysis.ProjectionID != want.Analysis.ProjectionID {
+		t.Fatalf("最近最后成功投影未读取: projection=%s error=%v", got.Analysis.ProjectionID, err)
+	}
+	atBound := now.Add(71 * time.Hour)
+	if _, err = repository.ReadLossInput(ctx, snapshot.ID, atBound,
+		productionLossProjectionLimits()); err != nil {
+		t.Fatalf("恰好 72 小时的最后成功投影被拒绝: %v", err)
+	}
+	tooLate := now.Add(71*time.Hour + time.Microsecond)
+	if _, err = repository.ReadLossInput(ctx, snapshot.ID, tooLate,
+		productionLossProjectionLimits()); !errors.Is(err, domain.ErrInsufficientData) {
+		t.Fatalf("超过 72 小时的最后成功投影未拒绝: %v", err)
+	}
+}
+
 func TestLossProjectionUsesRealExposureOnAreaOnlyAnalysis(t *testing.T) {
 	ctx, repository := integrationHazardRepository(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)

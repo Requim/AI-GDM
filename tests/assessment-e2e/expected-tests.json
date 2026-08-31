@@ -5,6 +5,8 @@
     {"file": "assessment.spec.js", "title": "风险地图不可用且快照输入为空时损失按钮禁用且不得发送 POST"},
     {"file": "assessment.spec.js", "title": "损失评估仅提交 snapshotId，并跟随 Location 与 sources 审计"},
     {"file": "assessment.spec.js", "title": "局部热点研究参考区间使用琥珀状态并严格绑定道路案例基线"},
+    {"file": "assessment.spec.js", "title": "最近72小时最后成功投影生成很低置信度研究参考且明确非实时"},
+    {"file": "assessment.spec.js", "title": "最后成功投影高置信度篡改时浏览器 fail-closed"},
     {"file": "assessment.spec.js", "title": "loss_reference_bad_cost_status 时研究参考基线篡改 fail-closed"},
     {"file": "assessment.spec.js", "title": "loss_reference_bad_vulnerability_level 时研究参考基线篡改 fail-closed"},
     {"file": "assessment.spec.js", "title": "供应商省略限制贯穿投影证据、置信度和可见限制"},

@@ -91,6 +91,6 @@ P10.3 门禁从固定 Git tree 构建发布包，再启动独立 Docker-in-Docke
 
 - 容器离线可加载并启动不代表业务不需要互联网；实时 Earthdata、Open-Meteo、WorldPop、Overpass、geoBoundaries、高德、搜索和 LLM 仍需访问供应商。
 - 高德路线是候选路线，不等同于交管部门确认道路开放。
-- 仓库不内置资产价格和脆弱性数值。未导入真实、已批准且可审计的损失基线时，损失评估会返回 `insufficient_data`，不得用测试数据冒充生产结果。
+- 仓库不内置可作为生产结论的资产价格和脆弱性数值。未导入真实、已批准且可审计的损失基线时，只允许基于真实道路暴露和公开案例生成明确标记的 `reference_only` 研究参考区间；输入不足时仍返回 `insufficient_data`，不得用测试数据冒充生产结果。
 - 当前直接暴露 HTTP `8080`，尚未提供 TLS 终止；正式公网长期运行应增加可信反向代理和证书。
 - Windows 脚本可校验和启动 Linux 容器栈，但本阶段的完整空缓存验收运行在腾讯 Ubuntu；Windows Docker Desktop 需至少分配 4 GiB 内存并预留镜像 tar、Docker 存储和持久卷空间。
