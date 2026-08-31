@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Requim/AI-GDM/internal/adapters/baseline/lossreference"
 	"github.com/Requim/AI-GDM/internal/adapters/http/lossapi"
 	applicationloss "github.com/Requim/AI-GDM/internal/application/loss"
 	"github.com/Requim/AI-GDM/internal/domain"
@@ -60,9 +61,13 @@ func (e *fixtureLossEstimator) Estimate(ctx context.Context,
 	if err != nil {
 		return lossdomain.Assessment{}, err
 	}
+	var baselines applicationloss.BaselineSetReader = fixtureBaselineReader{value: fixtureBaselineSet(now, name)}
+	if strings.HasPrefix(name, "loss_reference_") {
+		baselines = lossreference.New()
+	}
 	service, err := applicationloss.NewService(
 		fixtureLossProjectionReader{value: projection},
-		fixtureBaselineReader{value: fixtureBaselineSet(now, name)}, fixtureLossClock{now: now},
+		baselines, fixtureLossClock{now: now},
 	)
 	if err != nil {
 		return lossdomain.Assessment{}, err
@@ -209,6 +214,7 @@ func (s *scenarioStore) serveRealLoss(w http.ResponseWriter, r *http.Request, na
 func mutateLossResponse(name, operation string, recorder *httptest.ResponseRecorder) {
 	if operation == "loss_post" {
 		mutateLossLocation(name, recorder)
+		mutateLossBody(name, recorder)
 		return
 	}
 	if recorder.Code != http.StatusOK {
@@ -225,6 +231,16 @@ func mutateLossResponse(name, operation string, recorder *httptest.ResponseRecor
 		recorder.Body = bytes.NewBuffer(append(
 			[]byte(`{"data":{"status":"available"},"requestId":"fixture"}`), '\n',
 		))
+		return
+	}
+	payload, err := mutatedLossPayload(name, recorder.Body.Bytes())
+	if err == nil && payload != nil {
+		recorder.Body = bytes.NewBuffer(payload)
+	}
+}
+
+func mutateLossBody(name string, recorder *httptest.ResponseRecorder) {
+	if recorder.Code != http.StatusCreated || !strings.HasPrefix(name, "loss_reference_bad_") {
 		return
 	}
 	payload, err := mutatedLossPayload(name, recorder.Body.Bytes())
@@ -351,6 +367,10 @@ func applyLossMutation(name string, data map[string]any) bool {
 		lossSnapshotSource(data)["sourceUri"] = "https://metadata.local/private"
 	case "loss_internal_source":
 		lossSnapshotSource(data)["sourceUri"] = "https://metadata.internal/private"
+	case "loss_reference_bad_cost_status":
+		lossEvidenceArray(data, "costBaselines")[0].(map[string]any)["status"] = "approved"
+	case "loss_reference_bad_vulnerability_level":
+		lossEvidenceArray(data, "vulnerabilities")[0].(map[string]any)["baselineLevel"] = "national"
 	default:
 		return applyLossSemanticMutation(name, data)
 	}

@@ -311,7 +311,7 @@ func newAssessmentResponse(value lossdomain.Assessment) (assessmentResponse, err
 }
 
 func assessmentMetrics(value lossdomain.Assessment) assessmentMetricsResponse {
-	provided := value.Status == lossdomain.AssessmentAvailable
+	provided := value.Status == lossdomain.AssessmentAvailable || value.Status == lossdomain.AssessmentReferenceOnly
 	level := "unavailable"
 	if provided {
 		level = "not_applicable"
@@ -324,7 +324,7 @@ func assessmentMetrics(value lossdomain.Assessment) assessmentMetricsResponse {
 }
 
 func assetMetric(value lossdomain.Assessment, asset lossdomain.AssetType) metricContractResponse {
-	if value.Status != lossdomain.AssessmentAvailable {
+	if value.Status != lossdomain.AssessmentAvailable && value.Status != lossdomain.AssessmentReferenceOnly {
 		return metricContractResponse{Status: string(value.Status), BaselineLevel: "unavailable"}
 	}
 	levels := make([]lossdomain.BaselineLevel, 0, 2)
@@ -338,11 +338,15 @@ func assetMetric(value lossdomain.Assessment, asset lossdomain.AssetType) metric
 			levels = append(levels, vulnerability.BaselineLevel)
 		}
 	}
-	return metricContractResponse{Provided: true, Status: string(value.Status), BaselineLevel: mergedBaselineLevel(levels)}
+	level := mergedBaselineLevel(levels)
+	if value.Status == lossdomain.AssessmentReferenceOnly && len(levels) == 0 {
+		level = "not_applicable"
+	}
+	return metricContractResponse{Provided: true, Status: string(value.Status), BaselineLevel: level}
 }
 
 func directLossMetric(value lossdomain.Assessment) metricContractResponse {
-	if value.Status != lossdomain.AssessmentAvailable {
+	if value.Status != lossdomain.AssessmentAvailable && value.Status != lossdomain.AssessmentReferenceOnly {
 		return metricContractResponse{Status: string(value.Status), BaselineLevel: "unavailable"}
 	}
 	levels := make([]lossdomain.BaselineLevel, 0, len(value.Evidence.Costs)+len(value.Evidence.Vulnerabilities))

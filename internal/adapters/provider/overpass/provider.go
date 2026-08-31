@@ -161,6 +161,31 @@ type responseEnvelope struct {
 	Elements  []osmElement `json:"elements"`
 }
 
+type responseEnvelopeWire struct {
+	Version   float64         `json:"version"`
+	Generator string          `json:"generator"`
+	OSM3S     osmMetadata     `json:"osm3s"`
+	Remark    osmRemark       `json:"remark"`
+	Elements  json.RawMessage `json:"elements"`
+}
+
+func (v *responseEnvelope) UnmarshalJSON(payload []byte) error {
+	var wire responseEnvelopeWire
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		return err
+	}
+	if len(wire.Elements) == 0 || bytes.Equal(bytes.TrimSpace(wire.Elements), []byte("null")) {
+		return fmt.Errorf("Overpass elements 缺失或为 null")
+	}
+	var elements []osmElement
+	if err := json.Unmarshal(wire.Elements, &elements); err != nil {
+		return err
+	}
+	*v = responseEnvelope{Version: wire.Version, Generator: wire.Generator,
+		OSM3S: wire.OSM3S, Remark: wire.Remark, Elements: elements}
+	return nil
+}
+
 type osmRemark struct {
 	Value   string
 	Present bool
@@ -288,11 +313,11 @@ func decodeResponse(payload []byte, maxElements, maxTotalCoordinates int) (respo
 		strings.TrimSpace(value.Remark.Value) != "" {
 		return responseEnvelope{}, providerError("Overpass 响应无效")
 	}
-	if len(value.Elements) == 0 || len(value.Elements) > maxElements {
-		return responseEnvelope{}, providerError("Overpass 元素数量超过安全预算或为空")
+	if len(value.Elements) > maxElements {
+		return responseEnvelope{}, providerError("Overpass 元素数量超过安全预算")
 	}
-	if coordinates := responseCoordinateCount(value.Elements); coordinates <= 0 ||
-		coordinates > maxTotalCoordinates {
+	if coordinates := responseCoordinateCount(value.Elements); coordinates > maxTotalCoordinates ||
+		(len(value.Elements) > 0 && coordinates <= 0) {
 		return responseEnvelope{}, providerError("Overpass 总坐标数超过安全预算")
 	}
 	return value, nil
@@ -405,9 +430,6 @@ func convertElements(elements []osmElement) ([]exposurecollection.RawInfrastruct
 		values = append(values, feature)
 	}
 	sort.Slice(values, func(left, right int) bool { return values[left].FeatureID < values[right].FeatureID })
-	if len(values) == 0 {
-		return nil, nil, providerError("Overpass 未返回可用道路或设施")
-	}
 	limitations := make([]string, 0, 1)
 	if skippedFacilities > 0 {
 		limitations = append(limitations, fmt.Sprintf("%s（%d 条）", nonClosedFacilityLimitation, skippedFacilities))

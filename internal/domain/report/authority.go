@@ -465,7 +465,8 @@ func validTravelMode(value string) bool {
 
 func validLossStatus(value string) bool {
 	status := lossdomain.AssessmentStatus(value)
-	return status == lossdomain.AssessmentAvailable || status == lossdomain.AssessmentInsufficientData
+	return status == lossdomain.AssessmentAvailable || status == lossdomain.AssessmentInsufficientData ||
+		status == lossdomain.AssessmentReferenceOnly
 }
 
 func validLossConfidenceBand(value string) bool {

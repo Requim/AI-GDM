@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/Requim/AI-GDM/internal/adapters/baseline/lossreference"
 	"github.com/Requim/AI-GDM/internal/adapters/http/lossapi"
 	"github.com/Requim/AI-GDM/internal/adapters/storage/postgres"
 	applicationloss "github.com/Requim/AI-GDM/internal/application/loss"
@@ -17,7 +18,7 @@ func newLossAPIHandler(runtime *hazardRuntime, logger *slog.Logger) (http.Handle
 		return nil, nil
 	}
 	repository := postgres.NewHazardRepository(runtime.database)
-	baseline := postgres.NewLossBaselineRepository(runtime.database)
+	baseline := lossreference.NewFallback(postgres.NewLossBaselineRepository(runtime.database))
 	assessmentStore := postgres.NewLossAssessmentRepository(runtime.database)
 	service, err := applicationloss.NewService(repository, baseline, utcClock{})
 	if err != nil {

@@ -247,6 +247,43 @@ func TestInfrastructureRejectsTotalCoordinateOverflow(t *testing.T) {
 	}
 }
 
+func TestInfrastructureAcceptsCompleteEmptyResult(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		value := overpassFixture(now.Add(-time.Minute))
+		value["elements"] = []map[string]any{}
+		writeOverpassJSON(t, writer, value)
+	}))
+	defer server.Close()
+	client := httpclient.New(httpclient.Options{HTTPClient: server.Client(), MaxAttempts: 1,
+		Now: func() time.Time { return now }})
+	provider, err := New(Options{Client: client, Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := provider.Infrastructure(context.Background(),
+		exposurecollection.InfrastructureQuery{Bounds: testBounds()})
+	if err != nil || value.Features == nil || len(value.Features) != 0 || len(value.InputReferences) != 2 {
+		t.Fatalf("完整空结果未按真实零值返回: value=%+v error=%v", value, err)
+	}
+}
+
+func TestDecodeResponseRejectsMissingAndNullElements(t *testing.T) {
+	timestamp := "2026-08-31T11:59:00Z"
+	base := fmt.Sprintf(`{"version":0.6,"generator":"Overpass API","osm3s":{"timestamp_osm_base":%q}}`, timestamp)
+	for name, payload := range map[string]string{
+		"missing": base,
+		"null":    strings.TrimSuffix(base, "}") + `,"elements":null}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeResponse([]byte(payload), defaultMaxElements,
+				defaultMaxTotalCoordinates); err == nil {
+				t.Fatal("缺失或 null elements 未被拒绝")
+			}
+		})
+	}
+}
+
 func TestInfrastructureSkipsNonClosedFacilityWayWithLimitation(t *testing.T) {
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {

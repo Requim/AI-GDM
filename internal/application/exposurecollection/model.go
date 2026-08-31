@@ -12,12 +12,15 @@ import (
 
 const (
 	MaxRiskZones          = 500
+	MaxScopedRiskZones    = 10
 	MaxUnionGeometryBytes = 1 << 20
 	MaxInfrastructure     = 900
 	MaxProviderReferences = 64
 	MaxFeatureGeometry    = 256 << 10
 	MaxFeaturePoints      = 10_000
 	MaxTotalFeaturePoints = 250_000
+	ExposureScopePolicy   = "highest-risk-window-v1"
+	ExposureScopeDegrees  = 0.05
 )
 
 // Bounds 是 WGS84 风险区联合几何的外包矩形。
@@ -36,6 +39,20 @@ type GeometryStats struct {
 	TotalZonePoints    int64
 }
 
+// ExposureScope 描述一次局部热点暴露投影的确定性选择范围。
+type ExposureScope struct {
+	Policy                   string
+	ID                       string
+	SeedZoneID               string
+	Window                   Bounds
+	SelectedZoneCount        int
+	TotalZoneCount           int
+	SelectedAreaSquareMeters float64
+	TotalAreaSquareMeters    float64
+	AreaCoverageRatio        float64
+	CompleteCoverage         bool
+}
+
 // GeometryInput 是一次真实暴露采集所需的无损空间输入。
 type GeometryInput struct {
 	Snapshot      hazard.Snapshot
@@ -44,6 +61,7 @@ type GeometryInput struct {
 	UnionGeometry json.RawMessage
 	Bounds        Bounds
 	Stats         GeometryStats
+	Scope         ExposureScope
 }
 
 // AdministrativeBoundary 保存 geoBoundaries ADM0 的版本化真实边界。

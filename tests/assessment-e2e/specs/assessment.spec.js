@@ -124,6 +124,62 @@ test("损失评估仅提交 snapshotId，并跟随 Location 与 sources 审计",
   await expectFixtureCall(request, "loss_sources", 2);
 });
 
+test("局部热点研究参考区间使用琥珀状态并严格绑定道路案例基线", async ({ page, request }) => {
+  await setScenario(request, "loss_reference_only");
+  await openAssessment(page);
+
+  await submitLoss(page);
+
+  await expect(page.locator("#loss-assessment-status")).toHaveClass(/assessment-state-warning/);
+  await expect(page.locator("#loss-assessment-status")).not.toHaveClass(/assessment-state-current/);
+  await expect(page.locator("#loss-assessment-status")).toContainText("局部热点研究参考区间");
+  await expect(page.locator("#loss-result-state")).toHaveText("局部热点研究参考区间 · 输入质量：较低");
+  await expect(page.locator("#loss-low-amount")).toContainText("3,064.60");
+  await expect(page.locator("#loss-central-amount")).toContainText("3,643.60");
+  await expect(page.locator("#loss-high-amount")).toContainText("4,222.60");
+  await expect(page.locator("#loss-road-length")).toContainText("研究案例参考基线");
+  await expect(page.locator("#loss-population")).toContainText("局部热点暴露背景");
+  await expect(page.locator("#loss-facilities")).toContainText("局部热点暴露背景");
+  await expect(page.locator("#loss-source-list")).toContainText("研究案例参考基线");
+  for (const limitation of [
+    "本次金额为局部热点研究参考区间，不代表全国或法定灾损",
+    "研究参考金额仅计算道路；人口和设施仅作暴露背景，未货币化",
+    "道路条件损失参数来自西藏吉隆藏布流域案例并按历史欧元汇率换算，跨区域外推不确定性高",
+    "结果用于辅助研判，不替代法定灾损核定"
+  ]) await expect(page.locator("#loss-limitation-list")).toContainText(limitation);
+  const assessmentID = await currentLossAssessmentID(page);
+  const result = await fetchLossAssessmentInPage(page, assessmentID);
+  expect(result.status).toBe("reference_only");
+  expect(result.includedAssets).toEqual(["road"]);
+  expect(result.metrics.affectedRoads.baselineLevel).toBe("reference_case");
+  expect(result.metrics.conditionalDirectLoss.baselineLevel).toBe("reference_case");
+  for (const name of ["impactArea", "affectedPopulation", "affectedFacilities"]) {
+    expect(result.metrics[name].baselineLevel).toBe("not_applicable");
+  }
+  expect(Object.values(result.metrics).every((metric) => metric.status === "reference_only")).toBeTruthy();
+  for (const baseline of result.evidence.costBaselines.concat(result.evidence.vulnerabilities)) {
+    expect(baseline.status).toBe("demo_only");
+    expect(baseline.baselineLevel).toBe("reference_case");
+    expect(baseline).not.toHaveProperty("approvedBy");
+  }
+});
+
+for (const [scenario, message] of [
+  ["loss_reference_bad_cost_status", "成本基线条目无效"],
+  ["loss_reference_bad_vulnerability_level", "脆弱性基线条目无效"]
+]) {
+  test(`${scenario} 时研究参考基线篡改 fail-closed`, async ({ page, request }) => {
+    await setScenario(request, scenario);
+    await openAssessment(page);
+
+    await page.locator("#loss-snapshot-id").fill(LOSS_SNAPSHOT_ID);
+    await page.locator("#loss-assessment-run").click();
+
+    await expectLossFailClosed(page, message);
+    await expectFixtureCall(request, "loss_get", 0);
+  });
+}
+
 test("供应商省略限制贯穿投影证据、置信度和可见限制", async ({ page, request }) => {
   await setScenario(request, "loss_projection_limitation");
   await openAssessment(page);
@@ -1135,13 +1191,17 @@ async function expectLossSourceGroup(page, label, hrefPart) {
 }
 
 async function fetchLossProjectionInPage(page, assessmentID) {
+  return (await fetchLossAssessmentInPage(page, assessmentID)).evidence.spatialAnalysis;
+}
+
+async function fetchLossAssessmentInPage(page, assessmentID) {
   return page.evaluate(async (id) => {
     const response = await fetch(`/api/v1/loss/assessments/${encodeURIComponent(id)}`, {
       headers: { Accept: "application/json" }
     });
     if (!response.ok) throw new Error(`读取损失评估失败: ${response.status}`);
     const payload = await response.json();
-    return payload.data.evidence.spatialAnalysis;
+    return payload.data;
   }, assessmentID);
 }
 

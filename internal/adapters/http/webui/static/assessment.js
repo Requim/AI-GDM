@@ -12,8 +12,14 @@
   const PUBLIC_EVIDENCE_LICENSE = "来源许可需在公开站点人工核验";
   const PUBLIC_EVIDENCE_LIMITATION = "证据文本、地址路径和未配置子域已最小化；条目身份与批次响应审计分别使用不可逆摘要";
   const SENSITIVE_QUERY = /^(?:.*(?:token|api[_-]?key|access[_-]?key|secret|signature|credential|password|passwd|session|authorization|cookie).*|key|x-amz-.+)$/i;
-  const LOSS_REQUIRED_LIMITATIONS = [
+  const LOSS_AVAILABLE_LIMITATIONS = [
     "仅估算道路和风险区内 POI 设施的直接物理损失",
+    "结果用于辅助研判，不替代法定灾损核定"
+  ];
+  const LOSS_REFERENCE_LIMITATIONS = [
+    "本次金额为局部热点研究参考区间，不代表全国或法定灾损",
+    "研究参考金额仅计算道路；人口和设施仅作暴露背景，未货币化",
+    "道路条件损失参数来自西藏吉隆藏布流域案例并按历史欧元汇率换算，跨区域外推不确定性高",
     "结果用于辅助研判，不替代法定灾损核定"
   ];
   const AUTHORITY_SCHEMAS = {
@@ -216,7 +222,7 @@
     }
     const message = detail.state === "fallback" ?
       "已使用风险地图最后一次成功数据，估算结果需要重点复核时效。" :
-      "已读取风险地图当前有效数据，可以估算直接损失。";
+      "已绑定风险地图当前有效快照，可以估算直接损失。";
     clearLossResult(message);
     state.lossAutoSnapshotID = detail.snapshotId;
     state.lossAutoSnapshotState = detail.state;
@@ -286,7 +292,7 @@
     const available = result.status === "available";
     setAssessmentState(elements.lossStatus, available ? "current" : "warning", available ?
       "估算完成。金额是道路和设施的直接物理损失范围，请结合右侧数据依据和未计算项复核。" :
-      "基础数据不齐，当前不能给出可靠金额；右侧会说明数据缺口。");
+      "局部热点研究参考区间已生成。金额仅覆盖道路案例参数，不能外推为全国或法定灾损。");
     elements.lossID.textContent = result.id;
     elements.lossLow.textContent = formatCNY(result.conditionalLowCents);
     elements.lossCentral.textContent = formatCNY(result.conditionalCentralCents);
@@ -299,7 +305,8 @@
     elements.lossFormula.textContent = result.formulaVersion;
     renderLossSources(result, audit);
     renderLossLimitations(result, audit);
-    rememberReference("loss_assessment", result.id, "条件灾损估算 / " + result.id);
+    const referenceLabel = available ? "条件灾损估算" : "局部热点研究参考区间";
+    rememberReference("loss_assessment", result.id, referenceLabel + " / " + result.id);
   }
 
   function clearLossResult(message, status) {
@@ -341,7 +348,8 @@
     if (!hasRequiredKeys(value, allowed, required) || !validID(value.id) || value.snapshotId !== snapshotID ||
       value.formulaVersion !== "ai-gdm-loss-formula-v2" || !validText(value.scenarioMethod, 256) ||
       !["landslide", "debris_flow"].includes(value.hazardType) || !validText(value.regionCode, 128) ||
-      value.status !== "available" || !strictUTC(value.calculatedAt, true) || !SHA256.test(value.inputDigest)) {
+      !["available", "reference_only"].includes(value.status) ||
+      !strictUTC(value.calculatedAt, true) || !SHA256.test(value.inputDigest)) {
       throw new Error("损失评估身份、状态或时间契约无效");
     }
     validateLossAmounts(value);
@@ -352,9 +360,10 @@
     value.includedAssets = validateEnumArray(value.includedAssets, ["building", "road", "facility"], "计入资产");
     value.excludedLosses = validateTextArray(value.excludedLosses, 1000, 4096, "排除损失");
     value.limitations = validateTextArray(value.limitations, 1000, 4096, "损失限制");
+    const requiredLimitations = requiredLossLimitations(value.status);
     if (!sameStringArray(value.includedAssets, bindings.includedAssets) ||
       !sameStringArray(value.inputReferences, bindings.inputReferences) ||
-      !LOSS_REQUIRED_LIMITATIONS.every(function (item) { return value.limitations.includes(item); }) ||
+      !requiredLimitations.every(function (item) { return value.limitations.includes(item); }) ||
       !value.evidence.spatialAnalysis.projectionLimitations.every(function (item) {
         return value.limitations.includes(item);
       })) {
@@ -429,15 +438,29 @@
     fields.forEach(function (name) {
       const metric = metrics[name];
       if (!hasExactKeys(metric, ["provided", "status", "baselineLevel"]) || metric.provided !== true ||
-        metric.status !== status || !["not_applicable", "regional", "national", "mixed"].includes(metric.baselineLevel)) {
+        metric.status !== status || !["not_applicable", "regional", "national", "mixed", "reference_case"].includes(metric.baselineLevel)) {
         throw new Error("损失分项可用性或基线层级无效");
       }
     });
+    if (status === "reference_only") {
+      validateReferenceLossMetrics(metrics);
+      return;
+    }
     if (metrics.impactArea.baselineLevel !== "not_applicable" ||
       metrics.affectedPopulation.baselineLevel !== "not_applicable" ||
       [metrics.affectedRoads, metrics.affectedFacilities, metrics.conditionalDirectLoss].some(function (metric) {
-        return metric.baselineLevel === "not_applicable";
+        return !["regional", "national", "mixed"].includes(metric.baselineLevel);
       })) throw new Error("损失分项基线层级无效");
+  }
+
+  function validateReferenceLossMetrics(metrics) {
+    if (metrics.impactArea.baselineLevel !== "not_applicable" ||
+      metrics.affectedPopulation.baselineLevel !== "not_applicable" ||
+      metrics.affectedFacilities.baselineLevel !== "not_applicable" ||
+      metrics.affectedRoads.baselineLevel !== "reference_case" ||
+      metrics.conditionalDirectLoss.baselineLevel !== "reference_case") {
+      throw new Error("研究参考损失分项基线层级无效");
+    }
   }
 
   function validateLossEvidence(evidence, result) {
@@ -451,9 +474,10 @@
     validateLossBaselineSet(evidence.baselineSet);
     validateLossRiskZones(evidence.riskZones, evidence.intensityBand);
     const exposures = validateLossFeatures(evidence, result);
-    validateLossBaselines(evidence.costBaselines, evidence.vulnerabilities, result, evidence.baselineSet, exposures);
+    const includedAssets = validateLossBaselines(
+      evidence.costBaselines, evidence.vulnerabilities, result, evidence.baselineSet, exposures);
     return {
-      includedAssets: Array.from(new Set(exposures.map(function (value) { return value.assetType; }))).sort(),
+      includedAssets: includedAssets,
       inputReferences: lossEvidenceReferences(evidence)
     };
   }
@@ -537,8 +561,9 @@
     const roads = exposures.filter(function (value) { return value.assetType === "road"; });
     const facilities = exposures.filter(function (value) { return value.assetType === "facility"; });
     const coverageConfidence = exposures.reduce(function (value, item) { return value * item.coverageRatio; }, 1);
-    const expectedConfidence = evidence.spatialAnalysis.projectionLimitations.length > 0 ?
+    let expectedConfidence = evidence.spatialAnalysis.projectionLimitations.length > 0 ?
       Math.min(coverageConfidence, 0.79) : coverageConfidence;
+    if (result.status === "reference_only") expectedConfidence = Math.min(expectedConfidence, 0.49);
     if (!approximatelyEqual(sumQuantity(population), result.affectedPopulation) ||
       !approximatelyEqual(sumQuantity(roads), result.affectedRoadMeters) ||
       !approximatelyEqual(sumQuantity(facilities), result.affectedFacilities) ||
@@ -601,7 +626,10 @@
       vulnerabilities.length === 0 || vulnerabilities.length > 1000) throw new Error("损失基线证据无效");
     const assets = new Map();
     const pairs = new Set();
-    exposures.forEach(function (value) {
+    const monetized = result.status === "reference_only" ? exposures.filter(function (value) {
+      return value.assetType === "road";
+    }) : exposures;
+    monetized.forEach(function (value) {
       assets.set(value.assetType, value.unit);
       pairs.add(value.assetType + "\u0000" + value.intensityBand);
     });
@@ -628,6 +656,7 @@
     if (costAssets.size !== assets.size || vulnerabilityPairs.size !== pairs.size) {
       throw new Error("损失基线存在缺失或多余语义项");
     }
+    return Array.from(assets.keys()).sort();
   }
 
   function validateLossCost(value, set, result) {
@@ -639,8 +668,8 @@
       !validText(value.unit, 64) || ![value.lowCents, value.centralCents, value.highCents].every(canonicalDecimal) ||
       BigInt(value.lowCents) > BigInt(value.centralCents) || BigInt(value.centralCents) > BigInt(value.highCents) ||
       value.currency !== "CNY" || !strictUTC(value.priceBaseDate, true) ||
-      Date.parse(value.priceBaseDate) > Date.parse(result.calculatedAt) || !validApprovedBaseline(value) ||
-      !baselineRegionMatches(value.baselineLevel, value.regionCode, result.regionCode)) {
+      Date.parse(value.priceBaseDate) > Date.parse(result.calculatedAt) || !validLossBaseline(value, result.status) ||
+      !lossBaselineRegionMatches(value, result.status, result.regionCode)) {
       throw new Error("成本基线条目无效");
     }
     validateLossSource(value.source, set.version, result.calculatedAt);
@@ -657,17 +686,29 @@
       !["low", "moderate", "high", "very_high"].includes(value.intensityBand) ||
       !validFractionBand(value.impactFractionLow, value.impactFractionMid, value.impactFractionHigh) ||
       !validFractionBand(value.damageRatioLow, value.damageRatioMid, value.damageRatioHigh) ||
-      !validText(value.calibrationRegion, 128) || !validApprovedBaseline(value) ||
-      !baselineRegionMatches(value.baselineLevel, value.calibrationRegion, result.regionCode)) {
+      !validText(value.calibrationRegion, 128) || !validLossBaseline(value, result.status) ||
+      !lossBaselineRegionMatches(value, result.status, result.regionCode)) {
       throw new Error("脆弱性基线条目无效");
     }
     validateLossSource(value.source, set.version, result.calculatedAt);
     return value.assetType + "\u0000" + value.intensityBand + "\u0000" + value.id;
   }
 
-  function validApprovedBaseline(value) {
+  function validLossBaseline(value, assessmentStatus) {
+    if (assessmentStatus === "reference_only") {
+      return value.status === "demo_only" && value.provided === true &&
+        value.baselineLevel === "reference_case" && value.approvedBy === undefined;
+    }
     return value.status === "approved" && value.provided === true &&
       ["regional", "national"].includes(value.baselineLevel) && validText(value.approvedBy, 128);
+  }
+
+  function lossBaselineRegionMatches(value, assessmentStatus, regionCode) {
+    if (assessmentStatus === "reference_only") {
+      return value.baselineLevel === "reference_case";
+    }
+    const actual = value.regionCode === undefined ? value.calibrationRegion : value.regionCode;
+    return baselineRegionMatches(value.baselineLevel, actual, regionCode);
   }
 
   function validateLossSource(source, expectedVersion, calculatedAt) {
@@ -829,10 +870,11 @@
 
   function renderLossLimitations(result, audit) {
     const values = uniqueTextValues(result.limitations.concat(result.excludedLosses, audit.limitations));
-    const required = LOSS_REQUIRED_LIMITATIONS.filter(function (value) { return values.includes(value); });
+    const requiredLimitations = requiredLossLimitations(result.status);
+    const required = requiredLimitations.filter(function (value) { return values.includes(value); });
     const visible = required.concat(values.filter(function (value) {
-      return !LOSS_REQUIRED_LIMITATIONS.includes(value);
-    }).slice(0, 29));
+      return !requiredLimitations.includes(value);
+    }).slice(0, Math.max(0, 31 - required.length)));
     const nodes = visible.map(function (value) {
       const item = document.createElement("li");
       item.textContent = value;
@@ -897,15 +939,27 @@
 
   function metricText(value, unit, metric) {
     const formatted = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
-    if (!metric.provided || metric.status !== "available") return formatted + " " + unit + " · 数据不足";
+    if (!metric.provided) return formatted + " " + unit + " · 数据不足";
+    if (metric.status === "reference_only") {
+      const reference = metric.baselineLevel === "reference_case" ? "使用研究案例参考基线" : "局部热点暴露背景";
+      return formatted + " " + unit + " · " + reference;
+    }
+    if (metric.status !== "available") return formatted + " " + unit + " · 数据不足";
     const source = metric.baselineLevel === "not_applicable" ? "来自当前风险分析" :
       "使用" + baselineLevelText(metric.baselineLevel);
     return formatted + " " + unit + " · " + source;
   }
 
-  function lossStatusText(value) { return value === "available" ? "可计算" : value === "insufficient_data" ? "数据不足" : "未知"; }
+  function requiredLossLimitations(status) {
+    return status === "reference_only" ? LOSS_REFERENCE_LIMITATIONS : LOSS_AVAILABLE_LIMITATIONS;
+  }
+  function lossStatusText(value) {
+    return value === "available" ? "可计算" : value === "reference_only" ? "局部热点研究参考区间" :
+      value === "insufficient_data" ? "数据不足" : "未知";
+  }
   function baselineLevelText(value) {
-    return ({ not_applicable: "当前分析", regional: "区域级基线", national: "国家级基线", mixed: "混合层级基线" })[value] || "未知基线";
+    return ({ not_applicable: "当前分析", regional: "区域级基线", national: "国家级基线",
+      mixed: "混合层级基线", reference_case: "研究案例参考基线" })[value] || "未知基线";
   }
   function confidenceBandText(value) { return ({ very_low: "很低", low: "较低", moderate: "中等", high: "较高" })[value] || "未知"; }
   function confidenceBand(value) { return value >= 0.8 ? "high" : value >= 0.5 ? "moderate" : value >= 0.25 ? "low" : "very_low"; }
@@ -1073,7 +1127,7 @@
         BigInt(value.conditionalCentralCents) > BigInt(value.conditionalHighCents) ||
         !finiteRange(value.impactAreaSquareMeters, 0, Number.MAX_VALUE) ||
         !finiteRange(value.affectedPopulation, 0, Number.MAX_VALUE) || !finiteRange(value.confidence, 0, 1) ||
-        !["available", "insufficient_data"].includes(value.status) ||
+        !["available", "reference_only", "insufficient_data"].includes(value.status) ||
         value.confidenceBand !== confidenceBand(value.confidence)) throw new Error("损失 Authority 契约无效");
       break;
     case "survival_assessment":

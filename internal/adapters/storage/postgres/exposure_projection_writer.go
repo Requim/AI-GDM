@@ -149,7 +149,7 @@ func validateExposureProjection(r *HazardRepository,
 		analysis.AdminBoundaryDigest == "" || analysis.AdminBoundaryReference == "" ||
 		!finitePositive(analysis.TotalAreaSquareMeters) || len(input.Zones) == 0 ||
 		len(input.Zones) > exposurecollection.MaxRiskZones || len(analysis.Features) == 0 ||
-		len(analysis.Features) > exposurecollection.MaxInfrastructure+1 {
+		len(analysis.Features) > exposurecollection.MaxInfrastructure+2 {
 		return fmt.Errorf("%w: 暴露投影行政或数量契约无效", domain.ErrInvalidInput)
 	}
 	if len(analysis.InputReferences) == 0 || len(analysis.InputReferences) > 1000 ||

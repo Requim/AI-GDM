@@ -38,6 +38,8 @@ const (
 	maxLossProjectionLimitationBytes      = 4096
 	maxLossProjectionLimitationTotalBytes = 64 << 10
 	maxLimitedProjectionConfidence        = 0.79
+	maxReferenceConfidence                = 0.49
+	deduplicatedAreaToleranceRatio        = 0.01
 )
 
 // EstimateInput 只接受已持久化风险快照标识，禁止调用方提交计算数值。
@@ -237,10 +239,12 @@ type authoritativeInput struct {
 }
 
 type calculationPlan struct {
-	input           authoritativeInput
-	costs           []lossdomain.CostBaseline
-	vulnerabilities []lossdomain.Vulnerability
-	baselineSet     lossdomain.BaselineSetEvidence
+	input              authoritativeInput
+	monetizedExposures []lossdomain.Exposure
+	costs              []lossdomain.CostBaseline
+	vulnerabilities    []lossdomain.Vulnerability
+	baselineSet        lossdomain.BaselineSetEvidence
+	referenceOnly      bool
 }
 
 // NewService 创建确定性损失评估服务。
@@ -576,8 +580,9 @@ func validDeduplicatedArea(total float64, zones []LossRiskZone) bool {
 		sum += zone.AreaSquareM
 		largest = math.Max(largest, zone.AreaSquareM)
 	}
-	tolerance := math.Max(1e-6, sum*1e-9)
-	return total >= largest-tolerance && total <= sum+tolerance
+	lowerTolerance := math.Max(1e-6, largest*deduplicatedAreaToleranceRatio)
+	upperTolerance := math.Max(1e-6, sum*deduplicatedAreaToleranceRatio)
+	return total >= largest-lowerTolerance && total <= sum+upperTolerance
 }
 
 func deriveAuthoritativeInput(projection LossInputProjection) (authoritativeInput, error) {
@@ -682,17 +687,28 @@ func riskLevelRank(value hazarddomain.RiskLevel) (int, bool) {
 }
 
 func preparePlan(input authoritativeInput, set lossdomain.BaselineSet, now time.Time) (calculationPlan, error) {
-	assets := exposureAssets(input.exposures)
+	referenceOnly, err := referenceBaselineSet(set)
+	if err != nil {
+		return calculationPlan{}, err
+	}
+	monetized := input.exposures
+	if referenceOnly {
+		monetized = referenceRoadExposures(input.exposures)
+		if len(monetized) == 0 {
+			return calculationPlan{}, insufficient("匹配研究参考道路暴露", domain.ErrInsufficientData)
+		}
+	}
+	assets := exposureAssets(monetized)
 	selectedCosts := make([]lossdomain.CostBaseline, 0, len(assets))
 	for _, asset := range assets {
-		unit := exposureUnit(input.exposures, asset)
+		unit := exposureUnit(monetized, asset)
 		cost, err := selectCost(set.Costs, asset, input.regionCode, unit, now)
 		if err != nil {
 			return calculationPlan{}, err
 		}
 		selectedCosts = append(selectedCosts, cost)
 	}
-	pairs := exposurePairs(input.exposures)
+	pairs := exposurePairs(monetized)
 	selectedVulnerabilities := make([]lossdomain.Vulnerability, 0, len(pairs))
 	for _, pair := range pairs {
 		vulnerability, err := selectVulnerability(set.Vulnerabilities, pair.asset, pair.intensity, input, now)
@@ -705,7 +721,36 @@ func preparePlan(input authoritativeInput, set lossdomain.BaselineSet, now time.
 	if err != nil {
 		return calculationPlan{}, err
 	}
-	return calculationPlan{input: input, costs: selectedCosts, vulnerabilities: selectedVulnerabilities, baselineSet: baselineSet}, nil
+	return calculationPlan{input: input, monetizedExposures: monetized, costs: selectedCosts,
+		vulnerabilities: selectedVulnerabilities, baselineSet: baselineSet, referenceOnly: referenceOnly}, nil
+}
+
+func referenceBaselineSet(set lossdomain.BaselineSet) (bool, error) {
+	status := set.Costs[0].Status
+	if status != lossdomain.BaselineApproved && status != lossdomain.BaselineDemoOnly {
+		return false, insufficient("识别损失基线状态", domain.ErrInsufficientData)
+	}
+	for _, value := range set.Costs {
+		if value.Status != status {
+			return false, insufficient("拒绝混用成本基线状态", domain.ErrInsufficientData)
+		}
+	}
+	for _, value := range set.Vulnerabilities {
+		if value.Status != status {
+			return false, insufficient("拒绝混用成本与脆弱性基线状态", domain.ErrInsufficientData)
+		}
+	}
+	return status == lossdomain.BaselineDemoOnly, nil
+}
+
+func referenceRoadExposures(values []lossdomain.Exposure) []lossdomain.Exposure {
+	result := make([]lossdomain.Exposure, 0, len(values))
+	for _, value := range values {
+		if value.AssetType == lossdomain.AssetRoad {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func consistentBaselineSet(version string, costs []lossdomain.CostBaseline,
@@ -737,11 +782,14 @@ func consistentBaselineSet(version string, costs []lossdomain.CostBaseline,
 func selectCost(values []lossdomain.CostBaseline, asset lossdomain.AssetType, region, unit string,
 	now time.Time) (lossdomain.CostBaseline, error) {
 	exact, national := make([]lossdomain.CostBaseline, 0, 1), make([]lossdomain.CostBaseline, 0, 1)
+	reference := make([]lossdomain.CostBaseline, 0, 1)
 	for _, value := range values {
 		if value.AssetType != asset || value.Unit != unit {
 			continue
 		}
-		if value.RegionCode == region {
+		if value.Status == lossdomain.BaselineDemoOnly {
+			reference = append(reference, value)
+		} else if value.RegionCode == region {
 			exact = append(exact, value)
 		} else if value.RegionCode == "CN" {
 			national = append(national, value)
@@ -754,22 +802,31 @@ func selectCost(values []lossdomain.CostBaseline, asset lossdomain.AssetType, re
 			level = lossdomain.BaselineRegional
 		}
 	}
+	if len(exact) == 0 && len(national) == 0 && len(reference) > 0 {
+		candidates, level = reference, lossdomain.BaselineReferenceCase
+	}
 	if len(candidates) != 1 {
 		return lossdomain.CostBaseline{}, insufficient("匹配唯一成本基线", domain.ErrInsufficientData)
 	}
 	value := candidates[0]
 	value.Provided, value.BaselineLevel = true, level
-	if err := validateApprovedCost(value, unit, now); err != nil {
+	if err := validateSelectedCost(value, unit, now); err != nil {
 		return lossdomain.CostBaseline{}, err
 	}
 	return value, nil
 }
 
-func validateApprovedCost(value lossdomain.CostBaseline, unit string, now time.Time) error {
+func validateSelectedCost(value lossdomain.CostBaseline, unit string, now time.Time) error {
 	if err := value.Validate(); err != nil {
 		return insufficient("校验成本基线", err)
 	}
-	if value.Status != lossdomain.BaselineApproved || value.Unit != unit || value.PriceBaseDate.After(now) {
+	if value.Unit != unit || value.PriceBaseDate.After(now) {
+		return insufficient("校验成本基线单位或基准日", domain.ErrInsufficientData)
+	}
+	if value.Status == lossdomain.BaselineDemoOnly {
+		return validateReferenceBaseline(value.Source, now)
+	}
+	if value.Status != lossdomain.BaselineApproved {
 		return insufficient("校验已批准成本基线", domain.ErrInsufficientData)
 	}
 	if err := validateCurrentSource(value.Source, now); err != nil {
@@ -781,43 +838,60 @@ func validateApprovedCost(value lossdomain.CostBaseline, unit string, now time.T
 func selectVulnerability(values []lossdomain.Vulnerability, asset lossdomain.AssetType, intensity string,
 	input authoritativeInput, now time.Time) (lossdomain.Vulnerability, error) {
 	exact, national := make([]lossdomain.Vulnerability, 0, 1), make([]lossdomain.Vulnerability, 0, 1)
+	reference := make([]lossdomain.Vulnerability, 0, 1)
 	for _, value := range values {
 		if value.AssetType != asset || value.HazardType != string(input.snapshot.HazardType) || value.IntensityBand != intensity {
 			continue
 		}
-		if value.CalibrationRegion == input.regionCode {
+		if value.Status == lossdomain.BaselineDemoOnly {
+			reference = append(reference, value)
+		} else if value.CalibrationRegion == input.regionCode {
 			exact = append(exact, value)
 		} else if value.CalibrationRegion == "CN" {
 			national = append(national, value)
 		}
 	}
-	candidates := national
+	candidates, level := national, lossdomain.BaselineNational
 	if len(exact) > 0 {
 		candidates = exact
+	}
+	if len(exact) == 0 && len(national) == 0 && len(reference) > 0 {
+		candidates, level = reference, lossdomain.BaselineReferenceCase
 	}
 	if len(candidates) != 1 {
 		return lossdomain.Vulnerability{}, insufficient("匹配唯一脆弱性基线", domain.ErrInsufficientData)
 	}
-	value, level := candidates[0], lossdomain.BaselineNational
+	value := candidates[0]
 	if len(exact) > 0 && input.regionCode != "CN" {
 		level = lossdomain.BaselineRegional
 	}
 	value.Provided, value.BaselineLevel = true, level
-	if err := validateApprovedVulnerability(value, now); err != nil {
+	if err := validateSelectedVulnerability(value, now); err != nil {
 		return lossdomain.Vulnerability{}, err
 	}
 	return value, nil
 }
 
-func validateApprovedVulnerability(value lossdomain.Vulnerability, now time.Time) error {
+func validateSelectedVulnerability(value lossdomain.Vulnerability, now time.Time) error {
 	if err := value.Validate(); err != nil {
 		return insufficient("校验脆弱性基线", err)
+	}
+	if value.Status == lossdomain.BaselineDemoOnly {
+		return validateReferenceBaseline(value.Source, now)
 	}
 	if value.Status != lossdomain.BaselineApproved {
 		return insufficient("校验已批准脆弱性基线", domain.ErrInsufficientData)
 	}
 	if err := validateCurrentSource(value.Source, now); err != nil {
 		return insufficient("校验脆弱性基线时效", err)
+	}
+	return nil
+}
+
+func validateReferenceBaseline(source provenance.Provenance, now time.Time) error {
+	if source.Stale || source.FetchedAt.IsZero() || source.FetchedAt.After(now) ||
+		(!source.PublishedAt.IsZero() && source.PublishedAt.After(now)) {
+		return insufficient("校验研究参考基线时间", domain.ErrInsufficientData)
 	}
 	return nil
 }
@@ -833,26 +907,42 @@ func calculate(plan calculationPlan, calculatedAt time.Time) (lossdomain.Assessm
 	if len(plan.input.analysis.ProjectionLimitations) > 0 && confidence > maxLimitedProjectionConfidence {
 		confidence = maxLimitedProjectionConfidence
 	}
+	if plan.referenceOnly && confidence > maxReferenceConfidence {
+		confidence = maxReferenceConfidence
+	}
 	excluded := sortedStrings([]string{"建筑物损失未纳入：缺少权威建筑暴露面积", "间接经济损失和人员伤亡未纳入"})
+	status, method := lossdomain.AssessmentAvailable, "暴露量/覆盖率 × 单位重置成本 × 影响比例 × 损伤率"
+	if plan.referenceOnly {
+		status, method = lossdomain.AssessmentReferenceOnly, "局部热点道路长度 × 西藏案例条件损失单价区间"
+		excluded = sortedStrings(append(excluded, "人口和设施仅作暴露背景，未纳入研究参考金额"))
+	}
 	limitations := sortedUniqueStrings(append(cloneStrings(plan.input.analysis.ProjectionLimitations),
-		lossdomain.LimitationDirectPhysicalLoss, lossdomain.LimitationAdvisoryOnly))
+		requiredLimitations(plan.referenceOnly)...))
 	assessment := lossdomain.Assessment{SnapshotID: plan.input.snapshot.ID, HazardType: string(plan.input.snapshot.HazardType),
 		RegionCode: plan.input.regionCode, FormulaVersion: lossdomain.FormulaVersion,
-		ScenarioMethod:      "暴露量/覆盖率 × 单位重置成本 × 影响比例 × 损伤率",
+		ScenarioMethod:      method,
 		ConditionalLowCents: low, ConditionalMidCents: mid, ConditionalHighCents: high,
 		ImpactAreaSquareM: plan.input.analysis.TotalAreaSquareMeters, AffectedPopulation: population,
 		AffectedRoadMeters: roads, AffectedFacilities: facilities, InputReferences: lossdomain.EvidenceReferences(evidence),
-		IncludedAssets: exposureAssets(plan.input.exposures), ExcludedLosses: excluded, Status: lossdomain.AssessmentAvailable,
+		IncludedAssets: exposureAssets(plan.monetizedExposures), ExcludedLosses: excluded, Status: status,
 		Confidence: confidence, ConfidenceBand: confidenceBand(confidence), Limitations: limitations,
 		CalculatedAt: calculatedAt.UTC(), Evidence: evidence}
 	return lossdomain.BindAssessmentIdentity(assessment)
+}
+
+func requiredLimitations(referenceOnly bool) []string {
+	if referenceOnly {
+		return []string{lossdomain.LimitationAdvisoryOnly, lossdomain.LimitationReferenceOnly,
+			lossdomain.LimitationReferenceRoadOnly, lossdomain.LimitationReferenceTransfer}
+	}
+	return []string{lossdomain.LimitationDirectPhysicalLoss, lossdomain.LimitationAdvisoryOnly}
 }
 
 func calculateAmounts(plan calculationPlan) (int64, int64, int64, error) {
 	costs := indexCosts(plan.costs)
 	vulnerabilities := indexVulnerabilities(plan.vulnerabilities)
 	var low, mid, high int64
-	for _, exposure := range plan.input.exposures {
+	for _, exposure := range plan.monetizedExposures {
 		cost := costs[exposure.AssetType]
 		vulnerability := vulnerabilities[vulnerabilityMapKey(exposure.AssetType, exposure.IntensityBand)]
 		parts, err := damageBand(exposure, cost, vulnerability)

@@ -44,6 +44,8 @@ type BaselineLevel string
 const (
 	BaselineRegional BaselineLevel = "regional"
 	BaselineNational BaselineLevel = "national"
+	// BaselineReferenceCase 标识仅用于研究参考的跨区域案例基线。
+	BaselineReferenceCase BaselineLevel = "reference_case"
 )
 
 // AssessmentStatus 表示损失评估是否具备完整输入。
@@ -52,6 +54,8 @@ type AssessmentStatus string
 const (
 	AssessmentAvailable        AssessmentStatus = "available"
 	AssessmentInsufficientData AssessmentStatus = "insufficient_data"
+	// AssessmentReferenceOnly 表示可计算但只能作为局部研究参考。
+	AssessmentReferenceOnly AssessmentStatus = "reference_only"
 )
 
 // Exposure 描述风险区内暴露的资产或人口数量。
@@ -167,6 +171,12 @@ const (
 	LimitationDirectPhysicalLoss = "仅估算道路和风险区内 POI 设施的直接物理损失"
 	// LimitationAdvisoryOnly 明确评估不能替代法定灾损核定。
 	LimitationAdvisoryOnly = "结果用于辅助研判，不替代法定灾损核定"
+	// LimitationReferenceOnly 明确局部参考结果不得外推。
+	LimitationReferenceOnly = "本次金额为局部热点研究参考区间，不代表全国或法定灾损"
+	// LimitationReferenceRoadOnly 明确参考金额只覆盖道路。
+	LimitationReferenceRoadOnly = "研究参考金额仅计算道路；人口和设施仅作暴露背景，未货币化"
+	// LimitationReferenceTransfer 明确参考参数的地域和换算限制。
+	LimitationReferenceTransfer = "道路条件损失参数来自西藏吉隆藏布流域案例并按历史欧元汇率换算，跨区域外推不确定性高"
 )
 
 // Validate 校验风险区暴露记录的数值、单位和来源。
@@ -220,15 +230,19 @@ func validateAssessmentCore(a Assessment) error {
 		a.Confidence < 0 || a.Confidence > 1 {
 		return fmt.Errorf("%w: 损失影响范围或置信度无效", domain.ErrInvalidInput)
 	}
-	if a.Status != AssessmentAvailable && a.Status != AssessmentInsufficientData {
+	if a.Status != AssessmentAvailable && a.Status != AssessmentInsufficientData && a.Status != AssessmentReferenceOnly {
 		return fmt.Errorf("%w: 损失评估状态无效", domain.ErrInvalidInput)
 	}
 	if a.ConfidenceBand != "high" && a.ConfidenceBand != "moderate" &&
 		a.ConfidenceBand != "low" && a.ConfidenceBand != "very_low" {
 		return fmt.Errorf("%w: 损失评估置信度等级无效", domain.ErrInvalidInput)
 	}
-	if a.Status == AssessmentAvailable && len(a.InputReferences) == 0 {
+	if (a.Status == AssessmentAvailable || a.Status == AssessmentReferenceOnly) && len(a.InputReferences) == 0 {
 		return fmt.Errorf("%w: 可用损失评估缺少输入依据", domain.ErrInvalidInput)
+	}
+	if a.Status == AssessmentReferenceOnly && (a.Confidence >= 0.5 ||
+		(a.ConfidenceBand != "low" && a.ConfidenceBand != "very_low")) {
+		return fmt.Errorf("%w: 研究参考损失评估置信度过高", domain.ErrInvalidInput)
 	}
 	if err := validateStringList("损失评估输入引用", a.InputReferences, true); err != nil {
 		return err
@@ -239,11 +253,19 @@ func validateAssessmentCore(a Assessment) error {
 	if err := validateStringList("损失评估限制", a.Limitations, true); err != nil {
 		return err
 	}
-	if !containsString(a.Limitations, LimitationDirectPhysicalLoss) ||
-		!containsString(a.Limitations, LimitationAdvisoryOnly) {
+	if !containsString(a.Limitations, LimitationAdvisoryOnly) || !hasRequiredAssessmentLimitations(a) {
 		return fmt.Errorf("%w: 损失评估缺少强制适用范围说明", domain.ErrInvalidInput)
 	}
 	return nil
+}
+
+func hasRequiredAssessmentLimitations(value Assessment) bool {
+	if value.Status != AssessmentReferenceOnly {
+		return containsString(value.Limitations, LimitationDirectPhysicalLoss)
+	}
+	return containsString(value.Limitations, LimitationReferenceOnly) &&
+		containsString(value.Limitations, LimitationReferenceRoadOnly) &&
+		containsString(value.Limitations, LimitationReferenceTransfer)
 }
 
 // Validate 校验成本情景带、币种和审核要求。
@@ -465,7 +487,7 @@ func validSelectionMetadata(provided bool, level BaselineLevel) bool {
 	if !provided && level == "" {
 		return true
 	}
-	return provided && (level == BaselineRegional || level == BaselineNational)
+	return provided && (level == BaselineRegional || level == BaselineNational || level == BaselineReferenceCase)
 }
 
 func validEvidenceIdentifier(value string) bool {

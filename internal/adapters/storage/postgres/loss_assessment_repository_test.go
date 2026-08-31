@@ -84,6 +84,15 @@ func TestLossAssessmentRepositorySQLContracts(t *testing.T) {
 	if strings.Contains(sql, "assessment_bytes") {
 		t.Error("已发布的 006 迁移不应被完整性增强改写")
 	}
+	referenceMigration, err := migrationFiles.ReadFile("migrations/010_loss_reference_status.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	referenceSQL := normalizedSQL(string(referenceMigration))
+	if !strings.Contains(referenceSQL, "drop constraint loss_assessments_status_check") ||
+		!strings.Contains(referenceSQL, "'reference_only'") {
+		t.Fatal("损失评估迁移未显式加入研究参考状态")
+	}
 }
 
 func normalizedSQL(value string) string {

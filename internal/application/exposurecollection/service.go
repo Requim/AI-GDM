@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,11 +118,13 @@ func (c *Collector) compose(ctx context.Context, input GeometryInput,
 	if err := validateInfrastructure(infrastructure); err != nil {
 		return ExposureProjection{}, err
 	}
-	rawFeatures := withProviderReferences(infrastructure.Features, infrastructure.InputReferences)
-	features, err := c.projector.ProjectInfrastructure(ctx, administration,
-		rawFeatures, geometryProjectionLimits())
+	features, zeroLimitations, err := c.projectInfrastructure(ctx, administration, infrastructure)
 	if err != nil {
-		return ExposureProjection{}, fmt.Errorf("投影 OSM 道路和设施: %w", err)
+		return ExposureProjection{}, err
+	}
+	infrastructure.Limitations = sortedUnique(append(infrastructure.Limitations, zeroLimitations...))
+	if len(infrastructure.Limitations) > MaxProviderReferences {
+		return ExposureProjection{}, fmt.Errorf("%w: OSM 限制记录超过安全预算", domain.ErrInsufficientData)
 	}
 	features = append(features, populationFeature(population, administration.Zones))
 	if err = normalizeFeatures(features); err != nil {
@@ -135,14 +138,7 @@ func (c *Collector) compose(ctx context.Context, input GeometryInput,
 	analysis.AdminBoundaryID = administration.BoundaryID
 	analysis.AdminBoundaryDigest = administration.BoundaryDigest
 	analysis.AdminBoundaryReference = administration.BoundaryReference
-	analysis.ProjectionLimitations = sortedUnique(append(
-		append([]string(nil), population.Limitations...), infrastructure.Limitations...))
-	analysis.InputReferences = mergeStrings(analysis.InputReferences,
-		population.InputReferences, infrastructure.InputReferences)
-	analysis.DatasetReferences = mergeStrings(analysis.DatasetReferences, boundary.InputReferences,
-		[]string{population.DatasetIdentity, population.DataSource}, infrastructure.InputReferences)
-	analysis.ProjectionCollectedAt = latestTime(boundary.CollectedAt, population.CollectedAt,
-		infrastructure.CollectedAt)
+	applyExposureAudit(&analysis, input.Scope, boundary, population, infrastructure)
 	if analysis.ProjectionCollectedAt.After(now) {
 		return ExposureProjection{}, fmt.Errorf("%w: 暴露投影采集时间晚于当前 UTC 时间", domain.ErrInsufficientData)
 	}
@@ -159,6 +155,86 @@ func (c *Collector) compose(ctx context.Context, input GeometryInput,
 		return ExposureProjection{}, fmt.Errorf("绑定真实暴露投影身份: %w", err)
 	}
 	return projection, nil
+}
+
+func (c *Collector) projectInfrastructure(ctx context.Context, administration AdministrativeProjection,
+	infrastructure InfrastructureResult,
+) ([]applicationloss.LossExposureFeature, []string, error) {
+	features := make([]applicationloss.LossExposureFeature, 0, len(infrastructure.Features)+2)
+	if len(infrastructure.Features) > 0 {
+		raw := withProviderReferences(infrastructure.Features, infrastructure.InputReferences)
+		projected, err := c.projector.ProjectInfrastructure(ctx, administration, raw, geometryProjectionLimits())
+		if err != nil {
+			return nil, nil, fmt.Errorf("投影 OSM 道路和设施: %w", err)
+		}
+		features = projected
+	}
+	return completeInfrastructureKinds(features, administration.Zones, infrastructure.InputReferences)
+}
+
+func completeInfrastructureKinds(values []applicationloss.LossExposureFeature,
+	zones []applicationloss.LossRiskZone, references []string,
+) ([]applicationloss.LossExposureFeature, []string, error) {
+	zoneIDs, refs := projectionZoneIDs(zones), sortedUnique(references)
+	if len(zoneIDs) == 0 || len(refs) == 0 {
+		return nil, nil, fmt.Errorf("%w: OSM 零值审计绑定不完整", domain.ErrInsufficientData)
+	}
+	kinds := make(map[applicationloss.LossFeatureKind]struct{}, 2)
+	for _, value := range values {
+		kinds[value.Kind] = struct{}{}
+	}
+	limitations := make([]string, 0, 2)
+	for _, kind := range []applicationloss.LossFeatureKind{applicationloss.LossFeatureRoad,
+		applicationloss.LossFeatureFacility} {
+		if _, exists := kinds[kind]; exists {
+			continue
+		}
+		values = append(values, zeroInfrastructureFeature(kind, zoneIDs, refs))
+		limitations = append(limitations, zeroInfrastructureLimitation(kind))
+	}
+	return values, limitations, nil
+}
+
+func projectionZoneIDs(zones []applicationloss.LossRiskZone) []string {
+	result := make([]string, len(zones))
+	for index, zone := range zones {
+		result[index] = zone.ID
+	}
+	sort.Strings(result)
+	return result
+}
+
+func zeroInfrastructureFeature(kind applicationloss.LossFeatureKind, zoneIDs, references []string,
+) applicationloss.LossExposureFeature {
+	unit := "count"
+	if kind == applicationloss.LossFeatureRoad {
+		unit = "meters"
+	}
+	return applicationloss.LossExposureFeature{FeatureID: "osm-query-zero-" + string(kind), Kind: kind,
+		ZoneIDs: append([]string(nil), zoneIDs...), Quantity: 0, Unit: unit, CoverageRatio: 1,
+		Status: spatialanalysis.MetricAvailable, Provided: true,
+		InputReferences: append([]string(nil), references...)}
+}
+
+func zeroInfrastructureLimitation(kind applicationloss.LossFeatureKind) string {
+	if kind == applicationloss.LossFeatureRoad {
+		return "OpenStreetMap 本次有界查询在局部热点范围内未发现道路要素，按真实零值记录"
+	}
+	return "OpenStreetMap 本次有界查询在局部热点范围内未发现设施要素，按真实零值记录"
+}
+
+func applyExposureAudit(analysis *applicationloss.LossSpatialProjection, scope ExposureScope,
+	boundary AdministrativeBoundary, population PopulationResult, infrastructure InfrastructureResult,
+) {
+	scopeReference, scopeDataset, scopeLimitation := exposureScopeAudit(scope)
+	limitations := append(append([]string(nil), population.Limitations...), infrastructure.Limitations...)
+	analysis.ProjectionLimitations = sortedUnique(append(limitations, scopeLimitation))
+	analysis.InputReferences = mergeStrings(analysis.InputReferences,
+		[]string{scopeReference}, population.InputReferences, infrastructure.InputReferences)
+	analysis.DatasetReferences = mergeStrings(analysis.DatasetReferences, boundary.InputReferences,
+		[]string{scopeDataset, population.DatasetIdentity, population.DataSource}, infrastructure.InputReferences)
+	analysis.ProjectionCollectedAt = latestTime(boundary.CollectedAt, population.CollectedAt,
+		infrastructure.CollectedAt)
 }
 
 func canonicalizeGeometryInput(value *GeometryInput) {
@@ -229,7 +305,83 @@ func validateGeometryInput(value GeometryInput, snapshotID, analysisID string) e
 	if !validBounds(value.Bounds) || !finitePositive(value.Analysis.TotalAreaSquareMeters) {
 		return fmt.Errorf("%w: 暴露采集空间范围无效", domain.ErrInsufficientData)
 	}
+	if err := ValidateExposureScopeIdentity(value.Scope, value.Zones); err != nil ||
+		!boundsContain(value.Scope.Window, value.Bounds) {
+		return fmt.Errorf("%w: 暴露采集局部范围无效", errors.Join(domain.ErrInsufficientData, err))
+	}
 	return nil
+}
+
+// BindExposureScopeIdentity 规范化并绑定局部热点范围的内容身份。
+func BindExposureScopeIdentity(value *ExposureScope, zones []applicationloss.LossRiskZone) error {
+	if value == nil || !validExposureScope(*value, zones) {
+		return fmt.Errorf("%w: 暴露局部范围内容无效", domain.ErrInvalidInput)
+	}
+	value.AreaCoverageRatio = math.Min(1, value.SelectedAreaSquareMeters/value.TotalAreaSquareMeters)
+	value.CompleteCoverage = value.SelectedZoneCount == value.TotalZoneCount &&
+		math.Abs(1-value.AreaCoverageRatio) <= 1e-9
+	zoneIDs := make([]string, len(zones))
+	for index, zone := range zones {
+		zoneIDs[index] = zone.ID
+	}
+	sort.Strings(zoneIDs)
+	value.ID = "scope-" + digest([]byte(scopeIdentityPayload(*value, zoneIDs)))
+	return nil
+}
+
+// ValidateExposureScopeIdentity 验证局部热点范围未被调用方篡改。
+func ValidateExposureScopeIdentity(value ExposureScope, zones []applicationloss.LossRiskZone) error {
+	existingID, existingRatio, existingComplete := value.ID, value.AreaCoverageRatio, value.CompleteCoverage
+	value.ID = ""
+	if err := BindExposureScopeIdentity(&value, zones); err != nil {
+		return err
+	}
+	if value.ID != existingID || math.Abs(value.AreaCoverageRatio-existingRatio) > 1e-12 ||
+		value.CompleteCoverage != existingComplete {
+		return fmt.Errorf("%w: 暴露局部范围身份不一致", domain.ErrInvalidInput)
+	}
+	return nil
+}
+
+func validExposureScope(value ExposureScope, zones []applicationloss.LossRiskZone) bool {
+	if value.Policy != ExposureScopePolicy || !validCollectionID(value.SeedZoneID) ||
+		value.SelectedZoneCount != len(zones) || len(zones) == 0 || len(zones) > MaxScopedRiskZones ||
+		value.TotalZoneCount < value.SelectedZoneCount || !validBounds(value.Window) ||
+		!finitePositive(value.SelectedAreaSquareMeters) || !finitePositive(value.TotalAreaSquareMeters) {
+		return false
+	}
+	width, height := value.Window.East-value.Window.West, value.Window.North-value.Window.South
+	if math.Abs(width-ExposureScopeDegrees) > 1e-9 || math.Abs(height-ExposureScopeDegrees) > 1e-9 {
+		return false
+	}
+	for _, zone := range zones {
+		if zone.ID == value.SeedZoneID {
+			return true
+		}
+	}
+	return false
+}
+
+func scopeIdentityPayload(value ExposureScope, zoneIDs []string) string {
+	parts := []string{value.Policy, value.SeedZoneID, formatScopeFloat(value.Window.South),
+		formatScopeFloat(value.Window.West), formatScopeFloat(value.Window.North),
+		formatScopeFloat(value.Window.East), strconv.Itoa(value.SelectedZoneCount),
+		strconv.Itoa(value.TotalZoneCount), formatScopeFloat(value.SelectedAreaSquareMeters),
+		formatScopeFloat(value.TotalAreaSquareMeters), formatScopeFloat(value.AreaCoverageRatio),
+		strconv.FormatBool(value.CompleteCoverage)}
+	return strings.Join(append(parts, zoneIDs...), "\n")
+}
+
+func formatScopeFloat(value float64) string {
+	return strconv.FormatFloat(value, 'g', -1, 64)
+}
+
+func exposureScopeAudit(value ExposureScope) (string, string, string) {
+	reference := "urn:ai-gdm:exposure-scope:" + value.Policy + ":" + strings.TrimPrefix(value.ID, "scope-")
+	dataset := "urn:ai-gdm:exposure-scope-policy:" + value.Policy
+	limitation := fmt.Sprintf("暴露范围采用 %s 局部热点窗口，仅覆盖 %d/%d 个风险区，面积覆盖率 %.6f；不得解释为全国完整暴露",
+		value.Policy, value.SelectedZoneCount, value.TotalZoneCount, value.AreaCoverageRatio)
+	return reference, dataset, limitation
 }
 
 func validateAdministration(value AdministrativeProjection, boundary AdministrativeBoundary,
@@ -269,8 +421,7 @@ func validateInfrastructure(value InfrastructureResult) error {
 	if !utcTime(value.OSMBaseTimestamp) || !utcTime(value.CollectedAt) ||
 		value.OSMBaseTimestamp.After(value.CollectedAt) || !validTimeWindow(value.ValidFrom, value.ValidTo) ||
 		len(value.InputReferences) == 0 || len(value.InputReferences) > MaxProviderReferences ||
-		len(value.Limitations) > MaxProviderReferences || len(value.Features) == 0 ||
-		len(value.Features) > MaxInfrastructure {
+		len(value.Limitations) > MaxProviderReferences || len(value.Features) > MaxInfrastructure {
 		return fmt.Errorf("%w: OSM 暴露结果不完整", domain.ErrProviderUnavailable)
 	}
 	return nil
@@ -291,7 +442,7 @@ func populationFeature(value PopulationResult,
 }
 
 func normalizeFeatures(values []applicationloss.LossExposureFeature) error {
-	if len(values) == 0 || len(values) > MaxInfrastructure+1 {
+	if len(values) == 0 || len(values) > MaxInfrastructure+2 {
 		return fmt.Errorf("%w: 暴露 feature 数量无效", domain.ErrInsufficientData)
 	}
 	sort.Slice(values, func(left, right int) bool {
@@ -370,6 +521,12 @@ func validBounds(value Bounds) bool {
 	return finite(value.South) && finite(value.West) && finite(value.North) && finite(value.East) &&
 		value.South >= -90 && value.North <= 90 && value.West >= -180 && value.East <= 180 &&
 		value.South < value.North && value.West < value.East
+}
+
+func boundsContain(outer, inner Bounds) bool {
+	const tolerance = 1e-9
+	return inner.West >= outer.West-tolerance && inner.East <= outer.East+tolerance &&
+		inner.South >= outer.South-tolerance && inner.North <= outer.North+tolerance
 }
 
 func validTimeWindow(from, to time.Time) bool {

@@ -664,7 +664,7 @@ func (p *exposurePortProbe) Now() time.Time { return p.now }
 
 func exposureGeometryFixture(now time.Time) exposurecollection.GeometryInput {
 	geometry := json.RawMessage(`{"type":"Polygon","coordinates":` +
-		`[[[116,39],[116.1,39],[116.1,39.1],[116,39]]]}`)
+		`[[[116,39],[116.01,39],[116.01,39.01],[116,39]]]}`)
 	snapshot := hazard.Snapshot{ID: "snapshot-composition", HazardType: hazard.TypeLandslide,
 		ModelName: "LHASA", ModelVersion: "2", RunAt: now.Add(-time.Hour),
 		ValidFrom: now.Add(-time.Hour), ValidTo: now.Add(time.Hour), Status: hazard.SnapshotAvailable,
@@ -678,10 +678,18 @@ func exposureGeometryFixture(now time.Time) exposurecollection.GeometryInput {
 		Status: spatialanalysis.AnalysisAreaOnly, TotalAreaSquareMeters: 1_000_000,
 		CalculatedAt: now.Add(-30 * time.Minute), InputReferences: []string{"risk-zone:zone-composition"},
 		DatasetReferences: []string{"https://example.test/lhasa"}}
-	return exposurecollection.GeometryInput{Snapshot: snapshot, Zones: zones, Analysis: analysis,
-		UnionGeometry: geometry, Bounds: exposurecollection.Bounds{South: 39, West: 116, North: 39.1, East: 116.1},
+	value := exposurecollection.GeometryInput{Snapshot: snapshot, Zones: zones, Analysis: analysis,
+		UnionGeometry: geometry, Bounds: exposurecollection.Bounds{South: 39, West: 116, North: 39.01, East: 116.01},
 		Stats: exposurecollection.GeometryStats{ZoneCount: 1, UnionGeometryBytes: int64(len(geometry)),
-			MaxZonePoints: 4, TotalZonePoints: 4}}
+			MaxZonePoints: 4, TotalZonePoints: 4}, Scope: exposurecollection.ExposureScope{
+			Policy: exposurecollection.ExposureScopePolicy, SeedZoneID: "zone-composition",
+			Window:            exposurecollection.Bounds{South: 38.98, West: 115.98, North: 39.03, East: 116.03},
+			SelectedZoneCount: 1, TotalZoneCount: 1, SelectedAreaSquareMeters: 1_000_000,
+			TotalAreaSquareMeters: 1_000_000}}
+	if err := exposurecollection.BindExposureScopeIdentity(&value.Scope, value.Zones); err != nil {
+		panic(err)
+	}
+	return value
 }
 
 func exposureBoundaryFixture(now time.Time) exposurecollection.AdministrativeBoundary {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	applicationloss "github.com/Requim/AI-GDM/internal/application/loss"
 	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
+	"github.com/Requim/AI-GDM/internal/domain/spatialanalysis"
 )
 
 const clippedExposureBoundaryGeoJSON = `{"type":"MultiPolygon","coordinates":[[[[115.999,38.99],[116.004,38.99],[116.004,39.02],[115.999,39.02],[115.999,38.99]]]]}`
@@ -40,13 +42,67 @@ func TestAdministrativeBoundaryFixturesContainValidJSON(t *testing.T) {
 
 func TestExposureUnionSQLUsesOnlySelectedSpatialZones(t *testing.T) {
 	for _, query := range []string{exposureUnionBudgetSQL, exposureUnionSQL} {
-		if !strings.Contains(query, "FROM spatial_zone_results") ||
-			!strings.Contains(query, "WHERE szr.analysis_id=$1") {
+		if !strings.Contains(query, "JOIN spatial_zone_results") ||
+			!strings.Contains(query, "szr.analysis_id=sa.id") ||
+			!strings.Contains(query, "ST_PointOnSurface") || !strings.Contains(query, "LIMIT 10") {
 			t.Fatalf("联合几何 SQL 未绑定空间分析行集: %s", query)
 		}
 	}
 	if strings.Contains(exposureUnionBudgetSQL, "ST_AsGeoJSON") {
 		t.Fatal("联合几何预算不得在复杂度门禁前物化 GeoJSON")
+	}
+}
+
+func TestReadExposureGeometrySelectsHighestRiskWindow(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	snapshot, zones := saveRankedExposureZones(t, ctx, repository, now)
+	analysis := insertLossSpatialAnalysis(t, ctx, repository, snapshot, zones,
+		now.Add(-time.Minute), "ranked-scope", false)
+
+	value, err := repository.ReadExposureGeometry(ctx, snapshot.ID, analysis.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSeed := snapshot.ID + "-zone-11"
+	if value.Scope.Policy != exposurecollection.ExposureScopePolicy || value.Scope.SeedZoneID != wantSeed ||
+		value.Scope.SelectedZoneCount != exposurecollection.MaxScopedRiskZones ||
+		value.Scope.TotalZoneCount != len(zones) || value.Scope.CompleteCoverage || len(value.Zones) != 10 {
+		t.Fatalf("局部热点范围选择错误: scope=%+v zones=%+v", value.Scope, value.Zones)
+	}
+	if math.Abs(value.Scope.Window.East-value.Scope.Window.West-0.05) > 1e-9 ||
+		math.Abs(value.Scope.Window.North-value.Scope.Window.South-0.05) > 1e-9 {
+		t.Fatalf("局部热点窗口不是 0.05 度: %+v", value.Scope.Window)
+	}
+	assertScopedZoneIDs(t, value.Zones, snapshot.ID)
+	assertScopedExposureReferences(t, value, analysis, zones)
+}
+
+func assertScopedExposureReferences(t *testing.T, value exposurecollection.GeometryInput,
+	analysis spatialanalysis.Analysis, allZones []hazard.RiskZone,
+) {
+	t.Helper()
+	want := map[string]struct{}{analysis.Area.InputReferences[0]: {}}
+	for _, zone := range value.Zones {
+		want["geometry://"+zone.ID+"/ranked-scope"] = struct{}{}
+	}
+	if len(value.Analysis.InputReferences) != len(want) {
+		t.Fatalf("局部热点引用未限界: got=%d want=%d", len(value.Analysis.InputReferences), len(want))
+	}
+	for _, reference := range value.Analysis.InputReferences {
+		if _, exists := want[reference]; !exists {
+			t.Fatalf("局部热点引用包含范围外输入: %s", reference)
+		}
+	}
+	for _, zone := range allZones {
+		if slices.ContainsFunc(value.Zones, func(selected applicationloss.LossRiskZone) bool {
+			return selected.ID == zone.ID
+		}) {
+			continue
+		}
+		if slices.Contains(value.Analysis.InputReferences, "geometry://"+zone.ID+"/ranked-scope") {
+			t.Fatalf("范围外风险区引用未被移除: %s", zone.ID)
+		}
 	}
 }
 
@@ -68,6 +124,7 @@ func TestInfrastructureBindingBudgetIncludesPopulationZoneBindings(t *testing.T)
 		{infrastructure: 9_998, zones: 2, valid: true},
 		{infrastructure: 9_999, zones: 2, valid: false},
 		{infrastructure: 0, zones: 2, valid: false},
+		{infrastructure: -1, zones: 2, valid: false},
 		{infrastructure: 10, zones: 0, valid: false},
 	} {
 		if got := validInfrastructureBindingBudget(value.infrastructure, value.zones); got != value.valid {
@@ -229,6 +286,26 @@ func TestProjectAdministrationClipsAndOmitsOutsideZones(t *testing.T) {
 	}
 }
 
+func TestProjectAdministrationDoesNotExpandBeyondExposureScope(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	snapshot, zones := saveSeparatedExposureZones(t, ctx, repository, now)
+	analysis := insertLossSpatialAnalysis(t, ctx, repository, snapshot, zones,
+		now.Add(-time.Minute), "scope-no-expand", false)
+	input, err := repository.ReadExposureGeometry(ctx, snapshot.ID, analysis.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundary := fullChinaLikeExposureBoundary()
+	result, err := repository.ProjectAdministration(ctx, input, boundary, testExposureGeometryLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(input.Zones) != 1 || len(result.Zones) != 1 || result.Zones[0].ID != input.Zones[0].ID {
+		t.Fatalf("行政投影扩回局部范围外: input=%+v result=%+v", input.Zones, result.Zones)
+	}
+}
+
 func TestProjectAdministrationRejectsIntersectionExpansionBeforeGeoJSON(t *testing.T) {
 	ctx, repository := integrationHazardRepository(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -317,6 +394,32 @@ func TestProjectInfrastructureDeduplicatesOverlappingZones(t *testing.T) {
 	assertProjectedInfrastructure(t, ctx, repository, analysis.ID, zones, roadGeometry, got)
 }
 
+func TestProjectInfrastructureUsesAdministrativeUnionGeometry(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	snapshot, zones := saveLossProjectionRisk(t, ctx, repository, now, "infrastructure-scope", 1)
+	analysis := insertLossSpatialAnalysis(t, ctx, repository, snapshot, zones,
+		now.Add(-time.Minute), "infrastructure-scope", false)
+	input, err := repository.ReadExposureGeometry(ctx, snapshot.ID, analysis.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	administration, err := repository.ProjectAdministration(ctx, input, fullExposureBoundary(),
+		testExposureGeometryLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	administration.UnionGeometry = json.RawMessage(`{"type":"Polygon","coordinates":[[[116,39],[116.002,39],[116.002,39.01],[116,39.01],[116,39]]]}`)
+	features := []exposurecollection.RawInfrastructureFeature{{FeatureID: "osm-facility-node-outside-scope",
+		Kind:            applicationloss.LossFeatureFacility,
+		Geometry:        json.RawMessage(`{"type":"Point","coordinates":[116.008,39.005]}`),
+		InputReferences: []string{"https://www.openstreetmap.org/node/99"}}}
+	_, err = repository.ProjectInfrastructure(ctx, administration, features, testExposureGeometryLimits())
+	if !errors.Is(err, domain.ErrInsufficientData) {
+		t.Fatalf("基础设施投影越过行政联合几何: %v", err)
+	}
+}
+
 func assertProjectedInfrastructure(t *testing.T, ctx context.Context, repository *HazardRepository,
 	analysisID string, zones []hazard.RiskZone, roadGeometry json.RawMessage,
 	values []applicationloss.LossExposureFeature,
@@ -388,6 +491,72 @@ func saveManyExposureZones(t *testing.T, ctx context.Context, repository *Hazard
 		t.Fatal(err)
 	}
 	return snapshot, zones
+}
+
+func saveRankedExposureZones(t *testing.T, ctx context.Context, repository *HazardRepository,
+	now time.Time,
+) (hazard.Snapshot, []hazard.RiskZone) {
+	t.Helper()
+	snapshot, _ := storageFixture(now.Add(-10 * time.Minute))
+	snapshot.ID = fmt.Sprintf("exposure-ranked-%d", time.Now().UnixNano())
+	snapshot = normalizeSnapshotForStorage(snapshot)
+	zones := make([]hazard.RiskZone, 12)
+	for index := range zones {
+		west := 116 + float64(index%3)*0.001
+		coordinates := json.RawMessage(fmt.Sprintf(
+			`[[[%[1]f,39],[%[2]f,39],[%[2]f,39.01],[%[1]f,39.01],[%[1]f,39]]]`, west, west+0.008))
+		level := hazard.RiskHigh
+		if index >= 10 {
+			level = hazard.RiskVeryHigh
+		}
+		zones[index] = lossProjectionRiskZone(snapshot.ID, fmt.Sprintf("zone-%02d", index), level, coordinates)
+		zones[index].AreaSquareM = float64(100 + index)
+	}
+	cleanupSnapshot(t, repository, snapshot.ID)
+	if err := repository.SaveAnalysis(ctx, snapshot, zones); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot, zones
+}
+
+func assertScopedZoneIDs(t *testing.T, zones []applicationloss.LossRiskZone, snapshotID string) {
+	t.Helper()
+	seen := make(map[string]bool, len(zones))
+	for _, zone := range zones {
+		seen[zone.ID] = true
+	}
+	for index := 2; index < 12; index++ {
+		if !seen[fmt.Sprintf("%s-zone-%02d", snapshotID, index)] {
+			t.Fatalf("排序后应保留 zone-%02d: %+v", index, zones)
+		}
+	}
+}
+
+func saveSeparatedExposureZones(t *testing.T, ctx context.Context, repository *HazardRepository,
+	now time.Time,
+) (hazard.Snapshot, []hazard.RiskZone) {
+	t.Helper()
+	snapshot, _ := storageFixture(now.Add(-10 * time.Minute))
+	snapshot.ID = fmt.Sprintf("exposure-separated-%d", time.Now().UnixNano())
+	snapshot = normalizeSnapshotForStorage(snapshot)
+	zones := []hazard.RiskZone{
+		lossProjectionRiskZone(snapshot.ID, "near", hazard.RiskVeryHigh,
+			json.RawMessage(`[[[116,39],[116.01,39],[116.01,39.01],[116,39.01],[116,39]]]`)),
+		lossProjectionRiskZone(snapshot.ID, "far", hazard.RiskLow,
+			json.RawMessage(`[[[117,40],[117.01,40],[117.01,40.01],[117,40.01],[117,40]]]`)),
+	}
+	cleanupSnapshot(t, repository, snapshot.ID)
+	if err := repository.SaveAnalysis(ctx, snapshot, zones); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot, zones
+}
+
+func fullChinaLikeExposureBoundary() exposurecollection.AdministrativeBoundary {
+	return exposurecollection.AdministrativeBoundary{BoundaryID: "CHN-ADM0-wide", RegionCode: "CN",
+		BoundaryType: "ADM0", Digest: strings.Repeat("d", 64),
+		Reference: "https://example.test/chn-adm0-wide.geojson",
+		Geometry:  json.RawMessage(`{"type":"MultiPolygon","coordinates":[[[[115,38],[118,38],[118,41],[115,41],[115,38]]]]}`)}
 }
 
 const exposureRoadDedupExpectationSQL = `WITH selected AS (

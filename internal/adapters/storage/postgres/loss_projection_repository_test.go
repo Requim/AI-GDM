@@ -145,6 +145,41 @@ func TestLossProjectionUsesRealExposureOnAreaOnlyAnalysis(t *testing.T) {
 	}
 }
 
+func TestLossProjectionBudgetsOnlyMaterializedScopedReferences(t *testing.T) {
+	ctx, repository := integrationHazardRepository(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	snapshot, zones := saveLossProjectionRisk(t, ctx, repository, now, "scoped-reference-budget", 2)
+	analysis := insertLossSpatialAnalysis(t, ctx, repository, snapshot, zones,
+		now.Add(-5*time.Minute), "legacy-national", false)
+	want := insertLossExposureProjection(t, ctx, repository, snapshot, analysis, zones,
+		"scoped", 3, now.Add(-time.Minute), true)
+	inflateLegacySpatialReferences(t, ctx, repository, analysis.ID)
+
+	got, err := repository.ReadLossInput(ctx, snapshot.ID, now, productionLossProjectionLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Analysis.ProjectionID != want.Analysis.ProjectionID ||
+		got.Stats.ProjectionBytes > int64(productionLossProjectionLimits().MaxProjectionBytes) {
+		t.Fatalf("局部投影被旧全国引用污染: stats=%+v", got.Stats)
+	}
+}
+
+func inflateLegacySpatialReferences(t *testing.T, ctx context.Context,
+	repository *HazardRepository, analysisID string,
+) {
+	t.Helper()
+	references := make([]string, 300)
+	for index := range references {
+		references[index] = fmt.Sprintf("legacy-national-%04d-%s", index, strings.Repeat("x", 4096))
+	}
+	payload := mustLossJSON(t, references)
+	if _, err := repository.pool.Exec(ctx, `UPDATE spatial_analyses
+		SET input_references=$2,area_input_references=$2 WHERE id=$1`, analysisID, payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLossProjectionRejectsFutureCollectedProjection(t *testing.T) {
 	ctx, repository := integrationHazardRepository(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)

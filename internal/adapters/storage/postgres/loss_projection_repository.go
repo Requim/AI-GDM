@@ -530,9 +530,7 @@ const lossProjectionBudgetSQL = `WITH target_analysis AS (
 ), selected AS (
     SELECT sa.id,sa.snapshot_id,sa.algorithm_version,ep.projection_status AS status,
         sa.zone_count AS analysis_zone_count,
-        sa.calculated_at,sa.dataset_references AS spatial_dataset_references,
-        sa.area_input_references,sa.input_references AS spatial_input_references,
-        sa.limitations AS spatial_limitations,ep.input_references,ep.dataset_references,
+        sa.calculated_at,ep.input_references,ep.dataset_references,
         ep.id AS projection_id,ep.projection_version,ep.projection_digest,
         ep.collected_at AS projection_collected_at,ep.valid_from AS projection_valid_from,
         ep.valid_to AS projection_valid_to,ep.region_code,ep.union_area_square_meters,
@@ -616,14 +614,11 @@ const lossProjectionBudgetSQL = `WITH target_analysis AS (
 	FROM selected s LEFT JOIN LATERAL JSONB_ARRAY_ELEMENTS_TEXT(s.projection_limitations)
 		AS limitation(value) ON TRUE
 ), header_stats AS (
-	SELECT (OCTET_LENGTH(s.spatial_dataset_references::TEXT)+OCTET_LENGTH(s.area_input_references::TEXT)+
-		OCTET_LENGTH(s.spatial_input_references::TEXT)+OCTET_LENGTH(s.spatial_limitations::TEXT)+
-		OCTET_LENGTH(s.input_references::TEXT)+OCTET_LENGTH(s.dataset_references::TEXT)+
+	SELECT (OCTET_LENGTH(s.input_references::TEXT)+OCTET_LENGTH(s.dataset_references::TEXT)+
 		OCTET_LENGTH(s.source_reference_digests::TEXT)+OCTET_LENGTH(s.projection_limitations::TEXT))::BIGINT AS json_bytes,
         (OCTET_LENGTH(s.id)+OCTET_LENGTH(s.snapshot_id)+OCTET_LENGTH(s.algorithm_version)+
         OCTET_LENGTH(s.status)+OCTET_LENGTH(s.union_area_square_meters::TEXT)+
-		OCTET_LENGTH(s.calculated_at::TEXT)+OCTET_LENGTH(s.spatial_dataset_references::TEXT)+
-		OCTET_LENGTH(s.spatial_input_references::TEXT)+OCTET_LENGTH(s.input_references::TEXT)+
+		OCTET_LENGTH(s.calculated_at::TEXT)+OCTET_LENGTH(s.input_references::TEXT)+
 		OCTET_LENGTH(s.dataset_references::TEXT)+OCTET_LENGTH(s.projection_id)+
         OCTET_LENGTH(s.projection_version)+OCTET_LENGTH(s.projection_digest)+
         OCTET_LENGTH(s.projection_collected_at::TEXT)+OCTET_LENGTH(s.projection_valid_from::TEXT)+

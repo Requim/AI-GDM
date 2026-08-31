@@ -38,7 +38,8 @@ func (r *Resolver) resolveLoss(ctx context.Context, id string) (report.Authority
 }
 
 func validLossAuthorityEnums(status loss.AssessmentStatus, confidenceBand string) bool {
-	if status != loss.AssessmentAvailable && status != loss.AssessmentInsufficientData {
+	if status != loss.AssessmentAvailable && status != loss.AssessmentInsufficientData &&
+		status != loss.AssessmentReferenceOnly {
 		return false
 	}
 	switch confidenceBand {

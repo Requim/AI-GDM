@@ -14,7 +14,9 @@ const defaultScenario = "success"
 
 var supportedScenarios = map[string]struct{}{
 	"success": {}, "loss_big_integer": {}, "loss_national_baseline": {},
-	"loss_many_limitations": {}, "loss_projection_limitation": {},
+	"loss_reference_only": {}, "loss_reference_bad_cost_status": {},
+	"loss_reference_bad_vulnerability_level": {},
+	"loss_many_limitations":                  {}, "loss_projection_limitation": {},
 	"loss_projection_limitations_missing": {}, "loss_audit_projection_limitations_mismatch": {},
 	"loss_success_then_503": {}, "loss_get_503": {}, "loss_sources_503": {},
 	"loss_timeout": {}, "loss_bad_wire": {}, "loss_delayed": {},

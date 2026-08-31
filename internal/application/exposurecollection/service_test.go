@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +30,29 @@ func TestCollectorPersistsBoundedRealProjection(t *testing.T) {
 	if !analysis.ProjectionValidFrom.Equal(value.ValidFrom) || !analysis.ProjectionValidTo.Equal(value.ValidTo) {
 		t.Fatalf("投影窗口未绑定进内容身份: %+v", analysis)
 	}
+	assertScopeAudit(t, value)
 	assertFeatureKinds(t, analysis.Features)
+}
+
+func TestCollectorBindsScopeChangesIntoProjectionDigest(t *testing.T) {
+	first := newCollectorFixture(t)
+	firstValue, err := first.collector.Collect(context.Background(), first.input.Snapshot.ID, first.input.Analysis.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := newCollectorFixture(t)
+	second.geometries.value.Scope.TotalZoneCount = 2
+	if err = BindExposureScopeIdentity(&second.geometries.value.Scope, second.geometries.value.Zones); err != nil {
+		t.Fatal(err)
+	}
+	secondValue, err := second.collector.Collect(context.Background(), second.input.Snapshot.ID,
+		second.input.Analysis.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstValue.Input.Analysis.ProjectionDigest == secondValue.Input.Analysis.ProjectionDigest {
+		t.Fatal("局部热点范围变化未进入暴露投影摘要")
+	}
 }
 
 func TestCollectorRejectsGeometryFromDifferentSpatialAnalysis(t *testing.T) {
@@ -114,12 +137,42 @@ func TestCollectorBindsProviderCollectionTimeIntoDigest(t *testing.T) {
 	}
 }
 
-func TestCollectorFailsClosedWhenInfrastructureKindMissing(t *testing.T) {
-	fixture := newCollectorFixture(t)
-	fixture.projector.values = fixture.projector.values[:1]
-	_, err := fixture.collector.Collect(context.Background(), fixture.input.Snapshot.ID, fixture.input.Analysis.ID)
-	if !errors.Is(err, domain.ErrInsufficientData) || fixture.writer.calls != 0 {
-		t.Fatalf("Collect() error=%v writer calls=%d", err, fixture.writer.calls)
+func TestCollectorRecordsMissingInfrastructureKindsAsAuditedZero(t *testing.T) {
+	for _, item := range []struct {
+		name   string
+		values []applicationloss.LossExposureFeature
+		kind   applicationloss.LossFeatureKind
+		text   string
+	}{
+		{name: "road", values: infrastructureFeatures(geometryFixture(time.Now()).Zones)[:1],
+			kind: applicationloss.LossFeatureRoad, text: "未发现道路要素"},
+		{name: "facility", values: infrastructureFeatures(geometryFixture(time.Now()).Zones)[1:],
+			kind: applicationloss.LossFeatureFacility, text: "未发现设施要素"},
+		{name: "both", values: nil, kind: applicationloss.LossFeatureRoad, text: "未发现道路要素"},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			fixture := newCollectorFixture(t)
+			fixture.projector.values = item.values
+			if item.name == "both" {
+				fixture.infrastructure.value.Features = nil
+			}
+			value, err := fixture.collector.Collect(context.Background(), fixture.input.Snapshot.ID,
+				fixture.input.Analysis.ID)
+			if err != nil || fixture.writer.calls != 1 {
+				t.Fatalf("Collect() error=%v writer calls=%d", err, fixture.writer.calls)
+			}
+			assertZeroInfrastructureFeature(t, value.Input.Analysis.Features, item.kind)
+			if !containsText(value.Input.Analysis.ProjectionLimitations, item.text) {
+				t.Fatalf("零值限制未进入投影: %+v", value.Input.Analysis.ProjectionLimitations)
+			}
+			if item.name == "both" {
+				assertZeroInfrastructureFeature(t, value.Input.Analysis.Features,
+					applicationloss.LossFeatureFacility)
+				if !containsText(value.Input.Analysis.ProjectionLimitations, "未发现设施要素") {
+					t.Fatalf("设施零值限制未进入投影: %+v", value.Input.Analysis.ProjectionLimitations)
+				}
+			}
+		})
 	}
 }
 
@@ -170,7 +223,7 @@ func TestCollectorPersistsProviderLimitationsInProjectionIdentity(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(value.Input.Analysis.ProjectionLimitations) != 2 ||
+	if len(value.Input.Analysis.ProjectionLimitations) != 3 ||
 		!slices.Contains(value.Input.Analysis.ProjectionLimitations, "WorldPop 数据集 URN 未由响应直接验证") ||
 		!slices.Contains(value.Input.Analysis.ProjectionLimitations, "已跳过非闭合设施 way") ||
 		fixture.writer.value.Input.Analysis.ProjectionDigest != value.Input.Analysis.ProjectionDigest {
@@ -212,7 +265,7 @@ func newCollectorFixture(t *testing.T) collectorFixture {
 }
 
 func geometryFixture(now time.Time) GeometryInput {
-	geometry := json.RawMessage(`{"type":"Polygon","coordinates":[[[116,39],[116.1,39],[116.1,39.1],[116,39]]]}`)
+	geometry := json.RawMessage(`{"type":"Polygon","coordinates":[[[116,39],[116.01,39],[116.01,39.01],[116,39]]]}`)
 	snapshot := hazard.Snapshot{ID: "snapshot-real", HazardType: hazard.TypeLandslide,
 		ModelName: "LHASA", ModelVersion: "2", RunAt: now.Add(-time.Hour),
 		ValidFrom: now.Add(-time.Hour), ValidTo: now.Add(time.Hour), Status: hazard.SnapshotAvailable,
@@ -226,10 +279,17 @@ func geometryFixture(now time.Time) GeometryInput {
 		Status: spatialanalysis.AnalysisAreaOnly, TotalAreaSquareMeters: 1_000_000,
 		CalculatedAt: now.Add(-30 * time.Minute), InputReferences: []string{"risk-zone:zone-a"},
 		DatasetReferences: []string{"https://example.test/lhasa"}}
-	return GeometryInput{Snapshot: snapshot, Zones: zones, Analysis: analysis,
-		UnionGeometry: geometry, Bounds: Bounds{South: 39, West: 116, North: 39.1, East: 116.1},
+	value := GeometryInput{Snapshot: snapshot, Zones: zones, Analysis: analysis,
+		UnionGeometry: geometry, Bounds: Bounds{South: 39, West: 116, North: 39.01, East: 116.01},
 		Stats: GeometryStats{ZoneCount: 1, UnionGeometryBytes: int64(len(geometry)),
-			MaxZonePoints: 4, TotalZonePoints: 4}}
+			MaxZonePoints: 4, TotalZonePoints: 4}, Scope: ExposureScope{Policy: ExposureScopePolicy,
+			SeedZoneID: "zone-a", Window: Bounds{South: 38.98, West: 115.98, North: 39.03, East: 116.03},
+			SelectedZoneCount: 1, TotalZoneCount: 1, SelectedAreaSquareMeters: 1_000_000,
+			TotalAreaSquareMeters: 1_000_000}}
+	if err := BindExposureScopeIdentity(&value.Scope, value.Zones); err != nil {
+		panic(err)
+	}
+	return value
 }
 
 func boundaryFixture(now time.Time) AdministrativeBoundary {
@@ -357,6 +417,48 @@ func assertFeatureKinds(t *testing.T, values []applicationloss.LossExposureFeatu
 		!kinds[applicationloss.LossFeatureFacility] {
 		t.Fatalf("features=%+v", values)
 	}
+}
+
+func assertZeroInfrastructureFeature(t *testing.T, values []applicationloss.LossExposureFeature,
+	kind applicationloss.LossFeatureKind,
+) {
+	t.Helper()
+	for _, value := range values {
+		if value.Kind == kind && value.Quantity == 0 && value.Provided &&
+			value.Status == spatialanalysis.MetricAvailable && len(value.InputReferences) > 0 {
+			return
+		}
+	}
+	t.Fatalf("未找到可审计的 %s 零值 feature: %+v", kind, values)
+}
+
+func assertScopeAudit(t *testing.T, value ExposureProjection) {
+	t.Helper()
+	analysis := value.Input.Analysis
+	referencePrefix := "urn:ai-gdm:exposure-scope:" + ExposureScopePolicy + ":"
+	if !containsPrefix(analysis.InputReferences, referencePrefix) ||
+		!slices.Contains(analysis.DatasetReferences, "urn:ai-gdm:exposure-scope-policy:"+ExposureScopePolicy) ||
+		!containsText(analysis.ProjectionLimitations, "不得解释为全国完整暴露") {
+		t.Fatalf("局部范围审计未进入投影: %+v", analysis)
+	}
+}
+
+func containsPrefix(values []string, prefix string) bool {
+	for _, value := range values {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsText(values []string, text string) bool {
+	for _, value := range values {
+		if strings.Contains(value, text) {
+			return true
+		}
+	}
+	return false
 }
 
 func assertMicrosecondTime(t *testing.T, value time.Time) {

@@ -34,6 +34,31 @@ func TestLossFixtureProjectionLimitationUsesTypedServiceAndHTTP(t *testing.T) {
 	assertFixtureLossRead(t, handler, location, fixtureProjectionLimitation)
 }
 
+func TestLossFixtureReferenceOnlyUsesTypedServiceAndHTTP(t *testing.T) {
+	scenarios, handler := newLossTestFixture(t, "loss_reference_only")
+	value, err := (&fixtureLossEstimator{scenarios: scenarios}).Estimate(t.Context(),
+		applicationloss.EstimateInput{SnapshotID: lossSnapshotID})
+	if err != nil {
+		t.Fatalf("真实 Loss Service 计算研究参考区间: %v", err)
+	}
+	if err = value.Validate(); err != nil {
+		t.Fatalf("研究参考评估领域校验失败: %v", err)
+	}
+	if value.Status != lossdomain.AssessmentReferenceOnly ||
+		!slices.Equal(value.IncludedAssets, []lossdomain.AssetType{lossdomain.AssetRoad}) ||
+		len(value.Evidence.Costs) != 1 || len(value.Evidence.Vulnerabilities) != 1 ||
+		value.Evidence.Costs[0].Status != lossdomain.BaselineDemoOnly ||
+		value.Evidence.Costs[0].BaselineLevel != lossdomain.BaselineReferenceCase {
+		t.Fatalf("研究参考评估未绑定道路 demo 基线: %+v", value)
+	}
+	created, _ := createFixtureLossAssessment(t, handler)
+	if created.Status != lossdomain.AssessmentReferenceOnly ||
+		!slices.Equal(created.IncludedAssets, []lossdomain.AssetType{lossdomain.AssetRoad}) ||
+		!slices.Contains(created.Limitations, lossdomain.LimitationReferenceOnly) {
+		t.Fatalf("POST typed DTO 未保留研究参考合同: %+v", created)
+	}
+}
+
 func newLossTestFixture(t *testing.T, scenario string) (*scenarioStore, http.Handler) {
 	t.Helper()
 	scenarios, err := newScenarioStore()
@@ -98,6 +123,7 @@ func assertFixtureLossRead(t *testing.T, handler http.Handler, location, limitat
 
 type lossWireAssessment struct {
 	Status                lossdomain.AssessmentStatus `json:"status"`
+	IncludedAssets        []lossdomain.AssetType      `json:"includedAssets"`
 	Confidence            float64                     `json:"confidence"`
 	ConfidenceBand        string                      `json:"confidenceBand"`
 	Limitations           []string                    `json:"limitations"`

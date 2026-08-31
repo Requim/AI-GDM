@@ -15,6 +15,8 @@ import (
 	"github.com/Requim/AI-GDM/internal/domain/provenance"
 )
 
+const deduplicatedAreaToleranceRatio = 0.01
+
 const (
 	// EvidenceVersion 标识损失输入证据的规范化结构版本。
 	EvidenceVersion = "ai-gdm-loss-evidence-v1"
@@ -117,8 +119,7 @@ func BindAssessmentIdentity(value Assessment) (Assessment, error) {
 	}
 	limitations := append([]string(nil), value.Limitations...)
 	limitations = append(limitations, value.Evidence.SpatialAnalysis.ProjectionLimitations...)
-	value.Limitations = normalizedStrings(append(limitations,
-		LimitationDirectPhysicalLoss, LimitationAdvisoryOnly))
+	value.Limitations = normalizedStrings(append(limitations, requiredAssessmentLimitations(value.Status)...))
 	digest, err := assessmentInputDigest(value.Evidence)
 	if err != nil {
 		return Assessment{}, err
@@ -137,6 +138,14 @@ func BindAssessmentIdentity(value Assessment) (Assessment, error) {
 		return Assessment{}, err
 	}
 	return value, nil
+}
+
+func requiredAssessmentLimitations(status AssessmentStatus) []string {
+	if status == AssessmentReferenceOnly {
+		return []string{LimitationAdvisoryOnly, LimitationReferenceOnly,
+			LimitationReferenceRoadOnly, LimitationReferenceTransfer}
+	}
+	return []string{LimitationDirectPhysicalLoss, LimitationAdvisoryOnly}
 }
 
 // Validate 校验损失证据的来源、规范顺序和计算输入绑定。
@@ -353,8 +362,9 @@ func validEvidenceDeduplicatedArea(total float64, zones []RiskZoneEvidence) bool
 		sum += zone.AreaSquareMeters
 		largest = math.Max(largest, zone.AreaSquareMeters)
 	}
-	tolerance := math.Max(1e-6, sum*1e-9)
-	return total >= largest-tolerance && total <= sum+tolerance
+	lowerTolerance := math.Max(1e-6, largest*deduplicatedAreaToleranceRatio)
+	upperTolerance := math.Max(1e-6, sum*deduplicatedAreaToleranceRatio)
+	return total >= largest-lowerTolerance && total <= sum+upperTolerance
 }
 
 func evidenceRiskLevelRank(value string) (int, bool) {
@@ -451,10 +461,14 @@ func validateBaselineEvidence(e AssessmentEvidence) error {
 	if len(e.Costs) == 0 || len(e.Costs) > len(e.Exposures) || len(e.Vulnerabilities) == 0 || len(e.Vulnerabilities) > len(e.Exposures) {
 		return invalidEvidence("损失基线证据数量无效")
 	}
-	if err := validateCostEvidence(e.Costs, e.SpatialAnalysis.RegionCode); err != nil {
+	status, err := baselineEvidenceStatus(e.Costs, e.Vulnerabilities)
+	if err != nil {
 		return err
 	}
-	if err := validateVulnerabilityEvidence(e.Vulnerabilities, e); err != nil {
+	if err = validateCostEvidence(e.Costs, e.SpatialAnalysis.RegionCode, status); err != nil {
+		return err
+	}
+	if err = validateVulnerabilityEvidence(e.Vulnerabilities, e, status); err != nil {
 		return err
 	}
 	if err := validateBaselineSetSources(e); err != nil {
@@ -462,12 +476,18 @@ func validateBaselineEvidence(e AssessmentEvidence) error {
 	}
 	costs, vulnerabilities := mapBaselines(e.Costs, e.Vulnerabilities)
 	assets, pairs := requiredBaselineKeys(e.Exposures)
+	if status == BaselineDemoOnly {
+		assets, pairs = referenceBaselineKeys(e.Exposures, costs)
+	}
 	if len(costs) != len(e.Costs) || len(costs) != len(assets) ||
 		len(vulnerabilities) != len(e.Vulnerabilities) || len(vulnerabilities) != len(pairs) {
 		return invalidEvidence("基线证据与实际计算分项不一致")
 	}
 	for _, exposure := range e.Exposures {
 		cost, costOK := costs[exposure.AssetType]
+		if status == BaselineDemoOnly && !costOK {
+			continue
+		}
 		vulnerability, vulnerabilityOK := vulnerabilities[vulnerabilityKey(exposure.AssetType, exposure.IntensityBand)]
 		if !costOK || !vulnerabilityOK || cost.Unit != exposure.Unit ||
 			!baselineRegionMatches(cost.BaselineLevel, cost.RegionCode, e.SpatialAnalysis.RegionCode) {
@@ -478,6 +498,38 @@ func validateBaselineEvidence(e AssessmentEvidence) error {
 		}
 	}
 	return nil
+}
+
+func baselineEvidenceStatus(costs []CostBaseline, vulnerabilities []Vulnerability) (BaselineStatus, error) {
+	status := costs[0].Status
+	if status != BaselineApproved && status != BaselineDemoOnly {
+		return "", invalidEvidence("损失基线状态无效")
+	}
+	for _, value := range costs {
+		if value.Status != status {
+			return "", invalidEvidence("成本基线状态混用")
+		}
+	}
+	for _, value := range vulnerabilities {
+		if value.Status != status {
+			return "", invalidEvidence("成本与脆弱性基线状态混用")
+		}
+	}
+	return status, nil
+}
+
+func referenceBaselineKeys(values []Exposure, costs map[AssetType]CostBaseline) (map[AssetType]struct{}, map[string]struct{}) {
+	assets := make(map[AssetType]struct{}, len(costs))
+	pairs := make(map[string]struct{})
+	for asset := range costs {
+		assets[asset] = struct{}{}
+	}
+	for _, value := range values {
+		if _, selected := assets[value.AssetType]; selected {
+			pairs[vulnerabilityKey(value.AssetType, value.IntensityBand)] = struct{}{}
+		}
+	}
+	return assets, pairs
 }
 
 func requiredBaselineKeys(values []Exposure) (map[AssetType]struct{}, map[string]struct{}) {
@@ -508,13 +560,16 @@ func validateBaselineSetSources(e AssessmentEvidence) error {
 	return nil
 }
 
-func validateCostEvidence(values []CostBaseline, region string) error {
+func validateCostEvidence(values []CostBaseline, region string, status BaselineStatus) error {
 	previous, previousAsset := "", AssetType("")
 	for _, value := range values {
 		key := string(value.AssetType) + "\x00" + value.ID
-		if key <= previous || value.AssetType == previousAsset || !value.Provided || value.Status != BaselineApproved ||
+		if key <= previous || value.AssetType == previousAsset || !value.Provided || value.Status != status ||
 			!baselineRegionMatches(value.BaselineLevel, value.RegionCode, region) {
-			return invalidEvidence("成本基线证据未规范化或未批准")
+			return invalidEvidence("成本基线证据未规范化或状态不一致")
+		}
+		if status == BaselineDemoOnly && (value.AssetType != AssetRoad || value.BaselineLevel != BaselineReferenceCase) {
+			return invalidEvidence("研究参考成本基线只能覆盖道路")
 		}
 		if err := value.Validate(); err != nil {
 			return err
@@ -524,13 +579,16 @@ func validateCostEvidence(values []CostBaseline, region string) error {
 	return nil
 }
 
-func validateVulnerabilityEvidence(values []Vulnerability, evidence AssessmentEvidence) error {
+func validateVulnerabilityEvidence(values []Vulnerability, evidence AssessmentEvidence, status BaselineStatus) error {
 	previous := ""
 	for _, value := range values {
 		key := vulnerabilityKey(value.AssetType, value.IntensityBand) + "\x00" + value.ID
 		validRegion := baselineRegionMatches(value.BaselineLevel, value.CalibrationRegion, evidence.SpatialAnalysis.RegionCode)
-		if key <= previous || !value.Provided || !validRegion || value.Status != BaselineApproved {
-			return invalidEvidence("脆弱性基线证据未规范化或未批准")
+		if key <= previous || !value.Provided || !validRegion || value.Status != status {
+			return invalidEvidence("脆弱性基线证据未规范化或状态不一致")
+		}
+		if status == BaselineDemoOnly && (value.AssetType != AssetRoad || value.BaselineLevel != BaselineReferenceCase) {
+			return invalidEvidence("研究参考脆弱性基线只能覆盖道路")
 		}
 		if err := value.Validate(); err != nil {
 			return err
@@ -557,6 +615,9 @@ func vulnerabilityKey(asset AssetType, intensity string) string {
 }
 
 func baselineRegionMatches(level BaselineLevel, actual, region string) bool {
+	if level == BaselineReferenceCase {
+		return strings.TrimSpace(actual) != ""
+	}
 	if level == BaselineRegional {
 		return actual == region
 	}
@@ -591,8 +652,15 @@ func validateAssessmentBindings(value Assessment) error {
 	if !sameFloat(value.AffectedPopulation, population) || !sameFloat(value.AffectedRoadMeters, roads) || value.AffectedFacilities != facilities {
 		return invalidEvidence("损失评估影响范围与空间证据不一致")
 	}
-	if !sameStrings(value.InputReferences, EvidenceReferences(evidence)) || !sameAssets(value.IncludedAssets, evidenceAssets(evidence.Exposures)) {
+	wantAssets := evidenceAssets(evidence.Exposures)
+	if value.Status == AssessmentReferenceOnly {
+		wantAssets = evidenceCostAssets(evidence.Costs)
+	}
+	if !sameStrings(value.InputReferences, EvidenceReferences(evidence)) || !sameAssets(value.IncludedAssets, wantAssets) {
 		return invalidEvidence("损失评估来源或资产类别与证据不一致")
+	}
+	if !assessmentMatchesBaselineMode(value.Status, evidence.Costs, evidence.Vulnerabilities) {
+		return invalidEvidence("损失评估状态与基线状态不一致")
 	}
 	if value.CalculatedAt.Before(latestEvidenceAuthorityTime(evidence)) {
 		return invalidEvidence("损失评估时间早于权威输入时间")
@@ -607,6 +675,18 @@ func validateAssessmentBindings(value Assessment) error {
 		return invalidEvidence("存在空间投影限制时置信度未下调")
 	}
 	return nil
+}
+
+func assessmentMatchesBaselineMode(status AssessmentStatus, costs []CostBaseline, vulnerabilities []Vulnerability) bool {
+	baselineStatus, err := baselineEvidenceStatus(costs, vulnerabilities)
+	if err != nil {
+		return false
+	}
+	if status == AssessmentReferenceOnly {
+		return baselineStatus == BaselineDemoOnly
+	}
+	return (status == AssessmentAvailable || status == AssessmentInsufficientData) &&
+		baselineStatus == BaselineApproved
 }
 
 func latestEvidenceAuthorityTime(evidence AssessmentEvidence) time.Time {
@@ -680,6 +760,15 @@ func evidenceAssets(values []Exposure) []AssetType {
 	result := make([]AssetType, 0, len(seen))
 	for value := range seen {
 		result = append(result, value)
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left] < result[right] })
+	return result
+}
+
+func evidenceCostAssets(values []CostBaseline) []AssetType {
+	result := make([]AssetType, len(values))
+	for index, value := range values {
+		result[index] = value.AssetType
 	}
 	sort.Slice(result, func(left, right int) bool { return result[left] < result[right] })
 	return result

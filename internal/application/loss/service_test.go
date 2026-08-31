@@ -137,6 +137,22 @@ func TestServiceRejectsUnionAreaBelowLargestZone(t *testing.T) {
 	}
 }
 
+func TestServiceAllowsOnePercentAreaTolerance(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	projection := validLossProjection(now)
+	projection.Analysis.TotalAreaSquareMeters = projection.Zones[0].AreaSquareM * 0.995
+	mustRebindLossProjection(t, &projection)
+	if value := estimateFixture(t, now, projection, approvedBaselineSet(now, "v2026")); value.ID == "" {
+		t.Fatal("1% 内面积误差未生成评估")
+	}
+
+	projection = validLossProjection(now)
+	projection.Analysis.TotalAreaSquareMeters = projection.Zones[0].AreaSquareM * 0.98
+	mustRebindLossProjection(t, &projection)
+	assertEstimateError(t, now, projection,
+		&baselineReaderStub{set: approvedBaselineSet(now, "v2026")}, domain.ErrInsufficientData)
+}
+
 func TestServiceAccepts1000AndRejects1001Features(t *testing.T) {
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	exact := projectionWithFeatureCount(now, maxLossFeatures)
@@ -260,6 +276,59 @@ func TestServicePublishesProjectionLimitationsAndCapsConfidence(t *testing.T) {
 	}
 	if value.Confidence != maxLimitedProjectionConfidence || value.ConfidenceBand != "moderate" {
 		t.Fatalf("有限投影置信度 = %v/%s", value.Confidence, value.ConfidenceBand)
+	}
+}
+
+func TestServiceReturnsReferenceOnlyRoadRange(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	value := estimateFixture(t, now, validLossProjection(now), referenceBaselineFixture(now))
+	if value.Status != lossdomain.AssessmentReferenceOnly || value.Confidence != maxReferenceConfidence ||
+		value.ConfidenceBand != "low" {
+		t.Fatalf("研究参考评估状态错误: %s %.2f %s", value.Status, value.Confidence, value.ConfidenceBand)
+	}
+	if value.ConditionalLowCents != 459_690 || value.ConditionalMidCents != 546_540 ||
+		value.ConditionalHighCents != 633_390 {
+		t.Fatalf("道路研究参考区间 = %d/%d/%d", value.ConditionalLowCents,
+			value.ConditionalMidCents, value.ConditionalHighCents)
+	}
+	if !reflect.DeepEqual(value.IncludedAssets, []lossdomain.AssetType{lossdomain.AssetRoad}) ||
+		value.AffectedRoadMeters != 15 || value.AffectedFacilities != 2 || value.AffectedPopulation != 70 {
+		t.Fatalf("研究参考资产或暴露背景错误: %+v", value)
+	}
+	assertReferenceEvidence(t, value)
+}
+
+func TestServiceReferenceOnlyRequiresRoadExposure(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	projection := validLossProjection(now)
+	features := make([]LossExposureFeature, 0, len(projection.Analysis.Features))
+	for _, feature := range projection.Analysis.Features {
+		if feature.Kind != LossFeatureRoad {
+			features = append(features, feature)
+		}
+	}
+	projection.Analysis.Features = features
+	mustRebindLossProjection(t, &projection)
+	assertEstimateError(t, now, projection, &baselineReaderStub{set: referenceBaselineFixture(now)}, domain.ErrInsufficientData)
+}
+
+func assertReferenceEvidence(t *testing.T, value lossdomain.Assessment) {
+	t.Helper()
+	if len(value.Evidence.Costs) != 1 || value.Evidence.Costs[0].Status != lossdomain.BaselineDemoOnly ||
+		value.Evidence.Costs[0].BaselineLevel != lossdomain.BaselineReferenceCase {
+		t.Fatalf("研究参考成本证据错误: %+v", value.Evidence.Costs)
+	}
+	for _, vulnerability := range value.Evidence.Vulnerabilities {
+		if vulnerability.Status != lossdomain.BaselineDemoOnly ||
+			vulnerability.BaselineLevel != lossdomain.BaselineReferenceCase {
+			t.Fatalf("研究参考脆弱性证据错误: %+v", vulnerability)
+		}
+	}
+	for _, limitation := range []string{lossdomain.LimitationReferenceOnly,
+		lossdomain.LimitationReferenceRoadOnly, lossdomain.LimitationReferenceTransfer} {
+		if !contains(value.Limitations, limitation) {
+			t.Fatalf("研究参考评估缺少限制 %q: %v", limitation, value.Limitations)
+		}
 	}
 }
 
@@ -520,6 +589,29 @@ func approvedBaselineSet(now time.Time, version string) lossdomain.BaselineSet {
 		Vulnerabilities: []lossdomain.Vulnerability{
 			approvedVulnerability(lossdomain.AssetFacility, "CN", source),
 			approvedVulnerability(lossdomain.AssetRoad, "CN", source)}}
+}
+
+func referenceBaselineFixture(now time.Time) lossdomain.BaselineSet {
+	const version = "road-reference-v1"
+	source := baselineSource(now, version)
+	source.QualityFlags = []string{"demo_only", "research_reference"}
+	return lossdomain.BaselineSet{Version: version,
+		Population: []lossdomain.ExposureBaseline{{ID: "reference-population", RegionCode: "CN-54",
+			Kind: lossdomain.ExposurePopulation, Quantity: 0, Unit: "people", DataYear: 2024,
+			CoverageRatio: 1, Source: source}},
+		Roads: []lossdomain.ExposureBaseline{{ID: "reference-road", RegionCode: "CN-54",
+			Kind: lossdomain.ExposureRoad, Quantity: 0, Unit: "meters", DataYear: 2024,
+			CoverageRatio: 1, Source: source}},
+		Costs: []lossdomain.CostBaseline{{ID: "reference-road-cost", AssetType: lossdomain.AssetRoad,
+			RegionCode: "CN-54", Unit: "meters", LowCents: 30_646, CentralCents: 36_436,
+			HighCents: 42_226, Currency: "CNY", PriceBaseDate: now.Add(-365 * 24 * time.Hour),
+			Status: lossdomain.BaselineDemoOnly, Source: source}},
+		Vulnerabilities: []lossdomain.Vulnerability{{ID: "reference-road-vulnerability",
+			AssetType: lossdomain.AssetRoad, HazardType: string(hazarddomain.TypeLandslide),
+			IntensityBand: string(hazarddomain.RiskVeryHigh), ImpactFractionLow: 1,
+			ImpactFractionMid: 1, ImpactFractionHigh: 1, DamageRatioLow: 1,
+			DamageRatioMid: 1, DamageRatioHigh: 1, CalibrationRegion: "CN-54",
+			Status: lossdomain.BaselineDemoOnly, Source: source}}}
 }
 
 func approvedCost(asset lossdomain.AssetType, region, unit string, low, mid, high int64, now time.Time,
