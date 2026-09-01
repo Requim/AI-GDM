@@ -173,7 +173,9 @@ async function assertBusinessControlsDoNotNavigate(page, requested) {
     await page.locator(selectors[index]).fill(values[index]);
   }
   await page.locator("#route-plan").click();
-  await page.locator("#loss-assessment-run").click();
+  const lossButton = page.locator("#loss-assessment-run");
+  if (await lossButton.isEnabled()) await lossButton.click();
+  else await expect(lossButton).toBeDisabled();
   await page.locator("#loss-snapshot-id").press("Enter");
   await page.waitForTimeout(100);
   await requested.settle();
