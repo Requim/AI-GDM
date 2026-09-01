@@ -8,9 +8,18 @@ export AI_GDM_SECURITY_GATE_LIBRARY
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ai-gdm-package-validation.XXXXXX")
 LOG_FILE="$WORK_DIR/package.log"
 OUTPUT_DIR="$WORK_DIR/dist"
+EXTRACT_ROOT="$WORK_DIR/extracted"
 RUN_ID=$(security_random_token)
 ACTIVE_CHILD_PID=
 VALIDATION_CONTAINERS=
+PACKAGE_ARCHIVE_INPUT=${PACKAGE_ARCHIVE_INPUT:-}
+PACKAGE_EXPECTED_SOURCE_COMMIT=${PACKAGE_EXPECTED_SOURCE_COMMIT:-}
+PACKAGE_DIR=
+PACKAGE_ARCHIVE=
+PACKAGE_TREE=
+PACKAGE_SOURCE_SHA256=
+PACKAGE_SOURCE_COMMIT=
+PACKAGE_CREATED_AT=
 
 stop_active_child() {
   [ -n "$ACTIVE_CHILD_PID" ] || return 0
@@ -34,6 +43,58 @@ run_active_command() {
   return "$status"
 }
 
+manifest_value() {
+  python3 -c 'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8"))[sys.argv[2]]; print(value)' \
+    "$PACKAGE_DIR/manifest.json" "$1"
+}
+
+prepare_input_archive() {
+  case "$PACKAGE_ARCHIVE_INPUT" in /*) ;; *) security_fail 'PACKAGE_ARCHIVE_INPUT 必须是绝对路径' ;; esac
+  [ -f "$PACKAGE_ARCHIVE_INPUT" ] && [ ! -L "$PACKAGE_ARCHIVE_INPUT" ] || \
+    security_fail '待验发布归档必须是普通文件'
+  [ -f "$PACKAGE_ARCHIVE_INPUT.sha256" ] && [ ! -L "$PACKAGE_ARCHIVE_INPUT.sha256" ] || \
+    security_fail '待验发布归档缺少普通 sidecar 文件'
+  PACKAGE_ARCHIVE=$PACKAGE_ARCHIVE_INPUT
+  archive_name=$(basename -- "$PACKAGE_ARCHIVE")
+  [ "$archive_name" = "ai-gdm-$PACKAGE_VERSION-linux-amd64.tar.gz" ] || security_fail '待验发布归档名称与版本不一致'
+  package_name=${archive_name%.tar.gz}
+  python3 "$ROOT/scripts/validate-release-archive.py" \
+    --archive "$PACKAGE_ARCHIVE" --sidecar "$PACKAGE_ARCHIVE.sha256" \
+    --expected-root "$package_name" --extract-root "$EXTRACT_ROOT"
+  PACKAGE_DIR="$EXTRACT_ROOT/$package_name"
+}
+
+prepare_package() {
+  if [ -n "$PACKAGE_ARCHIVE_INPUT" ]; then
+    [ -n "$PACKAGE_EXPECTED_SOURCE_COMMIT" ] || security_fail '正式归档复核必须传入 PACKAGE_EXPECTED_SOURCE_COMMIT'
+    prepare_input_archive
+    return
+  fi
+  run_active_command sh "$ROOT/scripts/package-release.sh" >"$LOG_FILE" 2>&1 || {
+      cat "$LOG_FILE"
+      exit 1
+    }
+  cat "$LOG_FILE"
+  PACKAGE_DIR=$(sed -n 's/^PACKAGE_DIR=//p' "$LOG_FILE")
+  PACKAGE_ARCHIVE=$(sed -n 's/^PACKAGE_ARCHIVE=//p' "$LOG_FILE")
+}
+
+load_manifest_metadata() {
+  manifest_version=$(manifest_value version)
+  [ "$manifest_version" = "$PACKAGE_VERSION" ] || security_fail 'manifest 版本与 PACKAGE_VERSION 不一致'
+  PACKAGE_TREE=$(manifest_value sourceTree)
+  PACKAGE_SOURCE_SHA256=$(manifest_value sourceSha256)
+  PACKAGE_SOURCE_COMMIT=$(manifest_value sourceCommit)
+  PACKAGE_CREATED_AT=$(manifest_value createdAt)
+  [ -z "$PACKAGE_ARCHIVE_INPUT" ] && return
+  security_validate_sha "$PACKAGE_EXPECTED_SOURCE_COMMIT" 40 'PACKAGE_EXPECTED_SOURCE_COMMIT'
+  [ "$PACKAGE_SOURCE_COMMIT" = "$PACKAGE_EXPECTED_SOURCE_COMMIT" ] || security_fail '正式归档 sourceCommit 与预期不一致'
+  expected_tree=$(git -c "safe.directory=$ROOT" -C "$ROOT" rev-parse "$PACKAGE_EXPECTED_SOURCE_COMMIT^{tree}" 2>/dev/null || true)
+  [ "$PACKAGE_TREE" = "$expected_tree" ] || security_fail '正式归档 sourceTree 与预期提交不一致'
+  expected_source_sha256=$(security_tree_source_sha256 "$ROOT" "$expected_tree")
+  [ "$PACKAGE_SOURCE_SHA256" = "$expected_source_sha256" ] || security_fail '正式归档 sourceSha256 与预期提交不一致'
+}
+
 remove_validation_containers() {
   for name in $VALIDATION_CONTAINERS; do
     owner=$(docker inspect -f '{{ index .Config.Labels "ai.gdm.package.validation.run" }}' "$name" 2>/dev/null || true)
@@ -55,27 +116,16 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 PACKAGE_OUTPUT_DIR="$OUTPUT_DIR"
-PACKAGE_VERSION=${PACKAGE_VERSION:-v0.1.0}
+PACKAGE_VERSION=${PACKAGE_VERSION:-v0.1.1}
 PACKAGE_PULL_IMAGES=${PACKAGE_PULL_IMAGES:-0}
 export PACKAGE_OUTPUT_DIR PACKAGE_VERSION PACKAGE_PULL_IMAGES
-run_active_command sh "$ROOT/scripts/package-release.sh" >"$LOG_FILE" 2>&1 || {
-    cat "$LOG_FILE"
-    exit 1
-  }
-cat "$LOG_FILE"
-
-PACKAGE_DIR=$(sed -n 's/^PACKAGE_DIR=//p' "$LOG_FILE")
-PACKAGE_ARCHIVE=$(sed -n 's/^PACKAGE_ARCHIVE=//p' "$LOG_FILE")
-PACKAGE_TREE=$(sed -n 's/^PACKAGE_TREE=//p' "$LOG_FILE")
-PACKAGE_SOURCE_SHA256=$(sed -n 's/^PACKAGE_SOURCE_SHA256=//p' "$LOG_FILE")
-PACKAGE_SOURCE_COMMIT=$(sed -n 's/^PACKAGE_SOURCE_COMMIT=//p' "$LOG_FILE")
-PACKAGE_CREATED_AT=$(sed -n 's/^PACKAGE_CREATED_AT=//p' "$LOG_FILE")
+prepare_package
 [ -d "$PACKAGE_DIR" ] && [ -f "$PACKAGE_ARCHIVE" ] || {
   printf '%s\n' 'P10.2 打包输出缺失' >&2
   exit 1
 }
 
-cat >"$WORK_DIR/expected-files" <<'EOF'
+cat >"$WORK_DIR/expected-files" <<EOF
 ./README.md
 ./SHA256SUMS
 ./bin/ai-gdm-healthcheck-linux-amd64
@@ -92,7 +142,7 @@ cat >"$WORK_DIR/expected-files" <<'EOF'
 ./docs/limitations-v1.md
 ./docs/model-cards-v1.md
 ./docs/package-v1.md
-./docs/release-v0.1.0.md
+./docs/release-$PACKAGE_VERSION.md
 ./images/IMAGE-SOURCES.txt
 ./images/ai-gdm-images-linux-amd64.tar
 ./manifest.json
@@ -116,7 +166,6 @@ diff -u "$WORK_DIR/expected-files" "$WORK_DIR/actual-files"
 (cd "$PACKAGE_DIR" && awk '{print $2}' SHA256SUMS | LC_ALL=C sort) >"$WORK_DIR/checksum-files"
 grep -Fvx './SHA256SUMS' "$WORK_DIR/expected-files" >"$WORK_DIR/expected-checksum-files"
 diff -u "$WORK_DIR/expected-checksum-files" "$WORK_DIR/checksum-files"
-(cd "$(dirname "$PACKAGE_ARCHIVE")" && sha256sum -c "$(basename "$PACKAGE_ARCHIVE").sha256")
 file "$PACKAGE_DIR/bin/ai-gdm-server-linux-amd64" | grep -F 'ELF 64-bit' >/dev/null
 file "$PACKAGE_DIR/bin/ai-gdm-server-windows-amd64.exe" | grep -F 'PE32+' >/dev/null
 PACKAGE_NAME=$(basename "$PACKAGE_DIR")
@@ -140,6 +189,7 @@ run_active_command docker run --rm --name "ai-gdm-package-$RUN_ID-healthcheck" \
 run_active_command docker run --rm --name "ai-gdm-package-$RUN_ID-releasecheck" \
   --label "ai.gdm.package.validation.run=$RUN_ID" -v "$ROOT:/src:ro" -v "$PACKAGE_DIR:/package:ro" \
   -w /src "$GO_IMAGE" go run ./cmd/releasecheck /package
+load_manifest_metadata
 grep -F 'github.com/Requim/AI-GDM/cmd/server' "$WORK_DIR/linux-build-info" >/dev/null
 grep -F 'github.com/Requim/AI-GDM/cmd/server' "$WORK_DIR/windows-build-info" >/dev/null
 grep -F 'github.com/Requim/AI-GDM/cmd/healthcheck' "$WORK_DIR/healthcheck-build-info" >/dev/null
@@ -180,6 +230,9 @@ grep -F '"artifacts": [' "$PACKAGE_DIR/manifest.json" >/dev/null
 APP_TAG=$(sed -n 's/^AI_GDM_IMAGE=//p' "$PACKAGE_DIR/deploy/release-images.env")
 POSTGIS_TAG=$(sed -n 's/^AI_GDM_POSTGIS_IMAGE=//p' "$PACKAGE_DIR/deploy/release-images.env")
 REDIS_TAG=$(sed -n 's/^AI_GDM_REDIS_IMAGE=//p' "$PACKAGE_DIR/deploy/release-images.env")
+[ "$APP_TAG" = "ai-gdm/server:$PACKAGE_VERSION" ] || { printf '%s\n' '应用镜像标签与发布版本不一致' >&2; exit 1; }
+[ "$POSTGIS_TAG" = "ai-gdm/postgis:17-3.5-$PACKAGE_VERSION" ] || { printf '%s\n' 'PostGIS 镜像标签与发布版本不一致' >&2; exit 1; }
+[ "$REDIS_TAG" = "ai-gdm/redis:7.4.10-$PACKAGE_VERSION" ] || { printf '%s\n' 'Redis 镜像标签与发布版本不一致' >&2; exit 1; }
 for reference in "$APP_TAG" "$POSTGIS_TAG" "$REDIS_TAG"; do
   [ -n "$reference" ] || { printf '%s\n' '离线镜像标签缺失' >&2; exit 1; }
   ! docker image inspect "$reference" >/dev/null 2>&1 || {

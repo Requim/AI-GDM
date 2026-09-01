@@ -130,7 +130,9 @@ func TestPackageArtifactsMustMatchEveryFile(t *testing.T) {
 }
 
 func TestPackageRequiresEveryReleaseArtifact(t *testing.T) {
-	for _, filename := range requiredReleaseArtifacts {
+	required := append([]string{}, requiredReleaseArtifacts[:]...)
+	required = append(required, releaseNotesPath("v0.1.0"))
+	for _, filename := range required {
 		t.Run(filename, func(t *testing.T) {
 			fixture := newReleaseFixture(t)
 			if err := os.Remove(filepath.Join(fixture.root, filepath.FromSlash(filename))); err != nil {
@@ -139,6 +141,27 @@ func TestPackageRequiresEveryReleaseArtifact(t *testing.T) {
 			fixture.rewriteTarAndArtifacts(t, nil)
 			assertPackageRejected(t, fixture.root)
 		})
+	}
+}
+
+func TestPackageReleaseNotesMatchManifestVersion(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	fixture.manifest.Version = "v0.1.1"
+	fixture.writeManifest(t)
+	assertPackageRejected(t, fixture.root)
+}
+
+func TestPackageAcceptsReleaseNotesForManifestVersion(t *testing.T) {
+	fixture := newReleaseFixture(t)
+	oldPath := filepath.Join(fixture.root, filepath.FromSlash(releaseNotesPath("v0.1.0")))
+	newPath := filepath.Join(fixture.root, filepath.FromSlash(releaseNotesPath("v0.1.1")))
+	if err := os.Rename(oldPath, newPath); err != nil {
+		t.Fatal(err)
+	}
+	fixture.manifest.Version = "v0.1.1"
+	fixture.rewriteTarAndArtifacts(t, nil)
+	if err := validatePackage(fixture.root); err != nil {
+		t.Fatalf("版本匹配的发布说明未通过校验: %v", err)
 	}
 }
 

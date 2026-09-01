@@ -8,6 +8,8 @@
 # 构建、测试与运行产物
 bin/
 dist/
+ai-gdm-v*-git-log.txt
+ai-gdm-v*-git-log.txt.sha256
 coverage/
 **/node_modules/
 **/test-results/

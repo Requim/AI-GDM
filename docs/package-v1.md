@@ -9,7 +9,7 @@
 在具备 Docker 的 Linux AMD64 主机执行：
 
 ```sh
-sudo env PACKAGE_VERSION=v0.1.0 PACKAGE_PULL_IMAGES=1 \
+sudo env PACKAGE_VERSION=v0.1.1 PACKAGE_PULL_IMAGES=1 \
   PACKAGE_REQUIRE_SOURCE_COMMIT=1 sh scripts/package-release.sh
 ```
 
@@ -17,7 +17,7 @@ sudo env PACKAGE_VERSION=v0.1.0 PACKAGE_PULL_IMAGES=1 \
 
 ```text
 dist/
-  ai-gdm-v0.1.0-linux-amd64/
+  ai-gdm-v0.1.1-linux-amd64/
     README.md
     bin/
     images/ai-gdm-images-linux-amd64.tar
@@ -31,12 +31,12 @@ dist/
     docs/limitations-v1.md
     docs/model-cards-v1.md
     docs/package-v1.md
-    docs/release-v0.1.0.md
+    docs/release-v0.1.1.md
     compose.yaml
     manifest.json
     SHA256SUMS
-  ai-gdm-v0.1.0-linux-amd64.tar.gz
-  ai-gdm-v0.1.0-linux-amd64.tar.gz.sha256
+  ai-gdm-v0.1.1-linux-amd64.tar.gz
+  ai-gdm-v0.1.1-linux-amd64.tar.gz.sha256
 ```
 
 `images/ai-gdm-images-linux-amd64.tar` 由 `docker save` 生成，包含应用、PostGIS 和 Redis 的完整运行镜像。应用镜像已包含固定 GDAL 运行层，不包含 Go 构建器镜像。`deploy/release-images.env` 与 `deploy/compose.offline.yaml` 把离线启动绑定到包内三个固定标签，并禁止联网拉取替代镜像。
@@ -44,10 +44,28 @@ dist/
 ## 验证
 
 ```sh
-sudo env PACKAGE_VERSION=v0.1.0 PACKAGE_PULL_IMAGES=0 sh scripts/validate-package.sh
+sudo env PACKAGE_VERSION=v0.1.1 PACKAGE_PULL_IMAGES=0 sh scripts/validate-package.sh
 ```
 
-门禁验证固定源码 tree、精确文件清单、二进制格式和 Go 构建信息、内部与外层 SHA-256、原始镜像 tar 结构、镜像平台与大小、空密钥模板，以及运行后不存在发布临时 tag。Docker 29 的镜像 ID 按 OCI 顶层 descriptor 摘要记录；校验器继续向下绑定唯一 `linux/amd64` manifest、legacy Config 和实际配置内容，不能用平台 config 摘要冒充顶层镜像 ID。构建时间必须是严格 UTC，版本必须是 `vMAJOR.MINOR.PATCH`。
+门禁验证固定源码 tree、精确文件清单、二进制格式和 Go 构建信息、内部与外层 SHA-256、原始镜像 tar 结构、镜像平台与大小、空密钥模板，以及运行后不存在发布临时 tag。发布说明必须使用 `docs/release-$PACKAGE_VERSION.md`，并与 manifest 版本严格一致。Docker 29 的镜像 ID 按 OCI 顶层 descriptor 摘要记录；校验器继续向下绑定唯一 `linux/amd64` manifest、legacy Config 和实际配置内容，不能用平台 config 摘要冒充顶层镜像 ID。构建时间必须是严格 UTC，版本必须是 `vMAJOR.MINOR.PATCH`。
+
+正式发布应先构建一次归档，再让两个门禁复核这一份精确文件，避免分别构建多个候选包：
+
+```sh
+SHA=$(git rev-parse HEAD)
+ARCHIVE=/absolute/path/ai-gdm-v0.1.1-linux-amd64.tar.gz
+
+sudo env PACKAGE_VERSION=v0.1.1 \
+  PACKAGE_ARCHIVE_INPUT="$ARCHIVE" \
+  PACKAGE_EXPECTED_SOURCE_COMMIT="$SHA" \
+  sh scripts/validate-package.sh
+
+sudo env DEPLOY_PACKAGE_ARCHIVE="$ARCHIVE" \
+  DEPLOY_EXPECTED_SOURCE_COMMIT="$SHA" \
+  sh scripts/validate-deploy.sh
+```
+
+精确归档模式要求归档和同名 `.sha256` 都是普通文件，并验证文件名、manifest 版本、`sourceCommit`、Git tree、镜像标签以及应用镜像 OCI version/revision 一致。
 
 P10.3 额外执行：
 

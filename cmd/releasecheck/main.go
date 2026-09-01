@@ -37,7 +37,7 @@ var (
 var requiredReleaseArtifacts = [...]string{
 	"README.md", "deploy/deploy.sh", "deploy/deploy.ps1",
 	"docs/data-sources-v1.md", "docs/deployment-v1.md", "docs/limitations-v1.md",
-	"docs/model-cards-v1.md", "docs/package-v1.md", "docs/release-v0.1.0.md",
+	"docs/model-cards-v1.md", "docs/package-v1.md",
 }
 
 type releaseManifest struct {
@@ -95,7 +95,7 @@ func validatePackage(root string) error {
 	if err != nil {
 		return err
 	}
-	if err = validatePackageArtifacts(root, manifest.Artifacts); err != nil {
+	if err = validatePackageArtifacts(root, manifest.Version, manifest.Artifacts); err != nil {
 		return err
 	}
 	references, err := loadReleaseImages(filepath.Join(root, "deploy", "release-images.env"))
@@ -171,7 +171,7 @@ func validateReleaseImages(images []releaseImage) error {
 	return nil
 }
 
-func validatePackageArtifacts(root string, artifacts []releaseArtifact) error {
+func validatePackageArtifacts(root, version string, artifacts []releaseArtifact) error {
 	files, err := collectPackageFiles(root)
 	if err != nil {
 		return err
@@ -185,12 +185,18 @@ func validatePackageArtifacts(root string, artifacts []releaseArtifact) error {
 			return err
 		}
 	}
-	for _, required := range requiredReleaseArtifacts {
+	required := append([]string{}, requiredReleaseArtifacts[:]...)
+	required = append(required, releaseNotesPath(version))
+	for _, required := range required {
 		if _, exists := seen[required]; !exists {
 			return fmt.Errorf("发布包缺少正式交付制品: %s", required)
 		}
 	}
 	return nil
+}
+
+func releaseNotesPath(version string) string {
+	return "docs/release-" + version + ".md"
 }
 
 func validateArtifact(root string, artifact releaseArtifact, files map[string]fs.FileInfo, seen map[string]struct{}) error {

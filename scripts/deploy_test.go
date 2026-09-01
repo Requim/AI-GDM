@@ -134,7 +134,9 @@ func TestShellDeploymentRejectsDamageBeforeDocker(t *testing.T) {
 func TestDeployValidationStartsFromReleaseArchive(t *testing.T) {
 	script := readPackageFile(t, "validate-deploy.sh")
 	for _, required := range []string{
-		"PACKAGE_ARCHIVE=", "$PACKAGE_ARCHIVE.sha256", "sha256sum --strict -c", "tar -tzf", "tar -xzf",
+		"PACKAGE_ARCHIVE=", "$PACKAGE_ARCHIVE.sha256", "validate-release-archive.py",
+		"DEPLOY_PACKAGE_ARCHIVE", "DEPLOY_EXPECTED_SOURCE_COMMIT", "org.opencontainers.image.revision",
+		"security_tree_source_sha256", "sourceSha256 与预期提交不一致",
 		"[ -x \"$PACKAGE_DIR/deploy/deploy.sh\" ]", "COMPOSE_PROJECT_NAME=ambient-invalid",
 	} {
 		if !strings.Contains(script, required) {

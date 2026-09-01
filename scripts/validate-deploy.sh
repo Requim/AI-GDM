@@ -20,6 +20,12 @@ DIND_VOLUME=
 INNER_DOCKER_HOST=
 PACKAGE_DIR=
 PACKAGE_ARCHIVE=
+PACKAGE_ARCHIVE_INPUT=${DEPLOY_PACKAGE_ARCHIVE:-}
+EXPECTED_SOURCE_COMMIT=${DEPLOY_EXPECTED_SOURCE_COMMIT:-}
+PACKAGE_VERSION=
+PACKAGE_TREE=
+PACKAGE_SOURCE_SHA256=
+PACKAGE_REVISION=
 EXTRACT_ROOT="$WORK_DIR/extracted"
 PROJECT=
 POSTGRES_PASSWORD_KEY=POSTGRES_PASS"WORD"
@@ -45,6 +51,11 @@ run_active_command() {
   wait "$ACTIVE_CHILD_PID" || status=$?
   ACTIVE_CHILD_PID=
   return "$status"
+}
+
+manifest_value() {
+  python3 -c 'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8"))[sys.argv[2]]; print(value)' \
+    "$PACKAGE_DIR/manifest.json" "$1"
 }
 
 inner_docker() {
@@ -110,25 +121,52 @@ wait_for_dind() {
 }
 
 parse_package_output() {
-  PACKAGE_ARCHIVE=$(sed -n 's/^PACKAGE_ARCHIVE=//p' "$PACKAGE_LOG")
-  [ -f "$PACKAGE_ARCHIVE" ] && [ -f "$PACKAGE_ARCHIVE.sha256" ] || \
+  if [ -n "$PACKAGE_ARCHIVE_INPUT" ]; then
+    case "$PACKAGE_ARCHIVE_INPUT" in /*) ;; *) security_fail 'DEPLOY_PACKAGE_ARCHIVE 必须是绝对路径' ;; esac
+    [ -f "$PACKAGE_ARCHIVE_INPUT" ] && [ ! -L "$PACKAGE_ARCHIVE_INPUT" ] || \
+      security_fail '待验部署归档必须是普通文件'
+    PACKAGE_ARCHIVE=$PACKAGE_ARCHIVE_INPUT
+  else
+    PACKAGE_ARCHIVE=$(sed -n 's/^PACKAGE_ARCHIVE=//p' "$PACKAGE_LOG")
+  fi
+  [ -f "$PACKAGE_ARCHIVE" ] && [ ! -L "$PACKAGE_ARCHIVE" ] && \
+    [ -f "$PACKAGE_ARCHIVE.sha256" ] && [ ! -L "$PACKAGE_ARCHIVE.sha256" ] || \
     security_fail 'P10.3 未生成发布归档及外层校验文件'
-  archive_dir=$(dirname -- "$PACKAGE_ARCHIVE")
   archive_name=$(basename -- "$PACKAGE_ARCHIVE")
-  (cd "$archive_dir" && sha256sum --strict -c "$archive_name.sha256") >/dev/null || \
-    security_fail '发布归档外层 SHA-256 无效'
   package_name=${archive_name%.tar.gz}
   [ "$package_name" != "$archive_name" ] || security_fail '发布归档名称无效'
-  mkdir -p "$EXTRACT_ROOT"
-  tar -tzf "$PACKAGE_ARCHIVE" | awk -v root="$package_name/" '
-    index($0, root) != 1 || $0 ~ /(^|\/)\.\.($|\/)/ || $0 ~ /^\// { exit 1 }
-  ' || security_fail '发布归档包含越界路径'
-  tar -xzf "$PACKAGE_ARCHIVE" -C "$EXTRACT_ROOT"
+  python3 "$ROOT/scripts/validate-release-archive.py" \
+    --archive "$PACKAGE_ARCHIVE" --sidecar "$PACKAGE_ARCHIVE.sha256" \
+    --expected-root "$package_name" --extract-root "$EXTRACT_ROOT"
   PACKAGE_DIR="$EXTRACT_ROOT/$package_name"
   [ -d "$PACKAGE_DIR" ] && [ -x "$PACKAGE_DIR/deploy/deploy.sh" ] || \
     security_fail '解包后 Shell 一键部署入口无效'
   (cd "$PACKAGE_DIR" && sha256sum --strict -c SHA256SUMS) >/dev/null || \
     security_fail '解包后包内 SHA-256 无效'
+  PACKAGE_VERSION=$(manifest_value version)
+  [ "$archive_name" = "ai-gdm-$PACKAGE_VERSION-linux-amd64.tar.gz" ] || \
+    security_fail '部署归档名称与 manifest 版本不一致'
+  PACKAGE_TREE=$(manifest_value sourceTree)
+  PACKAGE_SOURCE_SHA256=$(manifest_value sourceSha256)
+  source_commit=$(manifest_value sourceCommit)
+  [ "$PACKAGE_TREE" = "$SECURITY_TREE_SHA" ] || security_fail '部署归档 sourceTree 与当前固定源码不一致'
+  PACKAGE_REVISION=$PACKAGE_TREE
+  [ "$source_commit" = unknown ] || PACKAGE_REVISION=$source_commit
+  if [ -n "$PACKAGE_ARCHIVE_INPUT" ]; then
+    security_validate_sha "$EXPECTED_SOURCE_COMMIT" 40 'DEPLOY_EXPECTED_SOURCE_COMMIT'
+    [ "$source_commit" = "$EXPECTED_SOURCE_COMMIT" ] || security_fail '部署归档 sourceCommit 与预期不一致'
+    expected_tree=$(git -c "safe.directory=$ROOT" -C "$ROOT" rev-parse "$EXPECTED_SOURCE_COMMIT^{tree}" 2>/dev/null || true)
+    [ "$PACKAGE_TREE" = "$expected_tree" ] || security_fail '部署归档 sourceTree 与预期提交不一致'
+    expected_source_sha256=$(security_tree_source_sha256 "$ROOT" "$expected_tree")
+    [ "$PACKAGE_SOURCE_SHA256" = "$expected_source_sha256" ] || \
+      security_fail '部署归档 sourceSha256 与预期提交不一致'
+  fi
+  assert_equal "$(sed -n 's/^AI_GDM_IMAGE=//p' "$PACKAGE_DIR/deploy/release-images.env")" \
+    "ai-gdm/server:$PACKAGE_VERSION" '应用镜像发布标签'
+  assert_equal "$(sed -n 's/^AI_GDM_POSTGIS_IMAGE=//p' "$PACKAGE_DIR/deploy/release-images.env")" \
+    "ai-gdm/postgis:17-3.5-$PACKAGE_VERSION" 'PostGIS 镜像发布标签'
+  assert_equal "$(sed -n 's/^AI_GDM_REDIS_IMAGE=//p' "$PACKAGE_DIR/deploy/release-images.env")" \
+    "ai-gdm/redis:7.4.10-$PACKAGE_VERSION" 'Redis 镜像发布标签'
 }
 
 run_deployment() {
@@ -172,6 +210,10 @@ verify_runtime_contracts() {
   redis_id=$(service_id redis)
   assert_equal "$(inner_docker exec "$app_id" id -u)" 10001 '应用 UID'
   assert_equal "$(inner_docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$app_id")" true '应用只读根文件系统'
+  assert_equal "$(inner_docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$app_id")" \
+    "$PACKAGE_VERSION" '应用 OCI 版本'
+  assert_equal "$(inner_docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$app_id")" \
+    "$PACKAGE_REVISION" '应用 OCI revision'
   inner_docker exec "$app_id" /usr/bin/gdal --version | grep -F 'GDAL 3.13.3' >/dev/null || security_fail 'GDAL 版本无效'
   [ -z "$(inner_docker port "$postgres_id")" ] || security_fail 'PostgreSQL 不得映射端口'
   [ -z "$(inner_docker port "$redis_id")" ] || security_fail 'Redis 不得映射端口'
@@ -228,12 +270,16 @@ PUBLIC_PORT=$(choose_port)
 DAEMON_PORT=$(choose_port)
 [ "$PUBLIC_PORT" != "$DAEMON_PORT" ] || security_fail 'P10.3 随机端口冲突'
 
-PACKAGE_OUTPUT_DIR="$OUTPUT_DIR" PACKAGE_VERSION=v0.1.0 PACKAGE_PULL_IMAGES=1 \
-  PACKAGE_REQUIRE_SOURCE_COMMIT=0 sh "$SNAPSHOT_DIR/scripts/package-release.sh" >"$PACKAGE_LOG" 2>&1 || {
-    cat "$PACKAGE_LOG"
-    exit 1
-  }
-cat "$PACKAGE_LOG"
+if [ -z "$PACKAGE_ARCHIVE_INPUT" ]; then
+  PACKAGE_OUTPUT_DIR="$OUTPUT_DIR" PACKAGE_VERSION=v0.1.1 PACKAGE_PULL_IMAGES=1 \
+    PACKAGE_REQUIRE_SOURCE_COMMIT=0 sh "$SNAPSHOT_DIR/scripts/package-release.sh" >"$PACKAGE_LOG" 2>&1 || {
+      cat "$PACKAGE_LOG"
+      exit 1
+    }
+  cat "$PACKAGE_LOG"
+else
+  [ -n "$EXPECTED_SOURCE_COMMIT" ] || security_fail '正式归档部署复核必须传入 DEPLOY_EXPECTED_SOURCE_COMMIT'
+fi
 parse_package_output
 
 docker pull "$DIND_IMAGE" >/dev/null

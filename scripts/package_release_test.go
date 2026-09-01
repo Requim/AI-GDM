@@ -17,19 +17,21 @@ func TestReleasePackagingContracts(t *testing.T) {
 		"security_prepare_snapshot", "GOOS=linux", "GOOS=windows", "docker save",
 		"ai-gdm-images-linux-amd64.tar", "manifest.json", "SHA256SUMS", "security_verify_stability",
 		"cleanup_partial_output", "PACKAGE_REQUIRE_SOURCE_COMMIT", "PACKAGE_MIN_FREE_KB",
-		"ai.gdm.package.run", "BUILD_CONTAINER", "deploy/deploy.sh", "deploy/deploy.ps1",
+		"ai.gdm.package.run", "BUILD_CONTAINER", "IMAGE_REVISION", "deploy/deploy.sh", "deploy/deploy.ps1",
 		"README.md", "docs/data-sources-v1.md", "docs/model-cards-v1.md",
-		"docs/limitations-v1.md", "docs/release-v0.1.0.md",
+		"docs/limitations-v1.md", "RELEASE_NOTES_RELATIVE", "docs/release-$VERSION.md",
 	} {
 		if !strings.Contains(packageScript, value) {
 			t.Fatalf("发布打包脚本缺少 %q", value)
 		}
 	}
 	for _, value := range []string{
-		"sha256sum -c", "ELF 64-bit", "PE32+", "go version -m", "expected-files",
-		"go run ./cmd/releasecheck", "ai.gdm.package.validation.run", "./deploy/deploy.sh", "./deploy/deploy.ps1",
+		"validate-release-archive.py", "ELF 64-bit", "PE32+", "go version -m", "expected-files",
+		"go run ./cmd/releasecheck", "PACKAGE_ARCHIVE_INPUT", "PACKAGE_EXPECTED_SOURCE_COMMIT",
+		"security_tree_source_sha256", "sourceSha256 与预期提交不一致",
+		"ai.gdm.package.validation.run", "./deploy/deploy.sh", "./deploy/deploy.ps1",
 		"./README.md", "./docs/data-sources-v1.md", "./docs/model-cards-v1.md",
-		"./docs/limitations-v1.md", "./docs/release-v0.1.0.md",
+		"./docs/limitations-v1.md", "./docs/release-$PACKAGE_VERSION.md",
 	} {
 		if !strings.Contains(validateScript, value) {
 			t.Fatalf("发布包门禁缺少 %q", value)
@@ -203,6 +205,7 @@ func newPackageGateFixture(t *testing.T) string {
 	root := t.TempDir()
 	copyPackageFile(t, filepath.Join("..", "scripts", "package-release.sh"), filepath.Join(root, "scripts", "package-release.sh"))
 	copyPackageFile(t, filepath.Join("..", "scripts", "security-gate.lib.sh"), filepath.Join(root, "scripts", "security-gate.lib.sh"))
+	copyPackageFile(t, filepath.Join("..", "docs", "release-v0.1.1.md"), filepath.Join(root, "docs", "release-v0.1.1.md"))
 	return root
 }
 

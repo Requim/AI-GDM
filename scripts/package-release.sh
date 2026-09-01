@@ -11,7 +11,7 @@ GDAL_SOURCE=${PACKAGE_GDAL_SOURCE:-ghcr.io/osgeo/gdal@sha256:44fee7d4f9be0966851
 POSTGIS_SOURCE=${PACKAGE_POSTGIS_SOURCE:-postgis/postgis:17-3.5@sha256:83e9999dc3ad8390c210e76130c3a16365ef4f957bb55200d22b7937cfbcb321}
 REDIS_SOURCE=${PACKAGE_REDIS_SOURCE:-redis:7.4.10-bookworm@sha256:e9b2e45ecd47fbb69b877cf8d045d5cccaaaed52524b6e098b4abe8212994f73}
 GO_PROXY=$(printenv GOPROXY 2>/dev/null || printf '%s' 'https://goproxy.cn,direct')
-VERSION=${PACKAGE_VERSION:-v0.1.0}
+VERSION=${PACKAGE_VERSION:-v0.1.1}
 PULL_IMAGES=${PACKAGE_PULL_IMAGES:-1}
 REQUIRE_SOURCE_COMMIT=${PACKAGE_REQUIRE_SOURCE_COMMIT:-0}
 MIN_FREE_KB=${PACKAGE_MIN_FREE_KB:-4194304}
@@ -30,6 +30,8 @@ PACKAGE_DIR=
 PACKAGE_ARCHIVE=
 COMPLETED=0
 SOURCE_COMMIT=
+IMAGE_REVISION=
+RELEASE_NOTES_RELATIVE=
 DOCKER_OWNERSHIP_STARTED=0
 
 stop_active_child() {
@@ -121,6 +123,8 @@ validate_version() {
     case "$number" in ''|*[!0-9]*) security_fail 'PACKAGE_VERSION 必须是 vMAJOR.MINOR.PATCH' ;; esac
     case "$number" in 0|[1-9]*) ;; *) security_fail 'PACKAGE_VERSION 不允许前导零' ;; esac
   done
+  RELEASE_NOTES_RELATIVE="docs/release-$VERSION.md"
+  [ -f "$ROOT/$RELEASE_NOTES_RELATIVE" ] || security_fail "缺少当前版本发布说明: $RELEASE_NOTES_RELATIVE"
 }
 
 validate_created_at() {
@@ -153,6 +157,8 @@ validate_source_commit() {
   if [ "$SOURCE_COMMIT" = unknown ]; then
     [ "$REQUIRE_SOURCE_COMMIT" = 0 ] || security_fail '正式发布必须绑定源码提交'
   fi
+  IMAGE_REVISION=$SECURITY_TREE_SHA
+  [ "$SOURCE_COMMIT" = unknown ] || IMAGE_REVISION=$SOURCE_COMMIT
 }
 
 validate_image_source() {
@@ -236,7 +242,7 @@ build_release_images() {
     --build-arg "GO_IMAGE=$GO_IMAGE" --build-arg "GDAL_IMAGE=$GDAL_SOURCE" \
     --build-arg "GOPROXY=$GO_PROXY" --build-arg "VERSION=$VERSION" \
     --label "ai.gdm.package.run=$RUN_ID" \
-    --build-arg "VCS_REF=$SECURITY_TREE_SHA" --build-arg "BUILD_DATE=$CREATED_AT" \
+    --build-arg "VCS_REF=$IMAGE_REVISION" --build-arg "BUILD_DATE=$CREATED_AT" \
     --label "ai.gdm.package.tree=$SECURITY_TREE_SHA" --label "ai.gdm.package.source=$SECURITY_SOURCE_SHA256" \
     -t "$APP_TAG" "$SNAPSHOT_DIR"
   APP_IMAGE_ID=$(docker image inspect -f '{{.Id}}' "$APP_TAG")
@@ -270,7 +276,7 @@ copy_release_files() {
   cp "$SNAPSHOT_DIR/docs/limitations-v1.md" "$PACKAGE_DIR/docs/limitations-v1.md"
   cp "$SNAPSHOT_DIR/docs/model-cards-v1.md" "$PACKAGE_DIR/docs/model-cards-v1.md"
   cp "$SNAPSHOT_DIR/docs/package-v1.md" "$PACKAGE_DIR/docs/package-v1.md"
-  cp "$SNAPSHOT_DIR/docs/release-v0.1.0.md" "$PACKAGE_DIR/docs/release-v0.1.0.md"
+  cp "$SNAPSHOT_DIR/$RELEASE_NOTES_RELATIVE" "$PACKAGE_DIR/$RELEASE_NOTES_RELATIVE"
   chmod 0755 "$PACKAGE_DIR/bin/ai-gdm-server-linux-amd64" "$PACKAGE_DIR/bin/ai-gdm-healthcheck-linux-amd64" \
     "$PACKAGE_DIR/deploy/deploy.sh"
 }
@@ -330,7 +336,7 @@ write_manifest() {
     {"path": "docs/limitations-v1.md", "sha256": "$(artifact_sha docs/limitations-v1.md)", "sizeBytes": $(artifact_size docs/limitations-v1.md)},
     {"path": "docs/model-cards-v1.md", "sha256": "$(artifact_sha docs/model-cards-v1.md)", "sizeBytes": $(artifact_size docs/model-cards-v1.md)},
     {"path": "docs/package-v1.md", "sha256": "$(artifact_sha docs/package-v1.md)", "sizeBytes": $(artifact_size docs/package-v1.md)},
-    {"path": "docs/release-v0.1.0.md", "sha256": "$(artifact_sha docs/release-v0.1.0.md)", "sizeBytes": $(artifact_size docs/release-v0.1.0.md)},
+    {"path": "$RELEASE_NOTES_RELATIVE", "sha256": "$(artifact_sha "$RELEASE_NOTES_RELATIVE")", "sizeBytes": $(artifact_size "$RELEASE_NOTES_RELATIVE")},
     {"path": "compose.yaml", "sha256": "$(artifact_sha compose.yaml)", "sizeBytes": $(artifact_size compose.yaml)}
   ]
 }

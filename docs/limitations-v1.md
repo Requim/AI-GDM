@@ -21,7 +21,7 @@
 ## 部署与运维
 
 - 离线包只消除镜像仓库依赖，实时 Earthdata、Open-Meteo、WorldPop、Overpass、geoBoundaries、高德、搜索和 LLM 仍需要互联网。
-- `v0.1.0` 为单节点 Docker Compose 部署，没有高可用、自动故障转移、跨节点调度或自动备份。
+- `v0.1.1` 为单节点 Docker Compose 部署，没有高可用、自动故障转移、跨节点调度或自动备份。
 - 默认直接提供 HTTP `8080`，不含 TLS 终止。长期公网运行必须增加可信反向代理、证书、网络访问控制和密钥轮换。
 - 管理操作使用共享 Bearer Token，不含多用户、角色权限、SSO 或细粒度审计主体。
 - PostgreSQL、Redis 和 LHASA 数据通过命名卷持久化，但备份、恢复演练、容量告警和灾备由部署方负责。

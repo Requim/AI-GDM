@@ -120,17 +120,17 @@ PostgreSQL 和 Redis 只连接内部 Docker 网络，不映射宿主机端口。
 
 ### 1. 下载并校验发布包
 
-从 [GitHub Release v0.1.0](https://github.com/Requim/AI-GDM/releases/tag/v0.1.0) 下载：
+从 [GitHub Release v0.1.1](https://github.com/Requim/AI-GDM/releases/tag/v0.1.1) 下载：
 
-- `ai-gdm-v0.1.0-linux-amd64.tar.gz`
-- `ai-gdm-v0.1.0-linux-amd64.tar.gz.sha256`
+- `ai-gdm-v0.1.1-linux-amd64.tar.gz`
+- `ai-gdm-v0.1.1-linux-amd64.tar.gz.sha256`
 
 两个文件放在同一目录后执行：
 
 ```sh
-sha256sum --strict -c ai-gdm-v0.1.0-linux-amd64.tar.gz.sha256
-tar -xzf ai-gdm-v0.1.0-linux-amd64.tar.gz
-cd ai-gdm-v0.1.0-linux-amd64
+sha256sum --strict -c ai-gdm-v0.1.1-linux-amd64.tar.gz.sha256
+tar -xzf ai-gdm-v0.1.1-linux-amd64.tar.gz
+cd ai-gdm-v0.1.1-linux-amd64
 ```
 
 ### 2. 无供应商 Key 的最简部署
@@ -432,5 +432,5 @@ sudo sh scripts/validate-deploy.sh
 - [MVP 已知限制](docs/limitations-v1.md)
 - [容器部署说明](docs/deployment-v1.md)
 - [发布包说明](docs/package-v1.md)
-- [v0.1.0 发布说明](docs/release-v0.1.0.md)
+- [v0.1.1 发布说明](docs/release-v0.1.1.md)
 - [开发进度账本](PROGRESS.md)
