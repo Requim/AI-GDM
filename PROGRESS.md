@@ -18,8 +18,8 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前阶段 | P10.14 GitHub Release v0.1.1 已完成 |
-| 最近完成 | v0.1.1 精确源码门禁、正式包、annotated tag、GitHub Release 和四个上传资产校验已完成 |
+| 当前阶段 | P10.15 Windows 单文件可执行程序已完成 |
+| 最近完成 | v0.1.1 Windows AMD64 单文件重编译、正式包字节比对、本机运行和 GitHub 六个上传资产校验已完成 |
 | 下一步 | 如需升级生产，先备份 PostgreSQL 与私有运行配置，再从 v0.1.1 发布包执行迁移和部署验收；本阶段未切换生产 |
 | 阻塞项 | 无；发布产物、Git 日志附件、密钥和运行数据继续不得进入 Git，旧版本回滚必须同时恢复升级前数据库备份 |
 | 最后更新 | 2026-09-01 |
@@ -81,6 +81,7 @@
 | P10.12 国界亚像元风险统计修复 | 已完成 | `fix(raster): 修复国界亚像元风险统计` |
 | P10.13 AI 解读超时预算修复 | 已完成 | `fix(ai): 调整解释模型超时预算` |
 | P10.14 GitHub Release v0.1.1 | 已完成 | `docs(progress): 记录 v0.1.1 发布验收` |
+| P10.15 Windows 单文件可执行程序 | 已完成 | `docs(release): 补充 v0.1.1 单文件可执行程序` |
 
 ## 阶段记录
 
@@ -623,11 +624,24 @@
 - 固定基线：发布 commit 为 `3dcae2e192c2b1b450b3d8aadfe0fdab0890b699`，tree 为 `3c8e57c6838653b0c34ff85948d136c92a37aa92`，规范 source SHA-256 为 `7c9a02d9ea20ba1b390eab7ea9145397aa14aa53095da459db134d424231fdb1`；本地 HEAD、tracking `origin/main` 与实时 GitHub `main` 在发布前一致。annotated tag 对象为 `99ef86b3102801ded9b37a8e3cd4d7ff88e654c1`，peel 后精确指向该发布 commit。
 - 门禁：早期候选 `3e1a7c4` 的安全浏览器用例因无条件点击禁用按钮失败，修复后的精确发布树通过 `validate-go.sh`、`validate-system.sh` 正式结果 `16/16`、`validate-security.sh` 浏览器 `5/5`、`validate-docker.sh`、风险地图 Chromium `26/26`、疏散 Chromium `42/42` 和评估 Chromium `126/126`，均无失败或跳过。系统门禁外层只发现同一次官方成功运行遗留的精确 `.duplicates` 空文件与 `.unsorted` 临时文件，核对冻结证据后仅清理该对临时文件并继续后续门禁，没有把产品失败改写为成功。
 - 正式包：只从该真实 commit 构建一次归档；`PACKAGE_EXACT` 与 `DEPLOY_EXACT` 对同一归档执行只读校验和空缓存 DIND 一键部署，均通过。归档大小为 `444762214` 字节，SHA-256 为 `eb7c078ede410624602e5918980871fc26dc0eee0118ff86fa9d919dcda305f0`；Git 日志大小为 `33229` 字节，SHA-256 为 `0e67d1f4b90b0f9e94762160041d298699fbc40b5655ca7f9620c1e21207bd02`。
-- GitHub Release：`v0.1.1` 于 2026-09-01 15:26:11（北京时间）发布为非草稿、非预发布，地址为 `https://github.com/Requim/AI-GDM/releases/tag/v0.1.1`。REST API 的上传资产恰好四个且均为 `uploaded`：归档、归档 sidecar、Git 日志和 Git 日志 sidecar；对应大小分别为 `444762214`、`99`、`33229`、`92` 字节，SHA-256 分别为 `eb7c078ede410624602e5918980871fc26dc0eee0118ff86fa9d919dcda305f0`、`1f8d5591a36b2989878fd4cbb73e8eddd31109b31602480ae335025babd3ad61`、`0e67d1f4b90b0f9e94762160041d298699fbc40b5655ca7f9620c1e21207bd02`、`6e6c9b4ea09e16e14e7c89aab77784994cca91cc3fa0d57b0aa7e4e3cff2a7d5`。
-- 验证边界：上传前本地资产、manifest、Git 日志和两个 sidecar 已逐字节校验；发布后公开页面、REST release 字段、annotated tag 和四个服务端 digest 已独立复核。当前本机与验证服务器到 GitHub 大附件链路存在重置、DNS 和低吞吐，完整公网回下载未完成，任何半包都未计为验收通过；交付完整性依据上传字节的本地实算值、正式包精确验收、sidecar 及 GitHub 服务端 digest 的交叉一致性。
+- GitHub Release：`v0.1.1` 于 2026-09-01 15:26:11（北京时间）发布为非草稿、非预发布，地址为 `https://github.com/Requim/AI-GDM/releases/tag/v0.1.1`。首次发布时 REST API 的上传资产恰好四个且均为 `uploaded`：归档、归档 sidecar、Git 日志和 Git 日志 sidecar；对应大小分别为 `444762214`、`99`、`33229`、`92` 字节，SHA-256 分别为 `eb7c078ede410624602e5918980871fc26dc0eee0118ff86fa9d919dcda305f0`、`1f8d5591a36b2989878fd4cbb73e8eddd31109b31602480ae335025babd3ad61`、`0e67d1f4b90b0f9e94762160041d298699fbc40b5655ca7f9620c1e21207bd02`、`6e6c9b4ea09e16e14e7c89aab77784994cca91cc3fa0d57b0aa7e4e3cff2a7d5`；P10.15 后续在同一 Release 补充 Windows 单文件资产。
+- 验证边界：首次上传前本地资产、manifest、Git 日志和两个 sidecar 已逐字节校验；首次发布后公开页面、REST release 字段、annotated tag 和四个服务端 digest 已独立复核。当前本机与验证服务器到 GitHub 大附件链路存在重置、DNS 和低吞吐，完整公网回下载未完成，任何半包都未计为验收通过；交付完整性依据上传字节的本地实算值、正式包精确验收、sidecar 及 GitHub 服务端 digest 的交叉一致性。
 - 发布边界：本阶段只更新 GitHub Release，没有替换生产 app。正式打包和发布前后生产完整指纹均为 `a3fa3e0663800b85f89d7844414cf750ed19b56f05bac51a418aa0a4057e5c4b`，应用、PostgreSQL 和 Redis 保持运行健康且重启计数为零；发布产物、生成 manifest、Git 日志附件、密钥和运行数据均未进入 Git。
 - 已知风险：本版本包含 `010_loss_reference_status.sql` 与 `011_hazard_snapshot_coverage.sql` 单向迁移；生产升级前必须备份 PostgreSQL 和私有运行配置，旧二进制不得连接已升级数据库。如需回滚，必须停止新写入并同时恢复升级前数据库、旧发布包和旧镜像。单节点 HTTP、外部供应商可用性、参考损失口径和 Windows Docker Desktop 端到端限制继续适用。
 - 目标提交：`docs(progress): 记录 v0.1.1 发布验收`
+
+### P10.15 Windows 单文件可执行程序
+
+- 状态：已完成
+- 目标：在不移动 `v0.1.1` tag、不重建正式归档和不切换生产的前提下，为 Windows x64 用户补充可直接下载的单文件应用程序及独立 SHA-256 校验文件。
+- 固定来源：继续使用 `v0.1.1` 精确发布 commit `3dcae2e192c2b1b450b3d8aadfe0fdab0890b699`、tree `3c8e57c6838653b0c34ff85948d136c92a37aa92` 和正式归档 `eb7c078ede410624602e5918980871fc26dc0eee0118ff86fa9d919dcda305f0`。腾讯 Ubuntu 使用固定 Go 1.26.7 镜像、`CGO_ENABLED=0`、`GOOS=windows`、`GOARCH=amd64`、`-trimpath`、`-buildvcs=false` 和 `-s -w -X main.version=v0.1.1` 隔离重编译。
+- 构建验证：`go mod verify` 通过；生成文件为 PE32+ Windows x86-64，Go 模块元数据绑定 `github.com/Requim/AI-GDM/cmd/server`、`go1.26.7`、`GOOS=windows`、`GOARCH=amd64` 和 `CGO_ENABLED=0`。重新编译的 EXE 与正式归档内 `bin/ai-gdm-server-windows-amd64.exe` 逐字节一致。
+- 本机验证：`ai-gdm-v0.1.1-windows-amd64.exe` 大小为 `24488960` 字节，SHA-256 为 `b1382bf502ff64408620cad4ceaafe4bdf7829fe24da85037c625f8ce3c154b3`；sidecar 大小为 `98` 字节，SHA-256 为 `22af9adb7d6e4e0d66143ce07c27dafcf2234aca99f8076ac4db41feb75703fe`，且内容精确绑定 EXE。Windows 本机执行 `--version` 返回 `v0.1.1`，退出码为零。
+- GitHub Release：REST API 上传资产由四个扩展为六个，新增 EXE 和 sidecar 均为 `uploaded`，服务端大小及 digest 与本机一致；原四个资产、annotated tag、source commit、`draft=false`、`prerelease=false` 和发布时间均未改变。Release 正文追加单文件用途、外部依赖和未签名边界。
+- 运行边界：Web 模板、静态资源和数据库迁移已嵌入 EXE；完整业务仍需外部 PostgreSQL/PostGIS、Redis、GDAL 命令及供应商网络和密钥。当前 EXE 未配置 Authenticode 签名，Windows 可能显示 SmartScreen 提示。该阶段未部署或重启生产服务。
+- 生产核查：上传前后 `ai-gdm-app-1` 容器 ID、镜像 `ai-gdm/server:hotfix-03c8859c-ai-final`、OCI revision `03c8859c7f8b2e72f8b241720df946fbeb638487`、健康状态和零重启计数一致；PostgreSQL 与 Redis 的容器 ID、镜像、健康状态和零重启计数也保持一致。
+- 已知风险：GitHub Release 附件上传与正文更新不是原子事务；脚本支持有效附件子集重入、PATCH 前即时正文基线校验和终态复核，但 GitHub Release PATCH 不提供可证明的 CAS 条件更新。本阶段在独占发布窗口完成，没有观察到并发编辑。
+- 目标提交：`docs(release): 补充 v0.1.1 单文件可执行程序`
 
 ## 关键决策与风险
 

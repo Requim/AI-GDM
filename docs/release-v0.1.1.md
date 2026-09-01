@@ -28,8 +28,16 @@
 - `ai-gdm-v0.1.1-linux-amd64.tar.gz.sha256`
 - `ai-gdm-v0.1.1-git-log.txt`
 - `ai-gdm-v0.1.1-git-log.txt.sha256`
+- `ai-gdm-v0.1.1-windows-amd64.exe`
+- `ai-gdm-v0.1.1-windows-amd64.exe.sha256`
 
 发布包内 `manifest.json` 绑定最终 `sourceCommit`、Git tree、规范源码 SHA-256、三个离线镜像及全部 payload 摘要。Git 日志附件从发布提交动态导出，不进入仓库。
+
+## Windows 单文件可执行程序
+
+Windows x64 用户可直接下载 `ai-gdm-v0.1.1-windows-amd64.exe`，先用同名 `.sha256` 核对文件；EXE 的 SHA-256 为 `b1382bf502ff64408620cad4ceaafe4bdf7829fe24da85037c625f8ce3c154b3`。运行 `.\ai-gdm-v0.1.1-windows-amd64.exe --version` 应输出 `v0.1.1`。
+
+程序内已嵌入 Web 模板、静态资源和数据库迁移。“单文件”只表示应用程序本体无需解压完整发布包；完整业务运行仍需外部 PostgreSQL/PostGIS、Redis、GDAL 命令及供应商网络和密钥配置。当前 EXE 未配置 Authenticode 签名，Windows 可能显示 SmartScreen 提示。
 
 ## 升级方式
 
