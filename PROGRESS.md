@@ -18,10 +18,10 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前阶段 | P10.14 GitHub Release v0.1.1 制作中 |
-| 最近完成 | P10.13 AI 解读超时预算修复已完成并部署，确定性结果与搜索时效边界保持不变 |
-| 下一步 | 从最终发布提交在腾讯 Ubuntu 构建并验收 v0.1.1 离线包，再创建 annotated tag 和 GitHub Release |
-| 阻塞项 | 无；发布产物、Git 日志附件、密钥和运行数据不得进入 Git，生产服务不在本阶段切换 |
+| 当前阶段 | P10.14 GitHub Release v0.1.1 已完成 |
+| 最近完成 | v0.1.1 精确源码门禁、正式包、annotated tag、GitHub Release 和四个上传资产校验已完成 |
+| 下一步 | 如需升级生产，先备份 PostgreSQL 与私有运行配置，再从 v0.1.1 发布包执行迁移和部署验收；本阶段未切换生产 |
+| 阻塞项 | 无；发布产物、Git 日志附件、密钥和运行数据继续不得进入 Git，旧版本回滚必须同时恢复升级前数据库备份 |
 | 最后更新 | 2026-09-01 |
 
 ## 总体清单
@@ -80,7 +80,7 @@
 | P10.11 中国行政边界风险图层裁剪 | 已完成 | `fix(map): 按中国边界裁剪风险区域` |
 | P10.12 国界亚像元风险统计修复 | 已完成 | `fix(raster): 修复国界亚像元风险统计` |
 | P10.13 AI 解读超时预算修复 | 已完成 | `fix(ai): 调整解释模型超时预算` |
-| P10.14 GitHub Release v0.1.1 | 进行中 | `chore(release): 准备 v0.1.1 发布包` |
+| P10.14 GitHub Release v0.1.1 | 已完成 | `docs(progress): 记录 v0.1.1 发布验收` |
 
 ## 阶段记录
 
@@ -617,13 +617,17 @@
 
 ### P10.14 GitHub Release v0.1.1
 
-- 状态：进行中
+- 状态：已完成
 - 目标：把 `v0.1.0` 后已进入 `main` 的稳定性、全国风险图层、损失参考和 AI 解读修复固化为可审计的 `v0.1.1` 离线发布包，并在 GitHub 提供版本标签、发布说明和四个校验资产。
-- 变更：新增 `docs/release-v0.1.1.md`，把打包脚本和只读 releasecheck 的发布说明路径改为由版本动态派生；README、发布包文档和限制说明切换到 `v0.1.1`，同时保留历史 `v0.1.0` 包的校验能力。
-- 验证计划：本地执行格式化、定向 Go 测试、差异和敏感信息检查；提交并推送后，在腾讯 Ubuntu 的隔离源码副本执行 `validate-go.sh`、`validate-system.sh`、`validate-security.sh`、`validate-docker.sh`、三个浏览器门禁和候选打包/部署门禁。随后从同一发布提交只构建一次正式归档，并通过 `PACKAGE_ARCHIVE_INPUT` 与 `DEPLOY_PACKAGE_ARCHIVE` 对该精确归档重复执行只读包校验和空缓存 DIND 部署验收。
-- 发布边界：tag 必须是指向发布提交的 annotated tag；GitHub Release 必须非草稿、非预发布，四个附件均为 uploaded，外层与 Git 日志 SHA-256 必须复核。`dist/`、二进制、Docker image tar、生成 manifest、Git 日志附件、密钥和运行数据均不得进入 Git。
-- 已知风险：离线包约数百 MiB，构建、空缓存部署和上传耗时较长；本阶段只更新 GitHub Release，不替换当前生产 app。若门禁、远端 SHA、tag 或资产校验任一不一致，停止发布并清理本轮临时资源。
-- 目标提交：`chore(release): 准备 v0.1.1 发布包`
+- 变更：新增 `docs/release-v0.1.1.md`，把打包脚本和只读 releasecheck 的发布说明路径改为由版本动态派生；README、发布包文档和限制说明切换到 `v0.1.1`，同时保留历史 `v0.1.0` 包的校验能力。最终发布源码额外修正安全浏览器门禁，使 JavaScript 被阻断时允许业务按钮按设计保持禁用，不再无条件点击禁用控件。
+- 固定基线：发布 commit 为 `3dcae2e192c2b1b450b3d8aadfe0fdab0890b699`，tree 为 `3c8e57c6838653b0c34ff85948d136c92a37aa92`，规范 source SHA-256 为 `7c9a02d9ea20ba1b390eab7ea9145397aa14aa53095da459db134d424231fdb1`；本地 HEAD、tracking `origin/main` 与实时 GitHub `main` 在发布前一致。annotated tag 对象为 `99ef86b3102801ded9b37a8e3cd4d7ff88e654c1`，peel 后精确指向该发布 commit。
+- 门禁：早期候选 `3e1a7c4` 的安全浏览器用例因无条件点击禁用按钮失败，修复后的精确发布树通过 `validate-go.sh`、`validate-system.sh` 正式结果 `16/16`、`validate-security.sh` 浏览器 `5/5`、`validate-docker.sh`、风险地图 Chromium `26/26`、疏散 Chromium `42/42` 和评估 Chromium `126/126`，均无失败或跳过。系统门禁外层只发现同一次官方成功运行遗留的精确 `.duplicates` 空文件与 `.unsorted` 临时文件，核对冻结证据后仅清理该对临时文件并继续后续门禁，没有把产品失败改写为成功。
+- 正式包：只从该真实 commit 构建一次归档；`PACKAGE_EXACT` 与 `DEPLOY_EXACT` 对同一归档执行只读校验和空缓存 DIND 一键部署，均通过。归档大小为 `444762214` 字节，SHA-256 为 `eb7c078ede410624602e5918980871fc26dc0eee0118ff86fa9d919dcda305f0`；Git 日志大小为 `33229` 字节，SHA-256 为 `0e67d1f4b90b0f9e94762160041d298699fbc40b5655ca7f9620c1e21207bd02`。
+- GitHub Release：`v0.1.1` 于 2026-09-01 15:26:11（北京时间）发布为非草稿、非预发布，地址为 `https://github.com/Requim/AI-GDM/releases/tag/v0.1.1`。REST API 的上传资产恰好四个且均为 `uploaded`：归档、归档 sidecar、Git 日志和 Git 日志 sidecar；对应大小分别为 `444762214`、`99`、`33229`、`92` 字节，SHA-256 分别为 `eb7c078ede410624602e5918980871fc26dc0eee0118ff86fa9d919dcda305f0`、`1f8d5591a36b2989878fd4cbb73e8eddd31109b31602480ae335025babd3ad61`、`0e67d1f4b90b0f9e94762160041d298699fbc40b5655ca7f9620c1e21207bd02`、`6e6c9b4ea09e16e14e7c89aab77784994cca91cc3fa0d57b0aa7e4e3cff2a7d5`。
+- 验证边界：上传前本地资产、manifest、Git 日志和两个 sidecar 已逐字节校验；发布后公开页面、REST release 字段、annotated tag 和四个服务端 digest 已独立复核。当前本机与验证服务器到 GitHub 大附件链路存在重置、DNS 和低吞吐，完整公网回下载未完成，任何半包都未计为验收通过；交付完整性依据上传字节的本地实算值、正式包精确验收、sidecar 及 GitHub 服务端 digest 的交叉一致性。
+- 发布边界：本阶段只更新 GitHub Release，没有替换生产 app。正式打包和发布前后生产完整指纹均为 `a3fa3e0663800b85f89d7844414cf750ed19b56f05bac51a418aa0a4057e5c4b`，应用、PostgreSQL 和 Redis 保持运行健康且重启计数为零；发布产物、生成 manifest、Git 日志附件、密钥和运行数据均未进入 Git。
+- 已知风险：本版本包含 `010_loss_reference_status.sql` 与 `011_hazard_snapshot_coverage.sql` 单向迁移；生产升级前必须备份 PostgreSQL 和私有运行配置，旧二进制不得连接已升级数据库。如需回滚，必须停止新写入并同时恢复升级前数据库、旧发布包和旧镜像。单节点 HTTP、外部供应商可用性、参考损失口径和 Windows Docker Desktop 端到端限制继续适用。
+- 目标提交：`docs(progress): 记录 v0.1.1 发布验收`
 
 ## 关键决策与风险
 
