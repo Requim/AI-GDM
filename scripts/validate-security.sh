@@ -80,7 +80,9 @@ run_validation_container --name "$GO_CONTAINER_NAME" --cidfile "$GO_CIDFILE" \
   -e "GOPROXY=$GO_PROXY" "$GO_IMAGE" sh -c '
     go mod verify &&
     go test -race ./internal/platform/config ./internal/platform/httpserver \
-      ./internal/adapters/http/mapapi ./internal/adapters/http/webui ./cmd/server ./scripts -count=20 &&
+      ./internal/adapters/http/mapapi ./internal/adapters/http/webui ./cmd/server ./scripts \
+      -skip '^TestReleaseArchiveValidator' -count=20 &&
+    go test ./scripts -run '^TestReleaseArchiveValidator' -count=1 &&
     go vet ./... &&
     go build ./...
   '

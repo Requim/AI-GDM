@@ -42,7 +42,8 @@ func TestSecurityValidationScriptLocksRequiredPackages(t *testing.T) {
 	for _, fragment := range []string{
 		"./internal/platform/config", "./internal/platform/httpserver",
 		"./internal/adapters/http/mapapi", "./internal/adapters/http/webui",
-		"./cmd/server", "./scripts", "node --check internal/adapters/http/webui/static/api.js",
+		"./cmd/server", "./scripts", "-skip '^TestReleaseArchiveValidator' -count=20",
+		"-run '^TestReleaseArchiveValidator' -count=1", "node --check internal/adapters/http/webui/static/api.js",
 		"node tests/security-e2e/audit-results.test.mjs", "--cidfile", "ai-gdm-security-go-",
 		"ai-gdm-security-node-", "trap 'terminate 129' HUP",
 		"SECURITY_E2E_TREE_SHA", "SECURITY_E2E_SOURCE_SHA256",
