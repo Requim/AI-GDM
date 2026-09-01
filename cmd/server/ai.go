@@ -21,10 +21,11 @@ import (
 )
 
 const (
-	aiSearchHTTPTimeout    = 6 * time.Second
-	aiNarrativeHTTPTimeout = 10 * time.Second
-	aiRequestRate          = 500 * time.Millisecond
-	aiMaxOutputAttempts    = 3
+	aiSearchHTTPTimeout            = 6 * time.Second
+	aiNarrativeFallbackHTTPTimeout = 10 * time.Second
+	aiNarrativeStageSafetyMargin   = 1 * time.Second
+	aiRequestRate                  = 500 * time.Millisecond
+	aiMaxOutputAttempts            = 3
 )
 
 // newAIService 在组合根装配可选的博查和 LLM 适配器。
@@ -132,7 +133,8 @@ func newNarrativeGenerator(cfg config.Config, dependencies *resources.Resources,
 	if err := cfg.LLM.Validate(); err != nil {
 		return nil, err
 	}
-	provider, err := chatcompletions.New(newAIHTTPClient(dependencies, logger, aiNarrativeHTTPTimeout), chatcompletions.Config{
+	provider, err := chatcompletions.New(newAIHTTPClient(dependencies, logger,
+		narrativeHTTPTimeout(cfg.LLM.OutputAttempts)), chatcompletions.Config{
 		ProviderName: cfg.LLM.ProviderName, BaseURL: cfg.LLM.BaseURL,
 		APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model,
 		MaxCompletionTokens: cfg.LLM.MaxCompletionTokens, OutputAttempts: cfg.LLM.OutputAttempts,
@@ -141,6 +143,15 @@ func newNarrativeGenerator(cfg config.Config, dependencies *resources.Resources,
 		return nil, fmt.Errorf("创建 LLM 适配器: %w", err)
 	}
 	return provider, nil
+}
+
+func narrativeHTTPTimeout(outputAttempts int) time.Duration {
+	if outputAttempts < 1 || outputAttempts > aiMaxOutputAttempts {
+		return aiNarrativeFallbackHTTPTimeout
+	}
+	retryQueue := time.Duration(outputAttempts-1) * aiRequestRate
+	available := applicationagent.NarrativeStageTimeout - aiNarrativeStageSafetyMargin - retryQueue
+	return available / time.Duration(outputAttempts)
 }
 
 func newAIHTTPClient(dependencies *resources.Resources, logger *slog.Logger,
