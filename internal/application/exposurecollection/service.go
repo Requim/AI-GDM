@@ -185,13 +185,13 @@ func completeInfrastructureKinds(values []applicationloss.LossExposureFeature,
 	if len(zoneIDs) == 0 || len(refs) == 0 {
 		return nil, nil, fmt.Errorf("%w: OSM 零值审计绑定不完整", domain.ErrInsufficientData)
 	}
-	kinds := make(map[applicationloss.LossFeatureKind]struct{}, 2)
+	kinds := make(map[applicationloss.LossFeatureKind]struct{}, 3)
 	for _, value := range values {
 		kinds[value.Kind] = struct{}{}
 	}
 	limitations := make([]string, 0, 2)
 	for _, kind := range []applicationloss.LossFeatureKind{applicationloss.LossFeatureRoad,
-		applicationloss.LossFeatureFacility} {
+		applicationloss.LossFeatureFacility, applicationloss.LossFeatureBuilding} {
 		if _, exists := kinds[kind]; exists {
 			continue
 		}
@@ -215,6 +215,8 @@ func zeroInfrastructureFeature(kind applicationloss.LossFeatureKind, zoneIDs, re
 	unit := "count"
 	if kind == applicationloss.LossFeatureRoad {
 		unit = "meters"
+	} else if kind == applicationloss.LossFeatureBuilding {
+		unit = "square_meters"
 	}
 	return applicationloss.LossExposureFeature{FeatureID: "osm-query-zero-" + string(kind), Kind: kind,
 		ZoneIDs: append([]string(nil), zoneIDs...), Quantity: 0, Unit: unit, CoverageRatio: 1,
@@ -225,6 +227,9 @@ func zeroInfrastructureFeature(kind applicationloss.LossFeatureKind, zoneIDs, re
 func zeroInfrastructureLimitation(kind applicationloss.LossFeatureKind) string {
 	if kind == applicationloss.LossFeatureRoad {
 		return "OpenStreetMap 本次有界查询在局部热点范围内未发现道路要素，按真实零值记录"
+	}
+	if kind == applicationloss.LossFeatureBuilding {
+		return "OpenStreetMap 本次有界查询在局部热点范围内未发现建筑面，按真实零值记录；建筑金额仍需计价基线"
 	}
 	return "OpenStreetMap 本次有界查询在局部热点范围内未发现设施要素，按真实零值记录"
 }
@@ -492,10 +497,23 @@ func normalizeFeatures(values []applicationloss.LossExposureFeature) error {
 		}
 		seen[value.FeatureID], kinds[value.Kind] = struct{}{}, struct{}{}
 	}
-	if len(kinds) != 3 {
+	if len(kinds) < 3 || !hasInfrastructureCoreKinds(kinds) {
 		return fmt.Errorf("%w: 人口、道路或设施真实暴露缺失", domain.ErrInsufficientData)
 	}
 	return nil
+}
+
+func hasInfrastructureCoreKinds(kinds map[applicationloss.LossFeatureKind]struct{}) bool {
+	for _, kind := range []applicationloss.LossFeatureKind{
+		applicationloss.LossFeaturePopulation,
+		applicationloss.LossFeatureRoad,
+		applicationloss.LossFeatureFacility,
+	} {
+		if _, exists := kinds[kind]; !exists {
+			return false
+		}
+	}
+	return true
 }
 
 func validateProjectionWindow(value ExposureProjection) error {

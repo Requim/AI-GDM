@@ -20,6 +20,7 @@
 .assessment-control-note { margin: 0 0 20px; color: var(--muted); font-size: 13px; line-height: 1.8; }
 .assessment-result-note { margin: 0 0 18px; color: var(--muted); font-size: 13px; line-height: 1.8; }
 .snapshot-reference { color: var(--ink); font-size: 13px; overflow-wrap: anywhere; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.scope-notice { margin: 0 0 18px; padding: 10px 12px; border-left: 3px solid var(--amber); background: #fff8e8; color: #76551b; font-size: 13px; line-height: 1.6; }
 .advanced-options { margin: 0 0 24px; }
 .advanced-options label { margin-top: 14px; }
 .assessment-back-link { margin-top: 20px; color: var(--cyan); text-decoration: none; font-size: 13px; display: flex; align-items: center; justify-content: space-between; }

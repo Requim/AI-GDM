@@ -504,6 +504,25 @@ func TestClassifyPrefersRoadForHighwayFeature(t *testing.T) {
 	}
 }
 
+func TestBuildingWayIsCollectedAsPolygonExposure(t *testing.T) {
+	element := decodeOSMElements(t, `[
+		{"type":"way","id":91,"tags":{"building":"yes"},"geometry":[
+			{"lat":39,"lon":116},{"lat":39,"lon":116.001},
+			{"lat":39.001,"lon":116.001},{"lat":39,"lon":116}
+		]}
+	]`)
+	features, _, err := convertElements(element)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(features) != 1 || features[0].Kind != applicationloss.LossFeatureBuilding {
+		t.Fatalf("建筑 feature=%+v", features)
+	}
+	if !strings.Contains(string(features[0].Geometry), `"Polygon"`) {
+		t.Fatalf("建筑几何不是 Polygon: %s", features[0].Geometry)
+	}
+}
+
 func testOverpassProvider(t *testing.T, server *httptest.Server, now time.Time) *Provider {
 	t.Helper()
 	client := httpclient.New(httpclient.Options{HTTPClient: server.Client(), MaxAttempts: 1,

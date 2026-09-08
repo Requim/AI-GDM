@@ -290,13 +290,13 @@
         aria-labelledby="assessment-title">
         <div class="section-heading assessment-heading">
           <div>
-            <h2 id="assessment-title">灾损估算、历史案例与 AI 解读</h2>
+            <h2 id="assessment-title">道路损失与潜在影响范围</h2>
           </div>
-          <span>先由固定规则计算，再由 AI 帮你读懂；AI 不会更改金额、评分或优先级</span>
+          <span>选择有效风险结果后估算道路条件损失；结果不等同于实际核损</span>
         </div>
 
         <div class="assessment-tabs" role="tablist" aria-label="评估类型">
-          <button id="assessment-tab-loss" type="button" role="tab" aria-selected="true" aria-controls="assessment-panel-loss" data-assessment-tab="loss">条件灾损估算</button>
+          <button id="assessment-tab-loss" type="button" role="tab" aria-selected="true" aria-controls="assessment-panel-loss" data-assessment-tab="loss">道路损失估算</button>
           <button id="assessment-tab-survival" type="button" role="tab" aria-selected="false" aria-controls="assessment-panel-survival" data-assessment-tab="survival">历史案例回放</button>
           <button id="assessment-tab-ai" type="button" role="tab" aria-selected="false" aria-controls="assessment-panel-ai" data-assessment-tab="ai">AI 通俗解读</button>
         </div>
@@ -306,15 +306,16 @@
             <div id="loss-assessment-form" class="assessment-control-column" role="group" aria-labelledby="assessment-tab-loss">
               <div class="assessment-panel-heading">
                 <span>01</span>
-                <div><strong>当前风险数据</strong><small>已绑定的风险快照</small></div>
+                <div><strong>当前风险数据</strong><small>当前版本暂按风险热点绑定，行政区选择待接入</small></div>
               </div>
               <p id="loss-snapshot-summary" class="snapshot-reference">暂无有效风险快照</p>
+              <div class="scope-notice" role="note">当前估算只覆盖风险快照中的局部热点和相交道路，不代表整个中国、整个省份或整个城市。</div>
               <details id="loss-advanced-options" class="advanced-options"><summary>高级选项</summary>
               <label>风险数据快照（通常无需手动填写）
                   <input id="loss-snapshot-id" type="text" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}" autocomplete="off" placeholder="等待风险地图自动填入；仅排障时手动输入" required>
               </label>
               </details>
-              <button id="loss-assessment-run" class="primary-command" type="button" disabled>估算条件直接损失</button>
+              <button id="loss-assessment-run" class="primary-command" type="button" disabled>估算道路条件损失</button>
               <a class="assessment-back-link" href="#risk-map">查看风险地图 <img src="/assets/vendor/lucide/arrow-right.svg" alt=""></a>
             </div>
 
@@ -325,8 +326,8 @@
                 <button id="loss-explain-result" class="secondary-command explain-result" type="button" data-explain-kind="loss_assessment" disabled>解读此结果</button>
               </div>
               <div id="loss-assessment-status" class="assessment-state assessment-state-idle" role="status" aria-live="polite">等待有效风险数据；风险地图加载成功后会自动填入。</div>
-              <p class="assessment-result-note">三档表示损坏程度假设，不是风险等级；金额是在当前风险情景成立的前提下，估算的道路和设施直接物理损失。它没有乘以灾害发生概率，因此不是概率加权的期望损失，也不是现场核损、保险赔付或法定灾损金额。</p>
-              <div class="loss-amount-grid" aria-label="道路和设施直接物理损失估算范围">
+              <p class="assessment-result-note">三档表示道路损坏情景，不是风险等级。金额是在当前风险区域发生影响的假设下，对相交道路的条件损失参考；不包含建筑、人口、设施或间接损失，也不是概率加权结果、现场核损、保险赔付或法定灾损金额。</p>
+              <div class="loss-amount-grid" aria-label="道路条件损失估算范围">
                 <div><span>较轻损坏<small>条件情景</small></span><strong id="loss-low-amount">--</strong></div>
                 <div><span>中等损坏<small>条件情景</small></span><strong id="loss-central-amount">--</strong></div>
                 <div><span>较重损坏<small>条件情景</small></span><strong id="loss-high-amount">--</strong></div>
@@ -334,9 +335,9 @@
               <dl class="assessment-metrics">
                 <div><dt>数据完整度<small>能否计算，以及输入质量</small></dt><dd id="loss-result-state">未知</dd></div>
                 <div><dt>风险覆盖面积<small>风险区去重后的面积</small></dt><dd id="loss-impact-area">未知</dd></div>
-                <div><dt>风险区内人口<small>不是伤亡人数</small></dt><dd id="loss-population">未知</dd></div>
                 <div><dt>风险区内道路<small>不是已损毁长度</small></dt><dd id="loss-road-length">未知</dd></div>
-                <div><dt>风险区内设施<small>不是已损毁数量</small></dt><dd id="loss-facilities">未知</dd></div>
+                <div hidden><dt>风险区内人口<small>不是伤亡人数</small></dt><dd id="loss-population">未知</dd></div>
+                <div hidden><dt>风险区内设施<small>不是已损毁数量</small></dt><dd id="loss-facilities">未知</dd></div>
                 <div><dt>计算规则版本<small>用于复核同一套算法</small></dt><dd id="loss-formula-version">未提供</dd></div>
               </dl>
             </div>
@@ -349,7 +350,7 @@
               <details class="assessment-audit-details"><summary>展开数据来源与审计</summary>
               <div id="loss-source-list" class="assessment-source-list"><p>尚无数据来源记录。</p></div>
               </details>
-              <ul id="loss-limitation-list" class="assessment-limitations"><li>当前金额只计算道路和风险区内设施的直接物理损失，不含建筑、人员伤亡、停工等间接损失。</li></ul>
+              <ul id="loss-limitation-list" class="assessment-limitations"><li>当前仅估算道路条件损失；行政区选择、建筑和设施计价尚未接入。</li></ul>
             </aside>
           </section>
 

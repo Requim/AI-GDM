@@ -73,6 +73,7 @@ const (
 	LossFeaturePopulation LossFeatureKind = "population"
 	LossFeatureRoad       LossFeatureKind = "road"
 	LossFeatureFacility   LossFeatureKind = "facility"
+	LossFeatureBuilding   LossFeatureKind = "building"
 )
 
 // LossExposureFeature 是空间层按 featureId 全局去重后的唯一暴露记录。
@@ -558,7 +559,7 @@ func validateProjectionFeatures(values []LossExposureFeature, zones map[string]h
 	if len(values) == 0 || len(values) > maxLossFeatures {
 		return insufficient("校验去重暴露数量", domain.ErrInsufficientData)
 	}
-	seen, kinds, previous := make(map[string]struct{}, len(values)), make(map[LossFeatureKind]struct{}, 3), ""
+	seen, kinds, previous := make(map[string]struct{}, len(values)), make(map[LossFeatureKind]struct{}, 4), ""
 	for _, value := range values {
 		key := string(value.Kind) + "\x00" + value.FeatureID
 		if key <= previous || !validProjectionFeature(value, zones) {
@@ -569,10 +570,19 @@ func validateProjectionFeatures(values []LossExposureFeature, zones map[string]h
 		}
 		seen[value.FeatureID], kinds[value.Kind], previous = struct{}{}, struct{}{}, key
 	}
-	if len(kinds) != 3 {
+	if len(kinds) < 3 || !hasCoreFeatureKinds(kinds) {
 		return insufficient("校验真实零值与暴露类别完整性", domain.ErrInsufficientData)
 	}
 	return nil
+}
+
+func hasCoreFeatureKinds(kinds map[LossFeatureKind]struct{}) bool {
+	for _, kind := range []LossFeatureKind{LossFeaturePopulation, LossFeatureRoad, LossFeatureFacility} {
+		if _, exists := kinds[kind]; !exists {
+			return false
+		}
+	}
+	return true
 }
 
 func validProjectionFeature(value LossExposureFeature, zones map[string]hazarddomain.RiskLevel) bool {
@@ -602,6 +612,8 @@ func featureUnit(value LossFeatureKind) string {
 		return "meters"
 	case LossFeatureFacility:
 		return "count"
+	case LossFeatureBuilding:
+		return "square_meters"
 	default:
 		return ""
 	}

@@ -1,4 +1,4 @@
-// Package overpass 接入 OpenStreetMap Overpass 道路和应急设施数据。
+// Package overpass 接入 OpenStreetMap 道路、建筑和应急设施数据。
 package overpass
 
 import (
@@ -40,9 +40,9 @@ const (
 	openStreetMapURL           = "https://www.openstreetmap.org"
 )
 
-var errNonClosedFacilityWay = errors.New("OSM 设施 way 未闭合")
+var errNonClosedPolygonWay = errors.New("OSM 面状 way 未闭合")
 
-const nonClosedFacilityLimitation = "Overpass 返回的非闭合或不足四点设施 way 已跳过，未作为设施计数"
+const nonClosedPolygonLimitation = "Overpass 返回的非闭合或不足四点面状 way 已跳过，未计入面状暴露"
 
 // Options 配置 Overpass 固定端点和安全预算。
 type Options struct {
@@ -58,7 +58,7 @@ type Options struct {
 	MaxBBoxKM2          float64
 }
 
-// Provider 查询并规范化真实 OSM 道路和设施几何。
+// Provider 查询并规范化真实 OSM 道路、建筑和设施几何。
 type Provider struct {
 	client              *httpclient.Client
 	endpoint            string
@@ -144,6 +144,7 @@ func buildQuery(bounds exposurecollection.Bounds, maxBytes int64) string {
 	bbox := fmt.Sprintf("%.7f,%.7f,%.7f,%.7f", bounds.South, bounds.West, bounds.North, bounds.East)
 	return fmt.Sprintf(`[out:json][timeout:25][maxsize:%d];(
 way["highway"](%s);
+way["building"](%s);
 node["amenity"~"^(hospital|clinic)$"](%s);
 way["amenity"~"^(hospital|clinic)$"](%s);
 node["emergency"="assembly_point"](%s);
@@ -407,7 +408,7 @@ func canonicalResponseKey(value string) (string, bool) {
 func convertElements(elements []osmElement) ([]exposurecollection.RawInfrastructureFeature, []string, error) {
 	values := make([]exposurecollection.RawInfrastructureFeature, 0, len(elements))
 	seen := make(map[osmIdentity]osmElement, len(elements))
-	skippedFacilities := 0
+	skippedPolygons := 0
 	for _, element := range elements {
 		unique, err := registerElementIdentity(seen, element)
 		if err != nil {
@@ -417,8 +418,8 @@ func convertElements(elements []osmElement) ([]exposurecollection.RawInfrastruct
 			continue
 		}
 		feature, include, err := convertElement(element)
-		if errors.Is(err, errNonClosedFacilityWay) {
-			skippedFacilities++
+		if errors.Is(err, errNonClosedPolygonWay) {
+			skippedPolygons++
 			continue
 		}
 		if err != nil {
@@ -431,8 +432,8 @@ func convertElements(elements []osmElement) ([]exposurecollection.RawInfrastruct
 	}
 	sort.Slice(values, func(left, right int) bool { return values[left].FeatureID < values[right].FeatureID })
 	limitations := make([]string, 0, 1)
-	if skippedFacilities > 0 {
-		limitations = append(limitations, fmt.Sprintf("%s（%d 条）", nonClosedFacilityLimitation, skippedFacilities))
+	if skippedPolygons > 0 {
+		limitations = append(limitations, fmt.Sprintf("%s（%d 条）", nonClosedPolygonLimitation, skippedPolygons))
 	}
 	return values, limitations, nil
 }
@@ -478,6 +479,9 @@ func classify(tags map[string]string) (applicationloss.LossFeatureKind, bool) {
 		tags["social_facility"] == "shelter" {
 		return applicationloss.LossFeatureFacility, true
 	}
+	if strings.TrimSpace(tags["building"]) != "" {
+		return applicationloss.LossFeatureBuilding, true
+	}
 	return "", false
 }
 
@@ -500,9 +504,9 @@ func elementGeometry(value osmElement, kind applicationloss.LossFeatureKind) (js
 		return nil, err
 	}
 	geometryType, geometryCoordinates := "LineString", any(coordinates)
-	if kind == applicationloss.LossFeatureFacility {
+	if kind == applicationloss.LossFeatureFacility || kind == applicationloss.LossFeatureBuilding {
 		if !closed(coordinates) || len(coordinates) < 4 {
-			return nil, errNonClosedFacilityWay
+			return nil, errNonClosedPolygonWay
 		}
 		geometryType, geometryCoordinates = "Polygon", [][][]float64{coordinates}
 	}
