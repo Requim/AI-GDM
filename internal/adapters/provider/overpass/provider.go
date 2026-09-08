@@ -40,9 +40,15 @@ const (
 	openStreetMapURL           = "https://www.openstreetmap.org"
 )
 
-var errNonClosedPolygonWay = errors.New("OSM 面状 way 未闭合")
+var (
+	errNonClosedFacilityWay = errors.New("OSM 设施 way 未闭合")
+	errNonClosedBuildingWay = errors.New("OSM 建筑 way 未闭合")
+)
 
-const nonClosedPolygonLimitation = "Overpass 返回的非闭合或不足四点面状 way 已跳过，未计入面状暴露"
+const (
+	nonClosedFacilityLimitation = "Overpass 返回的非闭合或不足四点设施 way 已跳过，未作为设施计数"
+	nonClosedBuildingLimitation = "Overpass 返回的非闭合或不足四点建筑 way 已跳过，未作为建筑面积"
+)
 
 // Options 配置 Overpass 固定端点和安全预算。
 type Options struct {
@@ -151,7 +157,7 @@ node["emergency"="assembly_point"](%s);
 way["emergency"="assembly_point"](%s);
 node["social_facility"="shelter"](%s);
 way["social_facility"="shelter"](%s);
-);out geom meta;`, maxBytes, bbox, bbox, bbox, bbox, bbox, bbox, bbox)
+);out geom meta;`, maxBytes, bbox, bbox, bbox, bbox, bbox, bbox, bbox, bbox)
 }
 
 type responseEnvelope struct {
@@ -408,7 +414,7 @@ func canonicalResponseKey(value string) (string, bool) {
 func convertElements(elements []osmElement) ([]exposurecollection.RawInfrastructureFeature, []string, error) {
 	values := make([]exposurecollection.RawInfrastructureFeature, 0, len(elements))
 	seen := make(map[osmIdentity]osmElement, len(elements))
-	skippedPolygons := 0
+	skippedFacilities, skippedBuildings := 0, 0
 	for _, element := range elements {
 		unique, err := registerElementIdentity(seen, element)
 		if err != nil {
@@ -418,8 +424,12 @@ func convertElements(elements []osmElement) ([]exposurecollection.RawInfrastruct
 			continue
 		}
 		feature, include, err := convertElement(element)
-		if errors.Is(err, errNonClosedPolygonWay) {
-			skippedPolygons++
+		if errors.Is(err, errNonClosedFacilityWay) {
+			skippedFacilities++
+			continue
+		}
+		if errors.Is(err, errNonClosedBuildingWay) {
+			skippedBuildings++
 			continue
 		}
 		if err != nil {
@@ -431,9 +441,12 @@ func convertElements(elements []osmElement) ([]exposurecollection.RawInfrastruct
 		values = append(values, feature)
 	}
 	sort.Slice(values, func(left, right int) bool { return values[left].FeatureID < values[right].FeatureID })
-	limitations := make([]string, 0, 1)
-	if skippedPolygons > 0 {
-		limitations = append(limitations, fmt.Sprintf("%s（%d 条）", nonClosedPolygonLimitation, skippedPolygons))
+	limitations := make([]string, 0, 2)
+	if skippedFacilities > 0 {
+		limitations = append(limitations, fmt.Sprintf("%s（%d 条）", nonClosedFacilityLimitation, skippedFacilities))
+	}
+	if skippedBuildings > 0 {
+		limitations = append(limitations, fmt.Sprintf("%s（%d 条）", nonClosedBuildingLimitation, skippedBuildings))
 	}
 	return values, limitations, nil
 }
@@ -506,7 +519,10 @@ func elementGeometry(value osmElement, kind applicationloss.LossFeatureKind) (js
 	geometryType, geometryCoordinates := "LineString", any(coordinates)
 	if kind == applicationloss.LossFeatureFacility || kind == applicationloss.LossFeatureBuilding {
 		if !closed(coordinates) || len(coordinates) < 4 {
-			return nil, errNonClosedPolygonWay
+			if kind == applicationloss.LossFeatureFacility {
+				return nil, errNonClosedFacilityWay
+			}
+			return nil, errNonClosedBuildingWay
 		}
 		geometryType, geometryCoordinates = "Polygon", [][][]float64{coordinates}
 	}
