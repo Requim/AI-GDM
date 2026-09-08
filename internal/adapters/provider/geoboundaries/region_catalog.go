@@ -23,9 +23,9 @@ type regionCollection struct {
 }
 
 type regionFeature struct {
-	Type       string          `json:"type"`
+	Type       string           `json:"type"`
 	Properties regionProperties `json:"properties"`
-	Geometry   json.RawMessage `json:"geometry"`
+	Geometry   json.RawMessage  `json:"geometry"`
 }
 
 type regionProperties struct {

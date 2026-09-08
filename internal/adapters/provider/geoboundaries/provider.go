@@ -25,14 +25,15 @@ import (
 )
 
 const (
-	defaultMetadataURL  = "https://www.geoboundaries.org/api/current/gbOpen/CHN/ADM0/"
-	maxMetadataBytes    = 64 << 10
-	maxGeometryBytes    = 512 << 10
-	maxBoundaryPoints   = 20_000
-	minimumBoundaryYear = 1900
-	expectedSource      = "geoBoundaries, Wikimedia Commons"
-	expectedLicense     = "Public Domain"
-	expectedCRS         = "urn:ogc:def:crs:OGC:1.3:CRS84"
+	defaultMetadataURL     = "https://www.geoboundaries.org/api/current/gbOpen/CHN/ADM0/"
+	maxMetadataBytes       = 64 << 10
+	maxGeometryBytes       = 512 << 10
+	maxRegionGeometryBytes = 16 << 20
+	maxBoundaryPoints      = 20_000
+	minimumBoundaryYear    = 1900
+	expectedSource         = "geoBoundaries, Wikimedia Commons"
+	expectedLicense        = "Public Domain"
+	expectedCRS            = "urn:ogc:def:crs:OGC:1.3:CRS84"
 )
 
 var (
@@ -40,6 +41,7 @@ var (
 	boundaryYearPattern = regexp.MustCompile(`^[0-9]{4}$`)
 	shapeIDSuffix       = regexp.MustCompile(`^[0-9]+$`)
 	geometryPath        = regexp.MustCompile(`^/wmgeolab/geoBoundaries/raw/([0-9a-f]{7,40})/(releaseData/gbOpen/CHN/ADM0/geoBoundaries-CHN-ADM0_simplified\.geojson)$`)
+	regionGeometryPath  = regexp.MustCompile(`^/wmgeolab/geoBoundaries/raw/([0-9a-f]{7,40})/(releaseData/gbOpen/([A-Z]{3})/(ADM1|ADM2)/geoBoundaries-[A-Z]{3}-(ADM1|ADM2)_simplified\.geojson)$`)
 	metadataKeys        = criticalKeys("boundaryID", "boundaryName", "boundaryISO", "boundaryYearRepresented",
 		"boundaryType", "boundarySource", "boundaryLicense", "simplifiedGeometryGeoJSON")
 	collectionKeys = criticalKeys("type", "features", "crs", "srs", "srsName", "srid", "epsg",
@@ -59,6 +61,62 @@ var (
 type Options struct {
 	Client      *httpclient.Client
 	MetadataURL string
+}
+
+// RegionCatalog 获取指定国家 ADM1 或 ADM2 的真实多要素边界目录。
+func (p *Provider) RegionCatalog(ctx context.Context, countryISO, level string) ([]RegionRecord, error) {
+	metadataURL, err := regionMetadataURL(countryISO, level)
+	if err != nil {
+		return nil, err
+	}
+	metadataResponse, err := p.client.Do(ctx, httpclient.Request{Method: http.MethodGet,
+		URL: metadataURL, MaxBodyBytes: maxMetadataBytes,
+		RedirectPolicy: httpclient.RedirectSameOriginHTTPS})
+	if err != nil {
+		return nil, fmt.Errorf("读取 geoBoundaries 行政区目录元数据: %w", err)
+	}
+	var value struct {
+		SimplifiedGeometry string `json:"simplifiedGeometryGeoJSON"`
+	}
+	if err = json.Unmarshal(metadataResponse.Body, &value); err != nil || value.SimplifiedGeometry == "" {
+		return nil, providerError("geoBoundaries 行政区目录元数据无效")
+	}
+	downloadURL, err := regionMediaURL(value.SimplifiedGeometry, countryISO, level)
+	if err != nil {
+		return nil, err
+	}
+	geometryResponse, err := p.client.Do(ctx, httpclient.Request{Method: http.MethodGet,
+		URL: downloadURL, MaxBodyBytes: maxRegionGeometryBytes,
+		RedirectPolicy: httpclient.RedirectDeny})
+	if err != nil {
+		return nil, fmt.Errorf("下载 geoBoundaries 行政区目录几何: %w", err)
+	}
+	return DecodeRegionCollection(geometryResponse.Body, countryISO, level)
+}
+
+func regionMetadataURL(countryISO, level string) (string, error) {
+	if !validCountryISO(countryISO) || (level != "ADM1" && level != "ADM2") {
+		return "", fmt.Errorf("%w: geoBoundaries 行政区目录参数无效", domain.ErrInvalidInput)
+	}
+	return "https://www.geoboundaries.org/api/current/gbOpen/" + countryISO + "/" + level + "/", nil
+}
+
+func regionMediaURL(raw, countryISO, level string) (string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() != "github.com" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", providerError("geoBoundaries 行政区几何地址主机无效")
+	}
+	matches := regionGeometryPath.FindStringSubmatch(parsed.EscapedPath())
+	if len(matches) != 5 || matches[3] != countryISO || matches[4] != level {
+		return "", providerError("geoBoundaries 行政区几何地址与目录参数不匹配")
+	}
+	return "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/" +
+		matches[1] + "/" + matches[2], nil
+}
+
+func validCountryISO(value string) bool {
+	return regexp.MustCompile(`^[A-Z]{3}$`).MatchString(strings.TrimSpace(value))
 }
 
 // Provider 下载并校验版本化中国 ADM0 简化几何。
