@@ -583,6 +583,8 @@ const lossProjectionBudgetSQL = `WITH target_analysis AS (
     SELECT COUNT(f.feature_id)::BIGINT AS feature_count,
         COUNT(DISTINCT f.feature_kind)::BIGINT AS feature_kind_count,
         COUNT(DISTINCT f.feature_kind) FILTER (
+            WHERE f.status='available' AND f.provided=TRUE)::BIGINT AS available_feature_kind_count,
+        COUNT(DISTINCT f.feature_kind) FILTER (
             WHERE f.feature_kind IN ('population','road','facility'))::BIGINT AS core_feature_kind_count,
         COUNT(DISTINCT f.feature_kind) FILTER (
             WHERE f.status='available' AND f.provided=TRUE
