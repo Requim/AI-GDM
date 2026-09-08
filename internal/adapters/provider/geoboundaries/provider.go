@@ -108,7 +108,7 @@ func regionMediaURL(raw, countryISO, level string) (string, error) {
 		return "", providerError("geoBoundaries 行政区几何地址主机无效")
 	}
 	matches := regionGeometryPath.FindStringSubmatch(parsed.EscapedPath())
-	if len(matches) != 5 || matches[3] != countryISO || matches[4] != level {
+	if len(matches) != 6 || matches[3] != countryISO || matches[4] != level || matches[5] != level {
 		return "", providerError("geoBoundaries 行政区几何地址与目录参数不匹配")
 	}
 	return "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/" +
