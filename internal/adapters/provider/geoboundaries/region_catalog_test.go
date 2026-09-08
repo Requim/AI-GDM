@@ -58,6 +58,18 @@ func TestDecodeRegionCollectionUsesShapeIDWhenCountryISOIsNotUnique(t *testing.T
 	}
 }
 
+func TestDecodeRegionCollectionUsesStableFallbackNameWhenProviderOmitsName(t *testing.T) {
+	payload := []byte(`{"type":"FeatureCollection","features":[
+		{"type":"Feature","properties":{"shapeID":"17275852B34966799109471","shapeName":null,"shapeISO":"","shapeGroup":"CHN","shapeType":"ADM2"},"geometry":{"type":"Polygon","coordinates":[]}}
+	]}`)
+	values, err := DecodeRegionCollection(payload, "CHN", "ADM2")
+	if err != nil || len(values) != 1 ||
+		values[0].Code != "CHN-ADM2-17275852B34966799109471" ||
+		values[0].Name != "未命名行政区-CHN-ADM2-17275852B34966799109471" {
+		t.Fatalf("区域目录=%+v error=%v", values, err)
+	}
+}
+
 func TestDecodeRegionCollectionRejectsDuplicateCode(t *testing.T) {
 	payload := []byte(`{"type":"FeatureCollection","features":[
 		{"type":"Feature","properties":{"shapeID":"CHN-1","shapeName":"区域一","shapeISO":"CN-1","shapeGroup":"CHN","shapeType":"ADM1"},"geometry":{"type":"Polygon","coordinates":[]}},

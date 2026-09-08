@@ -78,9 +78,12 @@ func normalizeRegion(feature regionFeature, countryISO, level string) (exposurec
 		}
 		code = countryISO + "-" + level + "-" + shapeID
 	}
-	if code == "" || strings.TrimSpace(value.ShapeName) == "" ||
-		value.ShapeGroup != countryISO || value.ShapeType != level {
+	if code == "" || value.ShapeGroup != countryISO || value.ShapeType != level {
 		return exposurecollection.AdministrativeRegion{}, fmt.Errorf("%w: 行政区属性不匹配", domain.ErrProviderUnavailable)
+	}
+	name := strings.TrimSpace(value.ShapeName)
+	if name == "" {
+		name = "未命名行政区-" + code
 	}
 	boundaryID := shapeID
 	if boundaryID == "" {
@@ -88,6 +91,6 @@ func normalizeRegion(feature regionFeature, countryISO, level string) (exposurec
 	} else {
 		boundaryID = countryISO + "-" + level + "-" + boundaryID
 	}
-	return exposurecollection.AdministrativeRegion{Code: code, Name: strings.TrimSpace(value.ShapeName),
+	return exposurecollection.AdministrativeRegion{Code: code, Name: name,
 		Level: level, BoundaryID: boundaryID, Geometry: append(json.RawMessage(nil), feature.Geometry...)}, nil
 }
