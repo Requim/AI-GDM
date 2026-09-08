@@ -191,7 +191,7 @@ func completeInfrastructureKinds(values []applicationloss.LossExposureFeature,
 	}
 	limitations := make([]string, 0, 2)
 	for _, kind := range []applicationloss.LossFeatureKind{applicationloss.LossFeatureRoad,
-		applicationloss.LossFeatureFacility, applicationloss.LossFeatureBuilding} {
+		applicationloss.LossFeatureFacility} {
 		if _, exists := kinds[kind]; exists {
 			continue
 		}
@@ -227,9 +227,6 @@ func zeroInfrastructureFeature(kind applicationloss.LossFeatureKind, zoneIDs, re
 func zeroInfrastructureLimitation(kind applicationloss.LossFeatureKind) string {
 	if kind == applicationloss.LossFeatureRoad {
 		return "OpenStreetMap 本次有界查询在局部热点范围内未发现道路要素，按真实零值记录"
-	}
-	if kind == applicationloss.LossFeatureBuilding {
-		return "OpenStreetMap 本次有界查询在局部热点范围内未发现建筑面，按真实零值记录；建筑金额仍需计价基线"
 	}
 	return "OpenStreetMap 本次有界查询在局部热点范围内未发现设施要素，按真实零值记录"
 }
