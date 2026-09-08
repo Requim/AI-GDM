@@ -201,8 +201,8 @@ func (cache regionCatalogCacheFile) entry(level string) (*regionCatalogCacheEntr
 
 func validateCacheEntry(entry regionCatalogCacheEntry, countryISO string) error {
 	if (entry.Level != "ADM1" && entry.Level != "ADM2") ||
-		!validBoundaryYear(entry.BoundaryYear) || entry.Source != expectedSource ||
-		entry.License != expectedLicense || len(entry.References) != 2 ||
+		!validBoundaryYear(entry.BoundaryYear) || !validRegionMetadataText(entry.Source) ||
+		!validRegionMetadataText(entry.License) || len(entry.References) != 2 ||
 		len(entry.Payload) == 0 || !validDigest(entry.Digest) || entry.CollectedAt.IsZero() {
 		return fmt.Errorf("%w: 行政区本地缓存元数据无效", domain.ErrProviderUnavailable)
 	}

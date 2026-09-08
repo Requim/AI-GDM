@@ -141,8 +141,14 @@ func regionProviderForCache(t *testing.T, failADM2 bool) (*Provider, *atomic.Int
 }
 
 func regionMetadataPayload(level string) string {
-	return `{"boundaryYearRepresented":"2019","boundarySource":"` + expectedSource +
-		`","boundaryLicense":"` + expectedLicense +
+	year, source, license := "2019", expectedSource, expectedLicense
+	if level == "ADM2" {
+		year = "2017"
+		source = "National Administration of Surveying, Mapping and Geoinformation of China, Revolutionary GIS"
+		license = "Open Data Commons Public Domain Dedication and License (PDDL) v1.0"
+	}
+	return `{"boundaryYearRepresented":"` + year + `","boundarySource":"` + source +
+		`","boundaryLicense":"` + license +
 		`","simplifiedGeometryGeoJSON":"https://github.com/wmgeolab/geoBoundaries/raw/abcdef1/releaseData/gbOpen/CHN/` +
 		level + `/geoBoundaries-CHN-` + level + `_simplified.geojson"}`
 }

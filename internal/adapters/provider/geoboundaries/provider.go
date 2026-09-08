@@ -203,8 +203,14 @@ func validRegionMetadata(value struct {
 	License            string `json:"boundaryLicense"`
 }, countryISO, level string) bool {
 	return value.SimplifiedGeometry != "" && validBoundaryYear(value.BoundaryYear) &&
-		value.Source == expectedSource && value.License == expectedLicense &&
+		validRegionMetadataText(value.Source) && validRegionMetadataText(value.License) &&
 		validCountryISO(countryISO) && (level == "ADM1" || level == "ADM2")
+}
+
+func validRegionMetadataText(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && len([]rune(value)) <= 512 &&
+		!strings.ContainsAny(value, "\r\n")
 }
 
 // Provider 下载并校验版本化中国 ADM0 简化几何。
