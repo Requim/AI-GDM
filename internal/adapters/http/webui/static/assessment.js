@@ -67,6 +67,7 @@
       lossForm: document.getElementById("loss-assessment-form"),
       lossInput: document.getElementById("loss-snapshot-id"),
       regionSelect: document.getElementById("loss-region-code"),
+      regionLoad: document.getElementById("loss-region-load"),
       lossButton: document.getElementById("loss-assessment-run"),
       lossStatus: document.getElementById("loss-assessment-status"),
       lossID: document.getElementById("loss-assessment-id"),
@@ -160,6 +161,7 @@
       bindRiskSnapshot(event && event.detail);
     });
     loadRegionCapabilities();
+    if (elements.regionLoad) elements.regionLoad.addEventListener("click", loadAdministrativeRegions);
     syncRiskSnapshot();
   }
 
@@ -182,6 +184,31 @@
     } catch (_) {
       elements.regionSelect.replaceChildren(new Option("区域能力暂不可用", ""));
       elements.regionSelect.disabled = true;
+    }
+  }
+
+  async function loadAdministrativeRegions() {
+    if (!elements.regionSelect || !elements.regionLoad) return;
+    elements.regionLoad.disabled = true;
+    elements.regionLoad.textContent = "正在读取...";
+    try {
+      const response = await fetch("/api/v1/loss/regions?level=ADM1", { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error("省市目录读取失败");
+      const envelope = await response.json();
+      const regions = envelope.data && Array.isArray(envelope.data.regions) ? envelope.data.regions : [];
+      if (!regions.length) throw new Error("省市目录为空");
+      regions.forEach(function (region) {
+        const option = new Option(region.name, region.code);
+        option.dataset.level = region.level;
+        elements.regionSelect.append(option);
+      });
+      elements.regionSelect.disabled = false;
+      elements.regionLoad.textContent = "已读取省级目录";
+    } catch (error) {
+      elements.regionLoad.textContent = "读取失败，重试";
+      setAssessmentState(elements.lossStatus, "warning", errorMessage(error));
+    } finally {
+      elements.regionLoad.disabled = false;
     }
   }
 
