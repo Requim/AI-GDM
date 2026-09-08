@@ -1597,15 +1597,29 @@
       !optionalText(source.model, 128) || !optionalSHA256(source.sha256) || !validBBox(source.bbox)) {
       throw new Error("公开来源契约无效");
     }
-    const times = ["observedAt", "publishedAt", "revisionFirstSeenAt", "validFrom", "validTo"];
-    times.forEach(function (name) {
-      if (source[name] !== undefined && !strictUTC(source[name], true)) throw new Error("公开来源时间契约无效");
-    });
-    if (source.validFrom !== undefined && source.validTo !== undefined &&
-      Date.parse(source.validTo) < Date.parse(source.validFrom)) throw new Error("公开来源有效期无效");
+    validatePublicSourceTimes(source);
     validateTextArray(source.qualityFlags || [], 32, 512, "公开来源质量标记");
     validateTextArray(source.limitations || [], 32, 1024, "公开来源限制");
     validateSourceParts(source.sourceParts || []);
+  }
+
+  function validatePublicSourceTimes(source) {
+    const labels = { observedAt: "观测时间", publishedAt: "发布时间", revisionFirstSeenAt: "修订发现时间",
+      validFrom: "有效期开始时间", validTo: "有效期结束时间" };
+    Object.keys(labels).forEach(function (name) {
+      if (source[name] === undefined) return;
+      if (!strictUTC(source[name], false)) {
+        throw new Error("来源的" + labels[name] + "格式不正确，暂不能展示说明；原始评估结果未改变。");
+      }
+      // 有效期可以覆盖未来；已发生事件应与服务端获取时间比较，而非浏览器时钟。
+      if (!["validFrom", "validTo"].includes(name) && Date.parse(source[name]) > Date.parse(source.fetchedAt)) {
+        throw new Error("来源的" + labels[name] + "晚于获取时间，请核对来源记录；原始评估结果未改变。");
+      }
+    });
+    if (source.validFrom !== undefined && source.validTo !== undefined &&
+      Date.parse(source.validTo) < Date.parse(source.validFrom)) {
+      throw new Error("来源有效期的结束时间早于开始时间，暂不能展示说明；原始评估结果未改变。");
+    }
   }
 
   function validateSourceParts(parts) {

@@ -770,6 +770,51 @@ test("生还 Authority 扩展字段、usage 精确 schema 与 SHA 校验通过",
   await expect(page.locator("#ai-analysis-digest")).toHaveText(/^[0-9a-f]{64}$/);
 });
 
+for (const target of ["evidence", "narrative"]) {
+  test(`${target} 来源有效期允许覆盖未来且保留 AI 说明`, async ({ page, request }) => {
+    await setScenario(request, "success");
+    await openAssessment(page);
+    await prepareSurvivalReference(page);
+    await page.route("**" + AI_PATH, async route => {
+      const response = await route.fetch();
+      const body = await response.json();
+      const source = target === "evidence" ? body.data.evidence[0].source : body.data.narrative.source;
+      source.validFrom = "2026-08-29T00:00:00Z";
+      source.validTo = "2026-08-30T00:00:00Z";
+      await route.fulfill({ response, json: body });
+    });
+    await runAI(page);
+    await expect(page.locator("#ai-report-status")).toHaveClass(/assessment-state-replay/);
+    await expect(page.locator("#ai-authority-id")).toHaveText(SURVIVAL_ASSESSMENT_ID);
+    await expect(page.locator("#ai-report-narrative")).not.toContainText("尚未生成通俗说明");
+  });
+}
+
+for (const [field, value, message] of [
+  ["publishedAt", "2026-08-30T00:00:00Z", "发布时间晚于获取时间"],
+  ["observedAt", "not-a-time", "观测时间格式不正确"],
+  ["validTo", "2026-02-30T00:00:00Z", "有效期结束时间格式不正确"],
+  ["validTo", "2026-08-26T00:00:00Z", "结束时间早于开始时间"]
+]) {
+  test(`AI 来源 ${field} ${value} 异常解释原因并保留原始回放`, async ({ page, request }) => {
+    await setScenario(request, "success");
+    await openAssessment(page);
+    await prepareSurvivalReference(page);
+    await page.route("**" + AI_PATH, async route => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data.narrative.source.validFrom = "2026-08-27T00:00:00Z";
+      body.data.narrative.source[field] = value;
+      await route.fulfill({ response, json: body });
+    });
+    await page.locator("#ai-report-run").click();
+    await expectAIFailClosed(page, message);
+    await expect(page.locator("#ai-report-status")).toContainText("原始评估结果未改变");
+    await selectTab(page, "survival");
+    await expect(page.locator("#survival-score")).toHaveText("35 / 100");
+  });
+}
+
 test("usage 多余字段被浏览器 fail-closed", async ({ page, request }) => {
   await setScenario(request, "ai_bad_usage");
   await openAssessment(page);
