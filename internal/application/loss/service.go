@@ -49,6 +49,7 @@ const MaxReferenceProjectionStaleness = 72 * time.Hour
 // EstimateInput 只接受已持久化风险快照标识，禁止调用方提交计算数值。
 type EstimateInput struct {
 	SnapshotID string `json:"snapshotId"`
+	RegionCode string `json:"regionCode,omitempty"`
 }
 
 // AssessmentService 是损失评估驱动适配器使用的最小端口。
@@ -326,6 +327,9 @@ func (s *Service) estimateDerived(ctx context.Context, input authoritativeInput,
 func validateInput(input EstimateInput) error {
 	if strings.TrimSpace(input.SnapshotID) == "" || input.SnapshotID != strings.TrimSpace(input.SnapshotID) || len(input.SnapshotID) > 128 {
 		return fmt.Errorf("%w: 损失评估快照标识无效", domain.ErrInvalidInput)
+	}
+	if input.RegionCode != "" && input.RegionCode != "CN" {
+		return fmt.Errorf("%w: 损失评估行政区尚未接入", domain.ErrInvalidInput)
 	}
 	return nil
 }

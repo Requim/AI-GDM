@@ -678,7 +678,7 @@ func decodeJSON(t *testing.T, payload []byte, destination any) {
 
 func assertCapturedSnapshot(t *testing.T, estimator *estimatorStub) {
 	t.Helper()
-	want := []applicationloss.EstimateInput{{SnapshotID: "snapshot-1"}}
+	want := []applicationloss.EstimateInput{{SnapshotID: "snapshot-1", RegionCode: "CN"}}
 	if !reflect.DeepEqual(estimator.inputs, want) {
 		t.Fatalf("用例输入=%+v want=%+v", estimator.inputs, want)
 	}

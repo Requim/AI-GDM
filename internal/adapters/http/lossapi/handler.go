@@ -174,7 +174,7 @@ func (r estimateRequest) input() (applicationloss.EstimateInput, error) {
 	if region != "" && region != "CN" {
 		return applicationloss.EstimateInput{}, fmt.Errorf("%w: 当前仅支持中国全国范围，省市行政区边界尚未接入", domain.ErrInvalidInput)
 	}
-	return applicationloss.EstimateInput{SnapshotID: r.SnapshotID}, nil
+	return applicationloss.EstimateInput{SnapshotID: r.SnapshotID, RegionCode: region}, nil
 }
 
 func decode(request *http.Request, destination any) error {
