@@ -63,24 +63,24 @@ func New(estimator applicationloss.AssessmentService, writer ports.LossAssessmen
 }
 
 type regionCapability struct {
-	Code     string `json:"code"`
-	Name     string `json:"name"`
-	Level    string `json:"level"`
-	Status   string `json:"status"`
+	Code     string   `json:"code"`
+	Name     string   `json:"name"`
+	Level    string   `json:"level"`
+	Status   string   `json:"status"`
 	Supports []string `json:"supports"`
-	Note     string `json:"note"`
+	Note     string   `json:"note"`
 }
 
 func (h *Handler) listRegions(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, r, http.StatusOK, successResponse{Data: struct {
-		Version string              `json:"version"`
+		Version string             `json:"version"`
 		Regions []regionCapability `json:"regions"`
 	}{
 		Version: "loss-region-capability-v1",
 		Regions: []regionCapability{{
 			Code: "CN", Name: "中国全国", Level: "ADM0", Status: "available",
 			Supports: []string{"risk", "road_loss", "impact_range"},
-			Note: "当前风险与暴露投影按中国全国边界生成",
+			Note:     "当前风险与暴露投影按中国全国边界生成",
 		}, {
 			Code: "*", Name: "省、市行政区", Level: "ADM1/ADM2", Status: "unavailable",
 			Supports: []string{}, Note: "省市行政边界目录和按区裁剪尚未接入",
