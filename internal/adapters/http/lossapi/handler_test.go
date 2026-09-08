@@ -93,6 +93,13 @@ func TestAssessmentLifecycleUsesSnapshotOnlyAndSafeMoneyWire(t *testing.T) {
 	assertEvidenceWire(t, loadedValue)
 }
 
+func TestEstimateRequestRejectsUnsupportedAdministrativeRegion(t *testing.T) {
+	_, err := (estimateRequest{SnapshotID: "snapshot-1", RegionCode: "CN-31"}).input()
+	if !errors.Is(err, domain.ErrInvalidInput) || !strings.Contains(err.Error(), "省市行政区边界尚未接入") {
+		t.Fatalf("input() error=%v", err)
+	}
+}
+
 func TestCreateSupportsDeduplicatedMultiZoneServicePath(t *testing.T) {
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	api, store := newIntegratedLossAPI(t, now)
