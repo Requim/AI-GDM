@@ -121,7 +121,8 @@ func (h *Handler) listRegions(w http.ResponseWriter, r *http.Request) {
 			Note:     "当前风险与暴露投影按中国全国边界生成",
 		}, {
 			Code: "*", Name: "省、市行政区", Level: "ADM1/ADM2", Status: "unavailable",
-			Supports: []string{}, Note: "省市行政边界目录和按区裁剪尚未接入",
+			Supports: []string{"risk", "road_loss", "impact_range"},
+			Note:     "省市目录从服务器本地缓存读取；选择区域后可提交风险裁剪与道路损失投影",
 		}},
 	}, RequestID: requestID(r)})
 }
@@ -139,8 +140,9 @@ func (h *Handler) listRegionLevel(w http.ResponseWriter, r *http.Request, level 
 	regions := make([]regionCapability, 0, len(values))
 	for _, value := range values {
 		regions = append(regions, regionCapability{Code: value.Code, Name: value.Name,
-			Level: value.Level, Status: "catalog_only",
-			Note: "已读取行政区目录；按区域裁剪和道路损失尚未接入"})
+			Level: value.Level, Status: "available",
+			Supports: []string{"risk", "road_loss", "impact_range"},
+			Note:     "边界从服务器本地缓存读取；可生成该区域的风险裁剪与道路损失投影"})
 	}
 	h.writeJSON(w, r, http.StatusOK, successResponse{Data: struct {
 		Version string             `json:"version"`

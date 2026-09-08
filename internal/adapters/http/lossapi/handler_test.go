@@ -152,7 +152,7 @@ func TestRegionCapabilitiesCanReadAdministrativeCatalog(t *testing.T) {
 	}
 	response := performJSON(t, api, http.MethodGet, "/regions?level=ADM1", "")
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "上海市") ||
-		!strings.Contains(response.Body.String(), `"status":"catalog_only"`) {
+		!strings.Contains(response.Body.String(), `"status":"available"`) {
 		t.Fatalf("区域目录响应=%d %s", response.Code, response.Body.String())
 	}
 }
