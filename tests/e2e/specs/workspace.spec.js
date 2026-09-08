@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
-  await page.route(/^https:\/\/[a-z]\.tile\.openstreetmap\.org\//, route => route.abort());
+  await page.route(/^https:\/\/backup\.opentopomap\.org\//, route => route.abort());
 });
 
 test("地图默认首页，导航保留输入并支持历史记录", async ({ page }) => {

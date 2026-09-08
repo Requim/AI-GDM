@@ -9,7 +9,7 @@ const FIXED_NOW = new Date("2026-08-28T00:00:00Z");
 const TILE = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Xc7pAAAAAElFTkSuQmCC", "base64");
 
 test.beforeEach(async ({ page }) => {
-  await page.route(/^https:\/\/[a-z]\.tile\.openstreetmap\.org\//, async (route) => {
+  await page.route(/^https:\/\/backup\.opentopomap\.org\//, async (route) => {
     await route.fulfill({ status: 200, contentType: "image/png", body: TILE });
   });
 });
