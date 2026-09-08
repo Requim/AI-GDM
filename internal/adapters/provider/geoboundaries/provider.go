@@ -29,6 +29,7 @@ const (
 	maxMetadataBytes       = 64 << 10
 	maxGeometryBytes       = 512 << 10
 	maxRegionGeometryBytes = 16 << 20
+	regionChunkBytes       = 1 << 20
 	maxBoundaryPoints      = 20_000
 	minimumBoundaryYear    = 1900
 	expectedSource         = "geoBoundaries, Wikimedia Commons"
@@ -42,6 +43,7 @@ var (
 	shapeIDSuffix       = regexp.MustCompile(`^[0-9]+$`)
 	geometryPath        = regexp.MustCompile(`^/wmgeolab/geoBoundaries/raw/([0-9a-f]{7,40})/(releaseData/gbOpen/CHN/ADM0/geoBoundaries-CHN-ADM0_simplified\.geojson)$`)
 	regionGeometryPath  = regexp.MustCompile(`^/wmgeolab/geoBoundaries/raw/([0-9a-f]{7,40})/(releaseData/gbOpen/([A-Z]{3})/(ADM1|ADM2)/geoBoundaries-[A-Z]{3}-(ADM1|ADM2)_simplified\.geojson)$`)
+	contentRangePattern = regexp.MustCompile(`^bytes ([0-9]+)-([0-9]+)/([0-9]+)$`)
 	metadataKeys        = criticalKeys("boundaryID", "boundaryName", "boundaryISO", "boundaryYearRepresented",
 		"boundaryType", "boundarySource", "boundaryLicense", "simplifiedGeometryGeoJSON")
 	collectionKeys = criticalKeys("type", "features", "crs", "srs", "srsName", "srid", "epsg",
@@ -110,17 +112,15 @@ func (p *Provider) fetchRegionCatalog(ctx context.Context, countryISO, level str
 	if err != nil {
 		return regionCatalogSnapshot{}, err
 	}
-	geometryResponse, err := p.client.Do(ctx, httpclient.Request{Method: http.MethodGet,
-		URL: downloadURL, MaxBodyBytes: maxRegionGeometryBytes,
-		RedirectPolicy: httpclient.RedirectDeny})
+	geometryPayload, err := p.downloadRegionPayload(ctx, downloadURL)
 	if err != nil {
 		return regionCatalogSnapshot{}, fmt.Errorf("下载 geoBoundaries 行政区目录几何: %w", err)
 	}
-	regions, err := DecodeRegionCollection(geometryResponse.Body, countryISO, level)
+	regions, err := DecodeRegionCollection(geometryPayload, countryISO, level)
 	if err != nil {
 		return regionCatalogSnapshot{}, err
 	}
-	digest := sha256.Sum256(geometryResponse.Body)
+	digest := sha256.Sum256(geometryPayload)
 	digestHex := hex.EncodeToString(digest[:])
 	references := []string{metadataURL, downloadURL}
 	for index := range regions {
@@ -129,15 +129,74 @@ func (p *Provider) fetchRegionCatalog(ctx context.Context, countryISO, level str
 		regions[index].License = value.License
 		regions[index].Reference = downloadURL
 		regions[index].Digest = digestHex
-		regions[index].CollectedAt = geometryResponse.FetchedAt.UTC().Truncate(time.Microsecond)
+		regions[index].CollectedAt = time.Now().UTC().Truncate(time.Microsecond)
 		regions[index].InputReferences = append([]string(nil), references...)
 	}
 	return regionCatalogSnapshot{
 		countryISO: countryISO, level: level, boundaryYear: value.BoundaryYear,
 		source: value.Source, license: value.License, references: references,
-		digest: digestHex, collectedAt: geometryResponse.FetchedAt.UTC().Truncate(time.Microsecond),
-		payload: append([]byte(nil), geometryResponse.Body...), regions: regions,
+		digest: digestHex, collectedAt: regions[0].CollectedAt,
+		payload: append([]byte(nil), geometryPayload...), regions: regions,
 	}, nil
+}
+
+func (p *Provider) downloadRegionPayload(ctx context.Context, downloadURL string) ([]byte, error) {
+	var payload bytes.Buffer
+	var total int64
+	for start := int64(0); ; start += regionChunkBytes {
+		end := start + regionChunkBytes - 1
+		response, err := p.client.Do(ctx, httpclient.Request{
+			Method: http.MethodGet, URL: downloadURL,
+			Headers:      http.Header{"Range": []string{fmt.Sprintf("bytes=%d-%d", start, end)}},
+			MaxBodyBytes: regionChunkBytes, RedirectPolicy: httpclient.RedirectDeny,
+		})
+		if err != nil {
+			return nil, err
+		}
+		rangeStart, rangeEnd, rangeTotal, err := parseContentRange(response.Header.Get("Content-Range"))
+		if err != nil || response.StatusCode != http.StatusPartialContent ||
+			rangeStart != start || rangeEnd < rangeStart || rangeEnd >= rangeTotal ||
+			int64(len(response.Body)) != rangeEnd-rangeStart+1 {
+			return nil, providerError("geoBoundaries 行政区几何分段响应无效")
+		}
+		if start == 0 {
+			total = rangeTotal
+			if total <= 0 || total > maxRegionGeometryBytes {
+				return nil, providerError("geoBoundaries 行政区几何超过安全预算")
+			}
+			payload.Grow(int(total))
+		}
+		if rangeTotal != total {
+			return nil, providerError("geoBoundaries 行政区几何分段总长度变化")
+		}
+		if _, err = payload.Write(response.Body); err != nil {
+			return nil, fmt.Errorf("保存 geoBoundaries 行政区几何分段: %w", err)
+		}
+		if rangeEnd+1 == total {
+			break
+		}
+		if rangeEnd+1 < start {
+			return nil, providerError("geoBoundaries 行政区几何分段范围无效")
+		}
+	}
+	if int64(payload.Len()) != total {
+		return nil, providerError("geoBoundaries 行政区几何分段长度不完整")
+	}
+	return payload.Bytes(), nil
+}
+
+func parseContentRange(value string) (int64, int64, int64, error) {
+	matches := contentRangePattern.FindStringSubmatch(strings.TrimSpace(value))
+	if len(matches) != 4 {
+		return 0, 0, 0, fmt.Errorf("Content-Range 无效")
+	}
+	start, startErr := strconv.ParseInt(matches[1], 10, 64)
+	end, endErr := strconv.ParseInt(matches[2], 10, 64)
+	total, totalErr := strconv.ParseInt(matches[3], 10, 64)
+	if startErr != nil || endErr != nil || totalErr != nil {
+		return 0, 0, 0, fmt.Errorf("Content-Range 数字无效")
+	}
+	return start, end, total, nil
 }
 
 // BoundaryForRegion 返回目录中指定省市要素的版本化边界。

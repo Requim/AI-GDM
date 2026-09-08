@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -121,9 +123,9 @@ func regionProviderForCache(t *testing.T, failADM2 bool) (*Provider, *atomic.Int
 			}
 			return boundaryResponse(request, http.StatusOK, regionMetadataPayload("ADM2"), ""), nil
 		case "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/abcdef1/releaseData/gbOpen/CHN/ADM1/geoBoundaries-CHN-ADM1_simplified.geojson":
-			return boundaryResponse(request, http.StatusOK, string(adm1Payload), ""), nil
+			return regionRangeResponse(request, adm1Payload)
 		case "https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/abcdef1/releaseData/gbOpen/CHN/ADM2/geoBoundaries-CHN-ADM2_simplified.geojson":
-			return boundaryResponse(request, http.StatusOK, string(adm2Payload), ""), nil
+			return regionRangeResponse(request, adm2Payload)
 		default:
 			return nil, fmt.Errorf("意外的缓存测试请求: %s", request.URL)
 		}
@@ -138,6 +140,32 @@ func regionProviderForCache(t *testing.T, failADM2 bool) (*Provider, *atomic.Int
 		t.Fatal(err)
 	}
 	return provider, requests
+}
+
+func regionRangeResponse(request *http.Request, payload []byte) (*http.Response, error) {
+	value := strings.TrimPrefix(request.Header.Get("Range"), "bytes=")
+	parts := strings.Split(value, "-")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("测试 Range 请求无效: %q", value)
+	}
+	start, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || start < 0 || start >= int64(len(payload)) {
+		return nil, fmt.Errorf("测试 Range 起点无效: %q", value)
+	}
+	end, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || end < start {
+		return nil, fmt.Errorf("测试 Range 终点无效: %q", value)
+	}
+	if end >= int64(len(payload)) {
+		end = int64(len(payload)) - 1
+	}
+	headers := make(http.Header)
+	headers.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+	return &http.Response{
+		StatusCode: http.StatusPartialContent, Header: headers,
+		Body:    io.NopCloser(strings.NewReader(string(payload[start : end+1]))),
+		Request: request,
+	}, nil
 }
 
 func regionMetadataPayload(level string) string {
