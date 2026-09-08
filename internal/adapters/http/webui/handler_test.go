@@ -38,7 +38,7 @@ func TestHandlerRendersEscapedChineseConsole(t *testing.T) {
 		!strings.Contains(body, `/assets/risk-map.js`) || !strings.Contains(body, `/assets/evacuation.js`) ||
 		!strings.Contains(body, `/assets/assessment.js`) ||
 		!strings.Contains(body, `data-survival-cases-endpoint="/api/v1/survival/cases"`) ||
-		!strings.Contains(body, `data-request-timeout-ms="30000"`) ||
+		!strings.Contains(body, `data-request-timeout-ms="60000"`) ||
 		!strings.Contains(body, `data-ai-request-timeout-ms="45000"`) ||
 		strings.Contains(body, "<script>alert") ||
 		!strings.Contains(body, "&lt;script&gt;alert") {
