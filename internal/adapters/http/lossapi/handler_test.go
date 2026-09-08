@@ -157,6 +157,25 @@ func TestRegionCapabilitiesCanReadAdministrativeCatalog(t *testing.T) {
 	}
 }
 
+func TestRegionCapabilitiesAllowFullAdministrativeCatalog(t *testing.T) {
+	regions := make([]exposurecollection.AdministrativeRegion, 2391)
+	for index := range regions {
+		regions[index] = exposurecollection.AdministrativeRegion{
+			Code: fmt.Sprintf("CHN-ADM2-%d", index), Name: "测试行政区", Level: "ADM2",
+		}
+	}
+	api, err := NewWithRegionCatalog(&estimatorStub{value: validHTTPAssessment(t)},
+		&assessmentStoreStub{}, &assessmentStoreStub{}, "/api/v1/loss", testLogger(),
+		regionCatalogStub{regions: regions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := performJSON(t, api, http.MethodGet, "/regions?level=ADM2", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("完整行政区目录响应=%d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestEstimateRequestPreservesAdministrativeRegionForApplicationLayer(t *testing.T) {
 	value, err := (estimateRequest{SnapshotID: "snapshot-1", RegionCode: "CN-31"}).input()
 	if err != nil || value.RegionCode != "CN-31" {

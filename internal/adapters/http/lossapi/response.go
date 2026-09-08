@@ -28,7 +28,7 @@ const (
 	maxResponseItems       = 3000
 	maxSourceReferences    = 1000
 	maxResponseStringBytes = 4096
-	maxResponseTotalItems  = 5000
+	maxResponseTotalItems  = 20000
 	maxResponseTotalChars  = 512 << 10
 	maxResponseDepth       = 16
 	unavailableReference   = "unavailable"
