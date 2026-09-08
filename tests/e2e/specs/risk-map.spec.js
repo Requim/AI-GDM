@@ -258,6 +258,7 @@ test("风险地图刷新失败时保留人工输入的快照标识", async ({ pa
   await page.goto("/");
   await expect(page.locator("#loss-snapshot-id")).toHaveValue(SNAPSHOT_ID);
   await page.goto("/#assessment");
+  await page.locator("#loss-advanced-options > summary").click();
   await page.locator("#loss-snapshot-id").fill("snapshot-manual-input");
   await page.locator('[data-workspace-link="risk-map"]').click();
 

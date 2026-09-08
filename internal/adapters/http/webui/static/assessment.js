@@ -56,6 +56,7 @@
   bindLoss();
   bindSurvival();
   bindAI();
+  bindExplainActions();
   loadCases();
   loadModelCard();
 
@@ -167,6 +168,7 @@
       return;
     }
     if (!validID(snapshotID) || !elements.lossInput.checkValidity()) {
+      document.getElementById("loss-advanced-options").open = true;
       clearLossResult("风险快照标识无效，请检查后重试。", "error");
       elements.lossInput.reportValidity();
       return;
@@ -254,6 +256,7 @@
 
   function updateLossButton() {
     const snapshotID = elements.lossInput.value.trim();
+    document.getElementById("loss-snapshot-summary").textContent = snapshotID || "暂无有效风险快照";
     elements.lossButton.disabled = state.lossPending || !validID(snapshotID) || !elements.lossInput.checkValidity();
   }
 
@@ -300,7 +303,7 @@
     const available = result.status === "available";
     const stale = staleLossReference(result);
     setAssessmentState(elements.lossStatus, available ? "current" : "warning", available ?
-      "估算完成。金额是道路和设施的直接物理损失范围，请结合右侧数据依据和未计算项复核。" :
+      "估算完成。金额是道路和设施的直接物理损失范围，请结合数据依据和未计算项复核。" :
       stale ? "最后成功数据研究参考区间已生成。风险与暴露投影已过期，结果不代表实时情况。" :
         "局部热点研究参考区间已生成。金额仅覆盖道路案例参数，不能外推为全国或法定灾损。");
     elements.lossID.textContent = result.id;
@@ -1787,7 +1790,25 @@
       elements.aiReference.value = preferredValue;
     }
     elements.aiButton.disabled = state.references.size === 0;
+    root.querySelectorAll("[data-explain-kind]").forEach(function (button) {
+      button.disabled = !state.references.has(button.dataset.explainKind);
+    });
     clearAIResult("可解释结果列表已更新，请选择一项生成通俗说明。");
+  }
+
+  function bindExplainActions() {
+    root.querySelectorAll("[data-explain-kind]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        const reference = state.references.get(button.dataset.explainKind);
+        if (!reference) return;
+        const value = reference.kind + ":" + reference.id;
+        if (elements.aiReference.value !== value) clearAIResult("解释对象已改变，请重新生成通俗说明。");
+        elements.aiReference.value = value;
+        activateTab("ai");
+        document.getElementById("assessment-tab-ai").focus();
+        root.scrollIntoView({ block: "start" });
+      });
+    });
   }
 
   function renderTextList(container, values, emptyText) {

@@ -48,6 +48,17 @@ test("底图失败不冒充风险接口失败", async ({ page }) => {
   await expect(page.locator("#risk-map-message")).not.toHaveText(/底图/);
 });
 
+test("风险分区隐藏时仍清除超出参考窗口的快照", async ({ page, request }) => {
+  await request.post("/__fixture/scenario", { data: { name: "short_validity" } });
+  await page.clock.install({ time: new Date("2026-08-28T00:00:00Z") });
+  await page.goto("/");
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue("snapshot-browser");
+  await page.locator('[data-workspace-link="evacuation"]').click();
+  await page.clock.fastForward(73 * 60 * 60 * 1000);
+  await expect(page.locator("#loss-snapshot-id")).toHaveValue("");
+  await expect(page.locator("#loss-assessment-run")).toBeDisabled();
+});
+
 for (const width of [1920, 1440, 768, 390]) {
   test(`${width}px 工作区无横向溢出且导航可用`, async ({ page }) => {
     const height = width === 768 ? 1024 : width === 390 ? 844 : width === 1920 ? 1080 : 900;

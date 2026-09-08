@@ -32,7 +32,7 @@ func TestHandlerRendersEscapedChineseConsole(t *testing.T) {
 	if !strings.Contains(body, "研判工作台") || !strings.Contains(body, `id="risk-map"`) ||
 		!strings.Contains(body, `id="evacuation"`) || !strings.Contains(body, `id="assessment"`) ||
 		!strings.Contains(body, "灾损估算、历史案例与 AI 解读") ||
-		!strings.Contains(body, "解释前两类结果") || !strings.Contains(body, "不是伤亡人数") ||
+		!strings.Contains(body, "解读此结果") || !strings.Contains(body, "不是伤亡人数") ||
 		!strings.Contains(body, "支持条件灾损估算和历史案例回放") ||
 		!strings.Contains(body, `id="admin-auth-form"`) || !strings.Contains(body, `type="password"`) ||
 		!strings.Contains(body, `/assets/risk-map.js`) || !strings.Contains(body, `/assets/evacuation.js`) ||

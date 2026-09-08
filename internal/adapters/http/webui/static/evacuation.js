@@ -66,9 +66,17 @@
 
   function createMap() {
     const value = window.L.map(elements.map, { preferCanvas: true }).setView([35.5, 104.5], 4);
-    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    const tiles = window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 18, attribution: "&copy; OpenStreetMap contributors"
     }).addTo(value);
+    const watchdog = window.setTimeout(function () {
+      document.getElementById("evacuation-basemap-status").hidden = false;
+    }, 12000);
+    tiles.on("tileerror", function () { document.getElementById("evacuation-basemap-status").hidden = false; });
+    tiles.on("tileload", function () {
+      window.clearTimeout(watchdog);
+      document.getElementById("evacuation-basemap-status").hidden = true;
+    });
     return value;
   }
 
@@ -552,8 +560,12 @@
 
   function renderCandidateRoute(route, index) {
     const layer = addRouteGeometry(route, routeColor(index), routeLayer, false);
-    if (layer) routeLayers.set(route.id, layer);
+    if (layer) {
+      routeLayers.set(route.id, layer);
+      layer.on("click", function () { focusRoute(route.id); });
+    }
     const item = resultItem("候选路线 #" + route.rank);
+    item.dataset.routeId = route.id;
     item.appendChild(metrics([["风险分数", riskScoreText(route)],
       ["预计时长", durationText(route.durationSeconds)], ["距离", distanceText(route.distanceMeters)],
       ["来源", sourceText(route.source)]]));
@@ -561,6 +573,7 @@
     appendText(item, "p", stepText(route.steps, route.omittedStepCount));
     appendLimitations(item, route.limitations);
     const button = commandButton("在地图中查看", "secondary-command");
+    button.setAttribute("aria-pressed", "false");
     button.addEventListener("click", function () { focusRoute(route.id); });
     item.appendChild(button); elements.routeResults.appendChild(item);
   }
@@ -638,6 +651,14 @@
   function focusRoute(id) {
     const layer = routeLayers.get(id);
     if (!layer) return;
+    routeLayers.forEach(function (candidate, key) {
+      candidate.setStyle({ weight: key === id ? 7 : 4, opacity: key === id ? 1 : .55 });
+    });
+    elements.routeResults.querySelectorAll("[data-route-id]").forEach(function (item) {
+      const selected = item.dataset.routeId === id;
+      item.classList.toggle("result-item-selected", selected);
+      item.querySelector("button").setAttribute("aria-pressed", String(selected));
+    });
     const bounds = layer.getBounds();
     if (bounds.isValid()) map.fitBounds(bounds, { padding: [32, 32], maxZoom: 15 });
   }

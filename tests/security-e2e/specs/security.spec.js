@@ -12,6 +12,7 @@ async function openConsole(page, expectReady = true) {
   });
   await page.goto("/", { waitUntil: "domcontentloaded" });
   if (expectReady) await assertAuthorizationReady(page);
+  await page.locator("#admin-auth-open").click();
 }
 
 test("管理员令牌只驻留当前页面内存并通过服务端写请求边界", async ({ page, context }) => {
@@ -121,6 +122,7 @@ test("管理员授权控件在手机和桌面视口不产生横向溢出", async
   for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);
     await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator("#admin-auth-open").click();
     const overflow = await page.evaluate(() => {
       const form = document.querySelector("#admin-auth-form").getBoundingClientRect();
       return {
@@ -166,20 +168,29 @@ async function assertInertAuthorization(page, context, requested) {
 
 async function assertBusinessControlsDoNotNavigate(page, requested) {
   const originalURL = page.url();
+  if (await page.locator("#admin-auth-dialog").isVisible()) {
+    await page.locator("#admin-auth-close").click();
+  }
+  const enhanced = await page.locator("html").evaluate(node => node.classList.contains("workspace-ready"));
+  if (enhanced) await page.locator('[data-workspace-link="evacuation"]').click();
   const values = ["104.066541", "30.572269", "104.082000", "30.590000", "security-snapshot-id"];
   const selectors = ["#origin-longitude", "#origin-latitude", "#destination-longitude",
     "#destination-latitude", "#loss-snapshot-id"];
   for (let index = 0; index < selectors.length; index += 1) {
+    if (index === 4) {
+      await page.locator("#route-plan").click();
+      if (enhanced) await page.locator('[data-workspace-link="assessment"]').click();
+      await page.locator("#loss-advanced-options > summary").click();
+    }
     await page.locator(selectors[index]).fill(values[index]);
   }
-  await page.locator("#route-plan").click();
   const lossButton = page.locator("#loss-assessment-run");
   if (await lossButton.isEnabled()) await lossButton.click();
   else await expect(lossButton).toBeDisabled();
   await page.locator("#loss-snapshot-id").press("Enter");
   await page.waitForTimeout(100);
   await requested.settle();
-  expect(page.url()).toBe(originalURL);
+  expect(page.url().split("#")[0]).toBe(originalURL.split("#")[0]);
   expect(requested.records.filter((request) => request.navigation)).toHaveLength(1);
   const serialized = JSON.stringify(requested.records);
   values.forEach((value) => expect(serialized).not.toContain(value));

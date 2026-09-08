@@ -17,6 +17,13 @@
     toggle.setAttribute("aria-label", expanded ? "收起导航" : "展开导航");
     navigation.classList.toggle("navigation-open", expanded);
   });
+  navigation.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape") return;
+    navigation.classList.remove("navigation-open");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-label", "展开导航");
+    toggle.focus();
+  });
   bindAuthorization();
   sortSources();
   activateWorkspace(false);

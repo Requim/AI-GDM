@@ -14,14 +14,36 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("高级快照默认折叠，结果可直接进入对应 AI 解读且失效后入口禁用", async ({ page, request }) => {
+  await setScenario(request, "success");
+  await page.goto("/#assessment");
+  await expect(page.locator("#loss-advanced-options")).not.toHaveAttribute("open");
+  await expect(page.locator("#loss-explain-result")).toBeDisabled();
+  await page.locator("#loss-advanced-options > summary").click();
+  await submitLoss(page);
+  const lossID = await currentLossAssessmentID(page);
+  await page.locator("#loss-explain-result").click();
+  await expect(page.locator("#assessment-tab-ai")).toBeFocused();
+  await expect(page.locator("#ai-analysis-reference")).toHaveValue(`loss_assessment:${lossID}`);
+  await selectCase(page);
+  await runReplay(page);
+  await page.locator("#survival-explain-result").click();
+  await expect(page.locator("#ai-analysis-reference")).toHaveValue(`survival_assessment:${SURVIVAL_ASSESSMENT_ID}`);
+  await selectTab(page, "loss");
+  await page.locator("#loss-snapshot-id").fill("snapshot-changed");
+  await expect(page.locator("#loss-explain-result")).toBeDisabled();
+  await expect(page.locator("#survival-explain-result")).toBeEnabled();
+  await expect(page.locator("#loss-snapshot-summary")).toHaveText("snapshot-changed");
+});
+
 test("评估区解释当前灾损、历史回放与 AI 解读的用途和边界", async ({ page, request }) => {
   await setScenario(request, "success");
   await openAssessment(page);
 
   await expect(page.locator("#assessment-title")).toHaveText("灾损估算、历史案例与 AI 解读");
-  await expect(page.locator(".assessment-purpose-grid")).toContainText("估算条件直接损失");
-  await expect(page.locator(".assessment-purpose-grid")).toContainText("检查规则如何评分");
-  await expect(page.locator(".assessment-purpose-grid")).toContainText("解释前两类结果");
+  await expect(page.locator(".assessment-tabs")).toContainText("条件灾损估算");
+  await expect(page.locator(".assessment-tabs")).toContainText("历史案例回放");
+  await expect(page.locator(".assessment-tabs")).toContainText("AI 通俗解读");
   await expect(page.locator("#assessment-panel-loss")).toContainText("不是风险等级");
   await expect(page.locator("#assessment-panel-loss")).toContainText("不是伤亡人数");
   await expect(page.locator("#assessment-panel-loss")).toContainText("不是概率加权的期望损失");
@@ -999,7 +1021,10 @@ test("AI 与证据注入字符串仅按文本展示", async ({ page, request }) 
   await expect(page.locator("#ai-evidence-list")).toContainText("标题与摘要已去标识化");
   await expect(page.locator("#ai-evidence-list")).not.toContainText("<svg onload=");
   await expect(page.locator("#ai-evidence-list a")).toHaveAttribute("href", "https://mnr.gov.cn/");
-  await expect(page.locator("#assessment img, #assessment svg, #assessment script")).toHaveCount(0);
+  await expect(page.locator("#assessment svg, #assessment script")).toHaveCount(0);
+  await expect(page.locator("#assessment img")).toHaveCount(1);
+  await expect(page.locator("#assessment img")).toHaveAttribute("src", "/assets/vendor/lucide/arrow-right.svg");
+  await expect(page.locator(".assessment-result-column img, .assessment-audit-column img")).toHaveCount(0);
   expect(await page.evaluate(() => Boolean(window.__assessmentInjected))).toBeFalsy();
 });
 
@@ -1124,6 +1149,7 @@ async function setScenario(request, name) {
 async function openAssessment(page) {
   await page.goto("/#assessment");
   await expect(page.locator("#assessment")).toBeVisible();
+  await page.locator("#loss-advanced-options > summary").click();
   await expect(page.locator("#survival-case-select option")).toHaveCount(4);
 }
 

@@ -60,8 +60,14 @@
     const tiles = window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 18, attribution: "&copy; OpenStreetMap contributors"
     }).addTo(value);
+    const watchdog = window.setTimeout(function () {
+      document.getElementById("risk-basemap-status").hidden = false;
+    }, 12000);
     tiles.on("tileerror", function () { document.getElementById("risk-basemap-status").hidden = false; });
-    tiles.on("tileload", function () { document.getElementById("risk-basemap-status").hidden = true; });
+    tiles.on("tileload", function () {
+      window.clearTimeout(watchdog);
+      document.getElementById("risk-basemap-status").hidden = true;
+    });
     return value;
   }
 
@@ -350,6 +356,7 @@
     const expired = state === "expired";
     const stale = state === "stale";
     elements.decision.textContent = expired ? "已过期 / " + level : stale ? "陈旧 / " + level : level;
+    elements.decision.dataset.level = expired || stale ? "stale" : decision ? decision.level : "unknown";
     elements.assessment.textContent = expired ? "数据已过期，仅保留图层供人工复核" :
       stale ? "数据陈旧，仅保留图层供人工复核" :
       state === "fallback" ? "正在使用最后成功回退数据，需人工复核" : assessmentText(assessment.status);
@@ -441,6 +448,7 @@
     elements.totalCount.textContent = "总数不可用";
     elements.coverageScope.textContent = "统计范围不可用";
     elements.decision.textContent = "不可用";
+    elements.decision.dataset.level = "unavailable";
     elements.assessment.textContent = "没有可用的当前风险结果";
     elements.dataStatus.textContent = "不可用";
     elements.confidence.textContent = "未提供";

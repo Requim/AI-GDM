@@ -1,17 +1,6 @@
 :root {
-  color-scheme: light;
-  --ink: #202b33;
-  --text: #202b33;
-  --muted: #62717b;
-  --panel: #fff;
-  --panel-strong: #f5f8f9;
-  --line: #dce3e7;
-  --green: #18734f;
-  --amber: #996012;
-  --red: #b33c35;
-  --cyan: #167b86;
-  --accent: #167b86;
-  --black: #f4f6f8;
+  --text: var(--ink);
+  --accent: var(--cyan);
 }
 
 body { background: #f4f6f8; font-size: 14px; line-height: 1.55; }
@@ -21,6 +10,7 @@ button img, a img { width: 18px; height: 18px; flex: 0 0 18px; }
 button:disabled { cursor: not-allowed; opacity: .5; }
 :focus-visible { outline: 3px solid #258b99; outline-offset: 3px; }
 [hidden] { display: none !important; }
+[data-workspace] { scroll-margin-top: 104px; }
 summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink); }
 details[open] > summary { margin-bottom: 12px; }
 .skip-link { position: fixed; left: 16px; top: -80px; z-index: 3000; padding: 10px; background: white; }
@@ -99,6 +89,9 @@ main:focus { outline: none; }
 .risk-decision { padding: 24px 20px; background: #f8fafb; }
 .risk-decision span, .risk-decision small { font-size: 12px; }
 .risk-decision strong { font-size: 28px; margin: 10px 0; }
+.risk-decision strong[data-level="low"] { color: var(--green); }
+.risk-decision strong[data-level="high"], .risk-decision strong[data-level="unavailable"] { color: var(--red); }
+.risk-decision strong[data-level="very_high"] { color: #a42c66; }
 .risk-metadata div { min-height: 45px; padding: 12px 20px; border-bottom-color: #edf0f2; grid-template-columns: 72px minmax(0, 1fr); }
 .risk-metadata dt { font-size: 12px; }
 .risk-metadata dd { font: 12px/1.6 "Microsoft YaHei UI", sans-serif; }

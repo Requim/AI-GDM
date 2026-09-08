@@ -26,6 +26,20 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("候选路线选择状态与地图高亮联动且跨工作区保留", async ({ page, request }) => {
+  await setScenario(request, "success");
+  await openWorkbench(page);
+  await fillCoordinates(page);
+  await planRoutes(page);
+  const button = page.locator("#route-results [data-route-id] button").first();
+  await button.click();
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#route-results .result-item-selected")).toHaveCount(1);
+  await page.locator('[data-workspace-link="risk-map"]').click();
+  await page.locator('[data-workspace-link="evacuation"]').click();
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+});
+
 test("HTML 注入内容仅作为设施、供应商和限制文本展示", async ({ page, request }) => {
   await setScenario(request, "html_injection");
   await openWorkbench(page);
