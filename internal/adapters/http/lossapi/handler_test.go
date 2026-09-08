@@ -137,7 +137,7 @@ func TestRegionCapabilitiesCanReadAdministrativeCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := performJSON(t, api, http.MethodGet, "/api/v1/loss/regions?level=ADM1", "")
+	response := performJSON(t, api, http.MethodGet, "/regions?level=ADM1", "")
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "上海市") ||
 		!strings.Contains(response.Body.String(), `"status":"catalog_only"`) {
 		t.Fatalf("区域目录响应=%d %s", response.Code, response.Body.String())
