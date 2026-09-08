@@ -29,7 +29,7 @@ func TestHandlerRendersEscapedChineseConsole(t *testing.T) {
 		t.Fatalf("status=%d calls=%d", response.Code, service.calls)
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, "监控中心控制台") || !strings.Contains(body, `id="risk-map"`) ||
+	if !strings.Contains(body, "研判工作台") || !strings.Contains(body, `id="risk-map"`) ||
 		!strings.Contains(body, `id="evacuation"`) || !strings.Contains(body, `id="assessment"`) ||
 		!strings.Contains(body, "灾损估算、历史案例与 AI 解读") ||
 		!strings.Contains(body, "解释前两类结果") || !strings.Contains(body, "不是伤亡人数") ||
@@ -104,6 +104,9 @@ func TestHandlerServesEmbeddedAssets(t *testing.T) {
 		{path: "/assets/risk-map.js", contentType: "text/javascript", contains: "MAX_VISIBLE_ZONES"},
 		{path: "/assets/evacuation.js", contentType: "text/javascript", contains: "planRoutes"},
 		{path: "/assets/assessment.js", contentType: "text/javascript", contains: "loadModelCard"},
+		{path: "/assets/workspace.js", contentType: "text/javascript", contains: "activateWorkspace"},
+		{path: "/assets/workspace.css", contentType: "text/css", contains: ".workspace-nav"},
+		{path: "/assets/vendor/lucide/map.svg", contentType: "image/svg+xml", contains: "<svg"},
 		{path: "/assets/vendor/leaflet/leaflet.js", contentType: "text/javascript", contains: "Leaflet"},
 		{path: "/assets/vendor/leaflet/images/layers.png", contentType: "image/png"},
 	}

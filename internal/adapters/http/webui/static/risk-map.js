@@ -24,6 +24,9 @@
   let activeData = null;
 
   elements.refresh.addEventListener("click", loadRisk);
+  document.addEventListener("ai-gdm:workspace-visible", function (event) {
+    if (event.detail.workspace === "risk-map") map.invalidateSize({ pan: false });
+  });
   loadRisk();
 
   function collectElements() {
@@ -54,9 +57,11 @@
       throw new Error("Leaflet unavailable");
     }
     const value = window.L.map(container, { preferCanvas: true, zoomControl: true }).setView([35.5, 104.5], 4);
-    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    const tiles = window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 18, attribution: "&copy; OpenStreetMap contributors"
     }).addTo(value);
+    tiles.on("tileerror", function () { document.getElementById("risk-basemap-status").hidden = false; });
+    tiles.on("tileload", function () { document.getElementById("risk-basemap-status").hidden = true; });
     return value;
   }
 

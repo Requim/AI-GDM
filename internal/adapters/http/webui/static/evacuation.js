@@ -38,6 +38,9 @@
   let coordinateTarget = "origin";
 
   bindEvents();
+  document.addEventListener("ai-gdm:workspace-visible", function (event) {
+    if (event.detail.workspace === "evacuation") map.invalidateSize({ pan: false });
+  });
 
   function collectElements() {
     return {

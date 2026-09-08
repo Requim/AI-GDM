@@ -7,7 +7,7 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.cloud.tencent.com/debian|g' \
       /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::ForceIPv4=true update \
-    && apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends ca-certificates chromium \
+    && apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends ca-certificates chromium fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/e2e
