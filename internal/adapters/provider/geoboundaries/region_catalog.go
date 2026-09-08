@@ -78,6 +78,10 @@ func normalizeRegion(feature regionFeature, countryISO, level string) (exposurec
 		value.ShapeGroup != countryISO || value.ShapeType != level {
 		return exposurecollection.AdministrativeRegion{}, fmt.Errorf("%w: 行政区属性不匹配", domain.ErrProviderUnavailable)
 	}
+	boundaryID := strings.TrimSpace(value.ShapeID)
+	if boundaryID == "" {
+		boundaryID = code
+	}
 	return exposurecollection.AdministrativeRegion{Code: code, Name: strings.TrimSpace(value.ShapeName),
-		Level: level, Geometry: append(json.RawMessage(nil), feature.Geometry...)}, nil
+		Level: level, BoundaryID: boundaryID, Geometry: append(json.RawMessage(nil), feature.Geometry...)}, nil
 }

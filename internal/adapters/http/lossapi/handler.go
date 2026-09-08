@@ -3,6 +3,7 @@ package lossapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -29,6 +31,7 @@ const BasePath = "/loss"
 const maxRequestBytes = 1 << 20
 
 var assessmentIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+var regionCodePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 var publicBasePathPattern = regexp.MustCompile(`^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]+$`)
 
 var errStoredAssessment = errors.New("已保存损失评估无效")
@@ -41,24 +44,37 @@ type Handler struct {
 	logger         *slog.Logger
 	publicBasePath string
 	regions        exposurecollection.AdministrativeRegionCatalogProvider
+	projector      RegionalExposureProjector
+}
+
+// RegionalExposureProjector 为指定快照生成真实行政区暴露投影。
+type RegionalExposureProjector interface {
+	CollectRegion(context.Context, string, string) (exposurecollection.ExposureProjection, error)
 }
 
 // New 创建相对于 BasePath 挂载的损失评估路由。
 func New(estimator applicationloss.AssessmentService, writer ports.LossAssessmentWriter,
 	reader ports.LossAssessmentReader, publicBasePath string, logger *slog.Logger) (http.Handler, error) {
-	return newHandler(estimator, writer, reader, publicBasePath, logger, nil)
+	return newHandler(estimator, writer, reader, publicBasePath, logger, nil, nil)
 }
 
 // NewWithRegionCatalog 创建带真实行政区目录的损失评估 HTTP 服务。
 func NewWithRegionCatalog(estimator applicationloss.AssessmentService, writer ports.LossAssessmentWriter,
 	reader ports.LossAssessmentReader, publicBasePath string, logger *slog.Logger,
 	regions exposurecollection.AdministrativeRegionCatalogProvider) (http.Handler, error) {
-	return newHandler(estimator, writer, reader, publicBasePath, logger, regions)
+	return newHandler(estimator, writer, reader, publicBasePath, logger, regions, nil)
+}
+
+// NewWithRegionCatalogAndProjector 创建支持行政区目录和暴露投影的损失评估服务。
+func NewWithRegionCatalogAndProjector(estimator applicationloss.AssessmentService, writer ports.LossAssessmentWriter,
+	reader ports.LossAssessmentReader, publicBasePath string, logger *slog.Logger,
+	regions exposurecollection.AdministrativeRegionCatalogProvider, projector RegionalExposureProjector) (http.Handler, error) {
+	return newHandler(estimator, writer, reader, publicBasePath, logger, regions, projector)
 }
 
 func newHandler(estimator applicationloss.AssessmentService, writer ports.LossAssessmentWriter,
 	reader ports.LossAssessmentReader, publicBasePath string, logger *slog.Logger,
-	regions exposurecollection.AdministrativeRegionCatalogProvider) (http.Handler, error) {
+	regions exposurecollection.AdministrativeRegionCatalogProvider, projector RegionalExposureProjector) (http.Handler, error) {
 	if estimator == nil || writer == nil || reader == nil || logger == nil {
 		return nil, fmt.Errorf("损失评估 HTTP 服务、仓储或日志器不能为空")
 	}
@@ -67,10 +83,11 @@ func newHandler(estimator applicationloss.AssessmentService, writer ports.LossAs
 		return nil, err
 	}
 	handler := &Handler{estimator: estimator, writer: writer, reader: reader, logger: logger,
-		publicBasePath: publicBasePath, regions: regions}
+		publicBasePath: publicBasePath, regions: regions, projector: projector}
 	router := chi.NewRouter()
 	router.Post("/assessments", handler.createAssessment)
 	router.Get("/regions", handler.listRegions)
+	router.Post("/regions/{regionCode}/projection", handler.createRegionalProjection)
 	router.Get("/assessments/{assessmentID}", handler.getAssessment)
 	router.Get("/assessments/{assessmentID}/sources", handler.getSources)
 	router.NotFound(handler.notFound)
@@ -129,6 +146,44 @@ func (h *Handler) listRegionLevel(w http.ResponseWriter, r *http.Request, level 
 		Version string             `json:"version"`
 		Regions []regionCapability `json:"regions"`
 	}{Version: "loss-region-capability-v1", Regions: regions}, RequestID: requestID(r)})
+}
+
+func (h *Handler) createRegionalProjection(w http.ResponseWriter, r *http.Request) {
+	if h.projector == nil {
+		h.writeError(w, r, fmt.Errorf("%w: 区域暴露投影尚未配置", domain.ErrInsufficientData))
+		return
+	}
+	var request struct {
+		SnapshotID string `json:"snapshotId"`
+	}
+	if err := decode(r, &request); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	regionCode := chi.URLParam(r, "regionCode")
+	if request.SnapshotID == "" || request.SnapshotID != strings.TrimSpace(request.SnapshotID) ||
+		!regionCodePattern.MatchString(regionCode) || regionCode == "CN" {
+		h.writeError(w, r, fmt.Errorf("%w: 区域暴露投影参数无效", domain.ErrInvalidInput))
+		return
+	}
+	value, err := h.projector.CollectRegion(r.Context(), request.SnapshotID, regionCode)
+	if err != nil {
+		h.writeError(w, r, fmt.Errorf("生成 %s 区域暴露投影: %w", regionCode, err))
+		return
+	}
+	h.writeJSON(w, r, http.StatusCreated, successResponse{Data: struct {
+		SnapshotID   string `json:"snapshotId"`
+		RegionCode   string `json:"regionCode"`
+		ProjectionID string `json:"projectionId"`
+		Status       string `json:"status"`
+		ValidFrom    string `json:"validFrom"`
+		ValidTo      string `json:"validTo"`
+	}{
+		SnapshotID: request.SnapshotID, RegionCode: value.Input.Analysis.RegionCode,
+		ProjectionID: value.Input.Analysis.ProjectionID, Status: string(value.Input.Analysis.Status),
+		ValidFrom: value.ValidFrom.UTC().Format(time.RFC3339Nano),
+		ValidTo:   value.ValidTo.UTC().Format(time.RFC3339Nano),
+	}, RequestID: requestID(r)})
 }
 
 type estimateRequest struct {
@@ -241,8 +296,8 @@ func (r estimateRequest) input() (applicationloss.EstimateInput, error) {
 		return applicationloss.EstimateInput{}, fmt.Errorf("%w: 风险快照标识无效", domain.ErrInvalidInput)
 	}
 	region := strings.TrimSpace(r.RegionCode)
-	if region != "" && region != "CN" {
-		return applicationloss.EstimateInput{}, fmt.Errorf("%w: 当前仅支持中国全国范围，省市行政区边界尚未接入", domain.ErrInvalidInput)
+	if region != "" && !regionCodePattern.MatchString(region) {
+		return applicationloss.EstimateInput{}, fmt.Errorf("%w: 行政区代码无效", domain.ErrInvalidInput)
 	}
 	return applicationloss.EstimateInput{SnapshotID: r.SnapshotID, RegionCode: region}, nil
 }

@@ -217,7 +217,7 @@ func readExposureUnion(ctx context.Context, tx pgx.Tx,
 	return append(json.RawMessage(nil), payload...), bounds, area, nil
 }
 
-// ProjectAdministration 将风险区精确裁剪到版本化 CHN ADM0 边界。
+// ProjectAdministration 将风险区精确裁剪到版本化中国行政边界。
 func (r *HazardRepository) ProjectAdministration(ctx context.Context,
 	input exposurecollection.GeometryInput, boundary exposurecollection.AdministrativeBoundary,
 	limits exposurecollection.GeometryProjectionLimits,
@@ -248,7 +248,9 @@ func validateAdministrativeRequest(r *HazardRepository, input exposurecollection
 	boundary exposurecollection.AdministrativeBoundary, limits exposurecollection.GeometryProjectionLimits,
 ) error {
 	if r == nil || r.pool == nil || input.Analysis.ID == "" || input.Snapshot.ID == "" ||
-		boundary.RegionCode != "CN" || boundary.BoundaryType != "ADM0" || boundary.Digest == "" ||
+		!validExposureRegionCode(boundary.RegionCode) ||
+		(boundary.BoundaryType != "ADM0" && boundary.BoundaryType != "ADM1" && boundary.BoundaryType != "ADM2") ||
+		!validExposureBoundaryID(boundary.BoundaryID) || boundary.Digest == "" ||
 		len(boundary.Geometry) == 0 || len(input.UnionGeometry) == 0 || len(input.Zones) == 0 ||
 		len(input.Zones) > exposurecollection.MaxScopedRiskZones || limits.MaxPointsPerItem <= 0 ||
 		limits.MaxTotalPoints <= 0 {
@@ -299,7 +301,7 @@ func materializeAdministrativeProjection(ctx context.Context, tx pgx.Tx,
 		return exposurecollection.AdministrativeProjection{}, err
 	}
 	return exposurecollection.AdministrativeProjection{AnalysisID: input.Analysis.ID,
-		SnapshotID: input.Snapshot.ID, RegionCode: "CN", BoundaryID: boundary.BoundaryID,
+		SnapshotID: input.Snapshot.ID, RegionCode: boundary.RegionCode, BoundaryID: boundary.BoundaryID,
 		BoundaryDigest: boundary.Digest, BoundaryReference: boundary.Reference,
 		BoundaryGeometry: append(json.RawMessage(nil), boundary.Geometry...), UnionGeometry: geometry,
 		Bounds: bounds, TotalAreaSquareMeters: area, Zones: zones}, nil
@@ -324,7 +326,8 @@ func readAdministrativeZones(ctx context.Context, tx pgx.Tx, input exposurecolle
 		if err = rows.Scan(&value.ID, &value.SnapshotID, &value.AreaSquareM); err != nil {
 			return nil, fmt.Errorf("扫描行政裁剪风险区: %w", err)
 		}
-		value.Level, value.AreaCalculated, value.AdminCodes = levels[value.ID], true, []string{"CN"}
+		value.Level, value.AreaCalculated, value.AdminCodes = levels[value.ID], true,
+			[]string{boundary.RegionCode}
 		if value.Level == "" {
 			return nil, fmt.Errorf("%w: 行政裁剪返回未知风险区", domain.ErrInsufficientData)
 		}

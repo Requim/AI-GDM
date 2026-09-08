@@ -81,10 +81,18 @@ type AdministrativeBoundary struct {
 
 // AdministrativeRegion 是多要素行政区目录中的可选区域。
 type AdministrativeRegion struct {
-	Code     string
-	Name     string
-	Level    string
-	Geometry json.RawMessage
+	Code            string
+	Name            string
+	Level           string
+	BoundaryID      string
+	BoundaryYear    string
+	Source          string
+	License         string
+	Reference       string
+	Digest          string
+	CollectedAt     time.Time
+	InputReferences []string
+	Geometry        json.RawMessage
 }
 
 // AdministrativeProjection 是风险区与真实 ADM0 边界精确相交后的投影。
@@ -171,6 +179,11 @@ type GeometryInputReader interface {
 // AdministrativeBoundaryProvider 返回带版本和校验和的真实行政边界。
 type AdministrativeBoundaryProvider interface {
 	Boundary(context.Context) (AdministrativeBoundary, error)
+}
+
+// RegionalBoundaryProvider 返回指定行政区的版本化真实边界。
+type RegionalBoundaryProvider interface {
+	BoundaryForRegion(context.Context, string) (AdministrativeBoundary, error)
 }
 
 // AdministrativeRegionCatalogProvider 按国家和层级返回真实行政区目录。

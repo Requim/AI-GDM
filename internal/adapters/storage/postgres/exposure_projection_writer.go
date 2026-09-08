@@ -145,7 +145,7 @@ func validateExposureProjection(r *HazardRepository,
 		!analysis.ProjectionCollectedAt.Before(value.ValidTo) {
 		return fmt.Errorf("%w: 暴露投影窗口或仓储无效", domain.ErrInvalidInput)
 	}
-	if analysis.RegionCode != "CN" || !strings.HasPrefix(analysis.AdminBoundaryID, "CHN-ADM0-") ||
+	if !validExposureRegionCode(analysis.RegionCode) || !validExposureBoundaryID(analysis.AdminBoundaryID) ||
 		analysis.AdminBoundaryDigest == "" || analysis.AdminBoundaryReference == "" ||
 		!finitePositive(analysis.TotalAreaSquareMeters) || len(input.Zones) == 0 ||
 		len(input.Zones) > exposurecollection.MaxRiskZones || len(analysis.Features) == 0 ||
@@ -171,7 +171,7 @@ func validateExposureProjectionRows(value applicationloss.LossInputProjection) e
 	zoneArea, largestZone := 0.0, 0.0
 	for index, zone := range value.Zones {
 		if !validExposureIdentifier(zone.ID) || !zone.AreaCalculated || !finitePositive(zone.AreaSquareM) ||
-			len(zone.AdminCodes) != 1 || zone.AdminCodes[0] != "CN" ||
+			!validExposureAdminCodes(zone.AdminCodes) || !containsExposureString(zone.AdminCodes, value.Analysis.RegionCode) ||
 			zone.SnapshotID != value.Snapshot.ID || !validExposureRiskLevel(zone.Level) ||
 			(index > 0 && zone.ID <= value.Zones[index-1].ID) {
 			return fmt.Errorf("%w: 暴露投影风险区无效", domain.ErrInvalidInput)
@@ -230,7 +230,59 @@ func validExposureFeatureRow(value applicationloss.LossExposureFeature,
 func validExposureUnit(value applicationloss.LossExposureFeature) bool {
 	return (value.Kind == applicationloss.LossFeaturePopulation && value.Unit == "people") ||
 		(value.Kind == applicationloss.LossFeatureRoad && value.Unit == "meters") ||
-		(value.Kind == applicationloss.LossFeatureFacility && value.Unit == "count")
+		(value.Kind == applicationloss.LossFeatureFacility && value.Unit == "count") ||
+		(value.Kind == applicationloss.LossFeatureBuilding && value.Unit == "square_meters")
+}
+
+func validExposureRegionCode(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 128 {
+		return false
+	}
+	for index := range value {
+		character := value[index]
+		if !(isExposureASCIIAlpha(character) || isExposureASCIIDigit(character) ||
+			character == '.' || character == '_' || character == ':' || character == '-') ||
+			(index == 0 && !(isExposureASCIIAlpha(character) || isExposureASCIIDigit(character))) {
+			return false
+		}
+	}
+	return true
+}
+
+func isExposureASCIIAlpha(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
+}
+
+func isExposureASCIIDigit(value byte) bool {
+	return value >= '0' && value <= '9'
+}
+
+func validExposureBoundaryID(value string) bool {
+	parts := strings.SplitN(value, "-", 3)
+	return len(parts) == 3 && parts[0] == "CHN" &&
+		(parts[1] == "ADM0" || parts[1] == "ADM1" || parts[1] == "ADM2") &&
+		validExposureRegionCode(parts[2])
+}
+
+func validExposureAdminCodes(values []string) bool {
+	if len(values) == 0 || len(values) > 16 || !strictExposureStrings(values) {
+		return false
+	}
+	for _, value := range values {
+		if !validExposureRegionCode(value) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsExposureString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func strictExposureStrings(values []string) bool {

@@ -277,7 +277,7 @@ func TestLossProjectionPinsCompleteProjectionInRepeatableRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	first, err := preflightLossProjection(ctx, tx, snapshot.ID, analysis.ID, now,
+	first, err := preflightLossProjection(ctx, tx, snapshot.ID, analysis.ID, "CN", now,
 		productionLossProjectionLimits())
 	if err != nil || first.projectionID != oldProjection.Analysis.ProjectionID {
 		t.Fatalf("首次预检投影=%s error=%v", first.projectionID, err)
@@ -286,7 +286,7 @@ func TestLossProjectionPinsCompleteProjectionInRepeatableRead(t *testing.T) {
 		pending.Analysis.ProjectionID); err != nil {
 		t.Fatal(err)
 	}
-	second, err := preflightLossProjection(ctx, tx, snapshot.ID, analysis.ID, now,
+	second, err := preflightLossProjection(ctx, tx, snapshot.ID, analysis.ID, "CN", now,
 		productionLossProjectionLimits())
 	if err != nil || second.projectionID != oldProjection.Analysis.ProjectionID {
 		t.Fatalf("可重复读事务观察到迟到 complete: projection=%s error=%v", second.projectionID, err)

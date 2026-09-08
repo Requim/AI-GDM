@@ -65,3 +65,27 @@ func TestLossProjectionPreflightNeverSerializesGeometry(t *testing.T) {
 		t.Fatalf("损失投影事务隔离级别错误: %+v", lossProjectionReadOptions)
 	}
 }
+
+func TestRegionalExposureMigrationRelaxesOnlyRegionalContracts(t *testing.T) {
+	content, err := migrationFiles.ReadFile("migrations/013_regional_exposure_constraints.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToLower(string(content))
+	for _, fragment := range []string{
+		"valid_exposure_region_code",
+		"valid_exposure_boundary_id",
+		"valid_exposure_admin_codes",
+		"feature_kind in ('population', 'road', 'facility', 'building')",
+		"feature_kind = 'building' and unit = 'square_meters'",
+		"feature_kind in ('population','road','facility')",
+		"not z.admin_codes ? new.region_code",
+	} {
+		if !strings.Contains(sql, fragment) {
+			t.Errorf("区域暴露迁移缺少契约片段 %q", fragment)
+		}
+	}
+	if strings.Contains(sql, "drop table") || strings.Contains(sql, "truncate ") {
+		t.Fatal("区域暴露迁移不得删除或清空既有业务数据")
+	}
+}

@@ -25,7 +25,7 @@ func (r *HazardRepository) HasCurrentExposureProjection(ctx context.Context, sna
 	if !exists {
 		return false, nil
 	}
-	value, err := r.readLossInput(ctx, snapshotID, analysisID, now,
+	value, err := r.readLossInput(ctx, snapshotID, analysisID, "CN", now,
 		applicationloss.DefaultRiskProjectionLimits())
 	if err != nil {
 		if ctx.Err() != nil {
@@ -51,18 +51,19 @@ func isUTCTime(value time.Time) bool {
 const currentExposureProjectionSQL = `SELECT EXISTS(
     SELECT 1 FROM spatial_exposure_projections ep
 	JOIN spatial_analyses sa ON sa.id=ep.analysis_id
-	CROSS JOIN LATERAL (SELECT COUNT(*)::BIGINT AS zones,
+		CROSS JOIN LATERAL (SELECT COUNT(*)::BIGINT AS zones,
 		COALESCE(SUM(pz.area_square_meters),0) AS total_area,
 		COALESCE(MAX(pz.area_square_meters),0) AS max_area,
-		COALESCE(BOOL_AND(pz.area_square_meters>0 AND pz.admin_codes='["CN"]'::JSONB),FALSE) AS valid
+		COALESCE(BOOL_AND(pz.area_square_meters>0 AND pz.admin_codes ? ep.region_code),FALSE) AS valid
 		FROM spatial_exposure_projection_zones pz WHERE pz.projection_id=ep.id) z
 	CROSS JOIN LATERAL (SELECT COUNT(*)::BIGINT AS features,
-		COUNT(DISTINCT f.feature_kind) FILTER (WHERE f.status='available' AND f.provided=TRUE) AS kinds,
+		COUNT(DISTINCT f.feature_kind) FILTER (WHERE f.status='available' AND f.provided=TRUE
+			AND f.feature_kind IN ('population','road','facility')) AS kinds,
 		COALESCE(BOOL_AND(f.status='available' AND f.provided=TRUE),FALSE) AS valid
 		FROM spatial_exposure_features f WHERE f.projection_id=ep.id) f
 	WHERE sa.snapshot_id=$1 AND sa.id=$2 AND ep.complete=TRUE AND ep.projection_status='available'
-		AND ep.id='exposure-'||ep.projection_digest AND ep.region_code='CN'
-		AND ep.admin_boundary_id LIKE 'CHN-ADM0-%'
+		AND ep.id='exposure-'||ep.projection_digest
+		AND valid_exposure_boundary_id(ep.admin_boundary_id)
 		AND valid_exposure_reference_array(ep.input_references)
 		AND valid_exposure_reference_array(ep.dataset_references)
 		AND valid_exposure_sha256_array(ep.source_reference_digests)

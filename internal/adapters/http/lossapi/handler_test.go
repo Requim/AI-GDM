@@ -37,8 +37,21 @@ type regionCatalogStub struct {
 	regions []exposurecollection.AdministrativeRegion
 }
 
+type regionProjectionStub struct {
+	value      exposurecollection.ExposureProjection
+	snapshotID string
+	regionCode string
+}
+
 func (s regionCatalogStub) RegionCatalog(context.Context, string, string) ([]exposurecollection.AdministrativeRegion, error) {
 	return s.regions, nil
+}
+
+func (s *regionProjectionStub) CollectRegion(_ context.Context, snapshotID, regionCode string) (
+	exposurecollection.ExposureProjection, error,
+) {
+	s.snapshotID, s.regionCode = snapshotID, regionCode
+	return s.value, nil
 }
 
 func (s *estimatorStub) Estimate(_ context.Context, input applicationloss.EstimateInput) (lossdomain.Assessment, error) {
@@ -144,10 +157,29 @@ func TestRegionCapabilitiesCanReadAdministrativeCatalog(t *testing.T) {
 	}
 }
 
-func TestEstimateRequestRejectsUnsupportedAdministrativeRegion(t *testing.T) {
-	_, err := (estimateRequest{SnapshotID: "snapshot-1", RegionCode: "CN-31"}).input()
-	if !errors.Is(err, domain.ErrInvalidInput) || !strings.Contains(err.Error(), "省市行政区边界尚未接入") {
-		t.Fatalf("input() error=%v", err)
+func TestEstimateRequestPreservesAdministrativeRegionForApplicationLayer(t *testing.T) {
+	value, err := (estimateRequest{SnapshotID: "snapshot-1", RegionCode: "CN-31"}).input()
+	if err != nil || value.RegionCode != "CN-31" {
+		t.Fatalf("input()=%+v error=%v", value, err)
+	}
+}
+
+func TestRegionalProjectionRoutePreservesSelection(t *testing.T) {
+	value := exposurecollection.ExposureProjection{Input: applicationloss.LossInputProjection{
+		Analysis: applicationloss.LossSpatialProjection{RegionCode: "CN-31", ProjectionID: "exposure-test"},
+	}, ValidFrom: time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC),
+		ValidTo: time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)}
+	projector := &regionProjectionStub{value: value}
+	handler, err := NewWithRegionCatalogAndProjector(&estimatorStub{}, &assessmentStoreStub{},
+		&assessmentStoreStub{}, "/api/v1/loss", testLogger(), nil, projector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := performJSON(t, handler, http.MethodPost, "/regions/CN-31/projection",
+		`{"snapshotId":"snapshot-1"}`)
+	if response.Code != http.StatusCreated || projector.snapshotID != "snapshot-1" ||
+		projector.regionCode != "CN-31" || !strings.Contains(response.Body.String(), `"regionCode":"CN-31"`) {
+		t.Fatalf("区域投影响应=%d body=%s projector=%+v", response.Code, response.Body.String(), projector)
 	}
 }
 
@@ -270,7 +302,7 @@ func TestAssessmentAndSourcesReplacePrivateReferences(t *testing.T) {
 }
 
 func TestCreateRejectsClientSuppliedDerivedFields(t *testing.T) {
-	unknown := []string{"exposures", "intensityBand", "regionCode", "hazardType"}
+	unknown := []string{"exposures", "intensityBand", "hazardType"}
 	for _, field := range unknown {
 		t.Run(field, func(t *testing.T) {
 			api, estimator, _ := newTestAPI(t, validHTTPAssessment(t), nil)
@@ -280,6 +312,13 @@ func TestCreateRejectsClientSuppliedDerivedFields(t *testing.T) {
 				t.Fatalf("未知字段 %s 未在进入用例前拒绝: status=%d", field, response.Code)
 			}
 		})
+	}
+}
+
+func TestEstimateRequestRejectsMalformedAdministrativeRegion(t *testing.T) {
+	_, err := (estimateRequest{SnapshotID: "snapshot-1", RegionCode: "CN 31"}).input()
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("非法行政区代码未被拒绝: %v", err)
 	}
 }
 

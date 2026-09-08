@@ -32,7 +32,10 @@ const (
 	hardMaxLossProjectionLimitationTotalBytes = 64 << 10
 )
 
-var _ loss.LossInputProjectionReader = (*HazardRepository)(nil)
+var (
+	_ loss.LossInputProjectionReader         = (*HazardRepository)(nil)
+	_ loss.RegionalLossInputProjectionReader = (*HazardRepository)(nil)
+)
 
 type lossProjectionBudget struct {
 	analysisID, version, digest, snapshotID, status, regionCode  string
@@ -50,20 +53,28 @@ type lossProjectionBudget struct {
 	references, uniqueReferences, projectionBytes                int64
 	projectionLimitations, maxProjectionLimitationBytes          int64
 	projectionLimitationBytes                                    int64
+	coreFeatureKinds, availableCoreFeatureKinds                  int64
 }
 
 // ReadLossInput 在单个只读可重复读事务中返回损失评估所需的有界权威投影。
 func (r *HazardRepository) ReadLossInput(ctx context.Context, snapshotID string, now time.Time,
 	limits loss.RiskProjectionLimits,
 ) (loss.LossInputProjection, error) {
-	return r.readLossInput(ctx, snapshotID, "", now, limits)
+	return r.readLossInput(ctx, snapshotID, "", "CN", now, limits)
 }
 
-func (r *HazardRepository) readLossInput(ctx context.Context, snapshotID, analysisID string, now time.Time,
+// ReadLossInputForRegion 读取指定行政区的已完成暴露投影。
+func (r *HazardRepository) ReadLossInputForRegion(ctx context.Context, snapshotID, regionCode string,
+	now time.Time, limits loss.RiskProjectionLimits,
+) (loss.LossInputProjection, error) {
+	return r.readLossInput(ctx, snapshotID, "", regionCode, now, limits)
+}
+
+func (r *HazardRepository) readLossInput(ctx context.Context, snapshotID, analysisID, regionCode string, now time.Time,
 	limits loss.RiskProjectionLimits,
 ) (loss.LossInputProjection, error) {
 	now = now.UTC().Truncate(time.Microsecond)
-	if err := validateLossProjectionRequest(r, snapshotID, analysisID, now, limits); err != nil {
+	if err := validateLossProjectionRequest(r, snapshotID, analysisID, regionCode, now, limits); err != nil {
 		return loss.LossInputProjection{}, err
 	}
 	tx, err := r.pool.BeginTx(ctx, lossProjectionReadOptions)
@@ -71,7 +82,7 @@ func (r *HazardRepository) readLossInput(ctx context.Context, snapshotID, analys
 		return loss.LossInputProjection{}, fmt.Errorf("开始读取损失输入投影事务: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	budget, err := preflightLossProjection(ctx, tx, snapshotID, analysisID, now, limits)
+	budget, err := preflightLossProjection(ctx, tx, snapshotID, analysisID, regionCode, now, limits)
 	if err != nil {
 		return loss.LossInputProjection{}, err
 	}
@@ -89,7 +100,7 @@ func (r *HazardRepository) readLossInput(ctx context.Context, snapshotID, analys
 	return value, nil
 }
 
-func validateLossProjectionRequest(r *HazardRepository, snapshotID, analysisID string, now time.Time,
+func validateLossProjectionRequest(r *HazardRepository, snapshotID, analysisID, regionCode string, now time.Time,
 	limits loss.RiskProjectionLimits,
 ) error {
 	if r == nil || r.pool == nil {
@@ -100,6 +111,9 @@ func validateLossProjectionRequest(r *HazardRepository, snapshotID, analysisID s
 	}
 	if analysisID != "" && !validExposureIdentifier(analysisID) {
 		return fmt.Errorf("%w: 损失输入投影空间分析标识无效", domain.ErrInvalidInput)
+	}
+	if !validExposureRegionCode(regionCode) {
+		return fmt.Errorf("%w: 损失输入投影行政区代码无效", domain.ErrInvalidInput)
 	}
 	if now.IsZero() {
 		return fmt.Errorf("%w: 损失输入投影读取时间为空", domain.ErrInvalidInput)
@@ -133,7 +147,7 @@ func exceedsHardLossLimits(value loss.RiskProjectionLimits) bool {
 		value.MaxProjectionLimitationTotalBytes > hardMaxLossProjectionLimitationTotalBytes
 }
 
-func preflightLossProjection(ctx context.Context, tx pgx.Tx, snapshotID, analysisID string, now time.Time,
+func preflightLossProjection(ctx context.Context, tx pgx.Tx, snapshotID, analysisID, regionCode string, now time.Time,
 	limits loss.RiskProjectionLimits,
 ) (lossProjectionBudget, error) {
 	var exists bool
@@ -144,7 +158,7 @@ func preflightLossProjection(ctx context.Context, tx pgx.Tx, snapshotID, analysi
 		return lossProjectionBudget{}, domain.ErrNotFound
 	}
 	value, err := scanLossProjectionBudget(tx.QueryRow(ctx, lossProjectionBudgetSQL,
-		snapshotID, analysisID, now, now.Add(-loss.MaxReferenceProjectionStaleness)))
+		snapshotID, analysisID, regionCode, now, now.Add(-loss.MaxReferenceProjectionStaleness)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return lossProjectionBudget{}, lossProjectionMissing("没有可用空间分析")
 	}
@@ -172,19 +186,19 @@ func scanLossProjectionBudget(row pgx.Row) (lossProjectionBudget, error) {
 		&value.declaredSourceDigests,
 		&value.references, &value.uniqueReferences, &value.projectionBytes,
 		&value.projectionLimitations, &value.maxProjectionLimitationBytes,
-		&value.projectionLimitationBytes)
+		&value.projectionLimitationBytes, &value.coreFeatureKinds, &value.availableCoreFeatureKinds)
 	return value, err
 }
 
 func validateLossProjectionBudget(value lossProjectionBudget, limits loss.RiskProjectionLimits) error {
 	if value.analysisID == "" || value.digest == "" || value.snapshotID == "" ||
-		value.status != string(spatialanalysis.AnalysisAvailable) || value.regionCode != "CN" ||
+		value.status != string(spatialanalysis.AnalysisAvailable) || !validExposureRegionCode(value.regionCode) ||
 		value.projectionID == "" || value.projectionVersion == "" || value.projectionDigest == "" ||
 		value.projectionCollectedAt.IsZero() || value.projectionValidFrom.IsZero() ||
 		value.projectionValidTo.IsZero() || !value.projectionValidTo.After(value.projectionValidFrom) ||
 		value.projectionCollectedAt.Before(value.projectionValidFrom) ||
 		!value.projectionCollectedAt.Before(value.projectionValidTo) ||
-		!strings.HasPrefix(value.adminBoundaryID, "CHN-ADM0-") ||
+		!validExposureBoundaryID(value.adminBoundaryID) ||
 		len(value.adminBoundaryDigest) != 64 || value.adminBoundaryReference == "" {
 		return lossProjectionInsufficient("空间分析身份、摘要或区域无效")
 	}
@@ -201,8 +215,8 @@ func validateLossProjectionBudget(value lossProjectionBudget, limits loss.RiskPr
 	}
 	if value.spatialJSONBytes <= 0 || value.spatialJSONBytes > limits.MaxSpatialJSONBytes ||
 		value.features <= 0 || value.features > int64(limits.MaxFeatures) ||
-		value.declaredFeatures != value.features || value.featureKinds != 3 ||
-		value.availableFeatureKinds != 3 || value.invalidFeatures != 0 || value.orphanFeatures != 0 {
+		value.declaredFeatures != value.features || value.coreFeatureKinds != 3 ||
+		value.availableCoreFeatureKinds != 3 || value.invalidFeatures != 0 || value.orphanFeatures != 0 {
 		return lossProjectionInsufficient("空间 JSON 或真实暴露 feature 不完整")
 	}
 	if value.declaredSourceDigests != value.uniqueReferences || value.references <= 0 ||
@@ -526,6 +540,9 @@ const lossProjectionFeaturesSQL = `SELECT f.feature_id,f.feature_kind,
 const lossProjectionBudgetSQL = `WITH target_analysis AS (
     SELECT sa.* FROM spatial_analyses sa WHERE sa.snapshot_id=$1
         AND ($2='' OR sa.id=$2)
+        AND EXISTS (SELECT 1 FROM spatial_exposure_projections available_ep
+            WHERE available_ep.analysis_id=sa.id AND available_ep.region_code=$3
+                AND available_ep.complete=TRUE)
     ORDER BY sa.calculated_at DESC,sa.id DESC LIMIT 1
 ), selected AS (
     SELECT sa.id,sa.snapshot_id,sa.algorithm_version,ep.projection_status AS status,
@@ -539,9 +556,9 @@ const lossProjectionBudgetSQL = `WITH target_analysis AS (
 		ep.source_reference_digests,ep.limitations AS projection_limitations
     FROM target_analysis sa JOIN spatial_exposure_projections ep ON ep.analysis_id=sa.id
     WHERE sa.status IN ('area_only','partial','available')
-		AND ep.complete=TRUE AND ep.collected_at<=$3
-		AND ep.valid_from<=$3 AND ep.valid_to>=$4
-	ORDER BY (ep.valid_to>$3) DESC,sa.calculated_at DESC,ep.collected_at DESC,ep.id DESC LIMIT 1
+		AND ep.complete=TRUE AND ep.region_code=$3 AND ep.collected_at<=$4
+		AND ep.valid_from<=$4 AND ep.valid_to>=$5
+	ORDER BY (ep.valid_to>$4) DESC,sa.calculated_at DESC,ep.collected_at DESC,ep.id DESC LIMIT 1
 ), zone_stats AS (
     SELECT COUNT(pz.zone_id)::BIGINT AS zone_count,
         COUNT(pz.zone_id) FILTER (WHERE JSONB_TYPEOF(pz.admin_codes)='array'
@@ -566,7 +583,10 @@ const lossProjectionBudgetSQL = `WITH target_analysis AS (
     SELECT COUNT(f.feature_id)::BIGINT AS feature_count,
         COUNT(DISTINCT f.feature_kind)::BIGINT AS feature_kind_count,
         COUNT(DISTINCT f.feature_kind) FILTER (
-            WHERE f.status='available' AND f.provided=TRUE)::BIGINT AS available_feature_kind_count,
+            WHERE f.feature_kind IN ('population','road','facility'))::BIGINT AS core_feature_kind_count,
+        COUNT(DISTINCT f.feature_kind) FILTER (
+            WHERE f.status='available' AND f.provided=TRUE
+                AND f.feature_kind IN ('population','road','facility'))::BIGINT AS available_core_feature_kind_count,
         COUNT(f.feature_id) FILTER (
             WHERE f.status<>'available' OR f.provided<>TRUE)::BIGINT AS invalid_feature_count,
         COUNT(f.feature_id) FILTER (WHERE f.feature_id IS NOT NULL AND NOT EXISTS (
@@ -654,6 +674,7 @@ SELECT s.id,s.algorithm_version,
 	(snapshot_stats.projection_bytes+header_stats.projection_bytes+
 		zone_stats.projection_bytes+feature_stats.projection_bytes)::BIGINT,
 	limitation_stats.limitation_count,limitation_stats.max_limitation_bytes,
-	limitation_stats.limitation_bytes
+	limitation_stats.limitation_bytes,feature_stats.core_feature_kind_count,
+	feature_stats.available_core_feature_kind_count
 FROM selected s CROSS JOIN zone_stats CROSS JOIN result_stats CROSS JOIN feature_stats
 	CROSS JOIN reference_stats CROSS JOIN limitation_stats CROSS JOIN header_stats CROSS JOIN snapshot_stats`

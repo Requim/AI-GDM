@@ -176,11 +176,11 @@
       regions.forEach(function (region) {
         const option = new Option(region.name + (region.status === "available" ? "" : "（暂不可用）"),
           region.code === "*" ? "" : region.code);
-        option.disabled = region.status !== "available";
+        option.disabled = region.status === "unavailable";
         option.title = region.note || "";
         elements.regionSelect.append(option);
       });
-      elements.regionSelect.disabled = regions.every(function (region) { return region.status !== "available"; });
+      elements.regionSelect.disabled = regions.every(function (region) { return region.status === "unavailable"; });
     } catch (_) {
       elements.regionSelect.replaceChildren(new Option("区域能力暂不可用", ""));
       elements.regionSelect.disabled = true;
@@ -198,11 +198,14 @@
       const regions = envelope.data && Array.isArray(envelope.data.regions) ? envelope.data.regions : [];
       if (!regions.length) throw new Error("省市目录为空");
       regions.forEach(function (region) {
-        const option = new Option(region.name, region.code);
+        const option = new Option(region.name + (region.status === "available" ? "" : "（仅目录）"),
+          region.code);
         option.dataset.level = region.level;
+        option.disabled = region.status === "unavailable";
+        option.title = region.note || "";
         elements.regionSelect.append(option);
       });
-      elements.regionSelect.disabled = false;
+      elements.regionSelect.disabled = regions.every(function (region) { return region.status === "unavailable"; });
       elements.regionLoad.textContent = "已读取省级目录";
     } catch (error) {
       elements.regionLoad.textContent = "读取失败，重试";
@@ -231,6 +234,11 @@
     removeReference("loss_assessment");
     setAssessmentState(elements.lossStatus, "loading", "正在读取风险区、道路、设施和已批准基线，并计算直接损失范围...");
     try {
+      const regionCode = elements.regionSelect ? elements.regionSelect.value : "";
+      if (regionCode && regionCode !== "CN") {
+        setAssessmentState(elements.lossStatus, "loading", "正在准备所选行政区的真实边界、人口、道路和设施数据...");
+        await ensureRegionalProjection(snapshotID, regionCode);
+      }
       const created = await createLossAssessment(snapshotID);
       if (request !== state.lossRequest || elements.lossInput.value.trim() !== snapshotID) return;
       const loaded = await readCreatedLossAssessment(created, snapshotID);
@@ -320,6 +328,18 @@
     if (!response || response.status !== 201) throw new Error("损失评估创建状态无效");
     const result = validateLossPayload(response.payload, snapshotID);
     return { result: result, location: validateLossLocation(response.location, result.id) };
+  }
+
+  async function ensureRegionalProjection(snapshotID, regionCode) {
+    const endpoint = root.dataset.lossEndpoint + "/regions/" + encodeURIComponent(regionCode) + "/projection";
+    const response = await requestJSON(endpoint, {
+      method: "POST", body: { snapshotId: snapshotID }, maxResponseBytes: responseLimit(),
+      includeResponseMetadata: true
+    });
+    if (!response || response.status !== 201 || !response.payload ||
+      response.payload.regionCode !== regionCode || response.payload.status !== "available") {
+      throw new Error("所选行政区暴露投影未就绪");
+    }
   }
 
   async function readCreatedLossAssessment(created, snapshotID) {
@@ -571,7 +591,7 @@
       !SHA256.test(value.projectionDigest) || value.projectionId !== "exposure-" + value.projectionDigest ||
       !strictUTC(value.projectionCollectedAt, true) || !strictUTC(value.projectionValidFrom, true) ||
       !strictUTC(value.projectionValidTo, false) || !validID(value.adminBoundaryId) ||
-      value.regionCode !== "CN" || !value.adminBoundaryId.startsWith("CHN-ADM0-") ||
+      !validRegionCode(value.regionCode) || !validRegionalBoundaryID(value.adminBoundaryId) ||
       !SHA256.test(value.adminBoundaryDigest) ||
       value.status !== "available" || value.regionCode !== result.regionCode ||
       !finiteRange(value.totalAreaSquareMeters, 0, Number.MAX_VALUE) || !strictUTC(value.calculatedAt, true) ||
@@ -1939,6 +1959,8 @@
   }
 
   function validID(value) { return typeof value === "string" && IDENTIFIER.test(value); }
+  function validRegionCode(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value); }
+  function validRegionalBoundaryID(value) { return typeof value === "string" && /^CHN-ADM(?:0|1|2)-[A-Za-z0-9._:-]+$/.test(value); }
   function validText(value, maxRunes) { return typeof value === "string" && value.trim() !== "" && Array.from(value).length <= maxRunes; }
   function optionalText(value, maxRunes) { return value === undefined || value === "" || validText(value, maxRunes); }
   function optionalSHA256(value) { return value === undefined || value === "" || (typeof value === "string" && SHA256.test(value)); }

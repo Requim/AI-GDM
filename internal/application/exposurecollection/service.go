@@ -51,6 +51,28 @@ func New(geometries GeometryInputReader, boundaries AdministrativeBoundaryProvid
 
 // Collect 采集并原子保存一次真实、内容寻址的暴露投影。
 func (c *Collector) Collect(ctx context.Context, snapshotID, analysisID string) (ExposureProjection, error) {
+	return c.collect(ctx, snapshotID, analysisID, func(context.Context) (AdministrativeBoundary, error) {
+		return c.boundaries.Boundary(ctx)
+	})
+}
+
+// CollectRegion 采集并保存指定行政区的真实暴露投影。
+func (c *Collector) CollectRegion(ctx context.Context, snapshotID, analysisID, regionCode string) (ExposureProjection, error) {
+	provider, ok := c.boundaries.(RegionalBoundaryProvider)
+	if !ok {
+		return ExposureProjection{}, fmt.Errorf("%w: 行政区边界供应商不支持区域投影", domain.ErrInsufficientData)
+	}
+	if regionCode == "" || regionCode == "CN" {
+		return c.Collect(ctx, snapshotID, analysisID)
+	}
+	return c.collect(ctx, snapshotID, analysisID, func(ctx context.Context) (AdministrativeBoundary, error) {
+		return provider.BoundaryForRegion(ctx, regionCode)
+	})
+}
+
+func (c *Collector) collect(ctx context.Context, snapshotID, analysisID string,
+	boundaryReader func(context.Context) (AdministrativeBoundary, error),
+) (ExposureProjection, error) {
 	if err := validateCollectionIdentity(snapshotID, analysisID); err != nil {
 		return ExposureProjection{}, err
 	}
@@ -62,7 +84,7 @@ func (c *Collector) Collect(ctx context.Context, snapshotID, analysisID string) 
 	if err = validateGeometryInput(input, snapshotID, analysisID); err != nil {
 		return ExposureProjection{}, err
 	}
-	boundary, err := c.boundaries.Boundary(ctx)
+	boundary, err := boundaryReader(ctx)
 	if err != nil {
 		return ExposureProjection{}, fmt.Errorf("采集 geoBoundaries 行政边界: %w", err)
 	}
@@ -369,10 +391,14 @@ func validateSnapshotBoundary(input GeometryInput, boundary AdministrativeBounda
 	if err != nil {
 		return fmt.Errorf("%w: 暴露采集行政边界几何无效", domain.ErrInsufficientData)
 	}
-	if coverage.RegionCode != boundary.RegionCode || coverage.BoundaryID != boundary.BoundaryID ||
-		coverage.BoundaryType != boundary.BoundaryType || coverage.BoundaryVersion != boundary.BoundaryYear ||
-		coverage.SHA256 != boundary.Digest || coverage.GeometrySHA256 != geometryDigest ||
-		coverage.Reference != boundary.Reference {
+	exact := coverage.RegionCode == boundary.RegionCode && coverage.BoundaryID == boundary.BoundaryID &&
+		coverage.BoundaryType == boundary.BoundaryType && coverage.BoundaryVersion == boundary.BoundaryYear &&
+		coverage.SHA256 == boundary.Digest && coverage.GeometrySHA256 == geometryDigest &&
+		coverage.Reference == boundary.Reference
+	childOfNationalCoverage := coverage.RegionCode == "CN" && coverage.BoundaryType == "ADM0" &&
+		strings.HasPrefix(boundary.RegionCode, "CN-") &&
+		(boundary.BoundaryType == "ADM1" || boundary.BoundaryType == "ADM2")
+	if !exact && !childOfNationalCoverage {
 		return fmt.Errorf("%w: 风险快照与暴露采集行政边界版本不一致", domain.ErrInsufficientData)
 	}
 	return nil
@@ -423,14 +449,14 @@ func validateAdministration(value AdministrativeProjection, boundary Administrat
 	input GeometryInput,
 ) error {
 	if value.AnalysisID != input.Analysis.ID || value.SnapshotID != input.Snapshot.ID ||
-		value.RegionCode != "CN" || value.BoundaryID != boundary.BoundaryID ||
+		value.RegionCode != boundary.RegionCode || value.BoundaryID != boundary.BoundaryID ||
 		value.BoundaryDigest != boundary.Digest || value.BoundaryReference != boundary.Reference ||
 		len(value.Zones) == 0 || len(value.UnionGeometry) == 0 || !validBounds(value.Bounds) ||
 		!finitePositive(value.TotalAreaSquareMeters) {
 		return fmt.Errorf("%w: 行政边界投影不完整", domain.ErrInsufficientData)
 	}
 	for _, zone := range value.Zones {
-		if len(zone.AdminCodes) != 1 || zone.AdminCodes[0] != "CN" || !zone.AreaCalculated {
+		if len(zone.AdminCodes) != 1 || zone.AdminCodes[0] != boundary.RegionCode || !zone.AreaCalculated {
 			return fmt.Errorf("%w: 行政边界风险区绑定无效", domain.ErrInsufficientData)
 		}
 	}

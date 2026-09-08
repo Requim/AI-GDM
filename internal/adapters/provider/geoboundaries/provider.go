@@ -77,6 +77,9 @@ func (p *Provider) RegionCatalog(ctx context.Context, countryISO, level string) 
 	}
 	var value struct {
 		SimplifiedGeometry string `json:"simplifiedGeometryGeoJSON"`
+		BoundaryYear       string `json:"boundaryYearRepresented"`
+		Source             string `json:"boundarySource"`
+		License            string `json:"boundaryLicense"`
 	}
 	if err = json.Unmarshal(metadataResponse.Body, &value); err != nil || value.SimplifiedGeometry == "" {
 		return nil, providerError("geoBoundaries 行政区目录元数据无效")
@@ -91,7 +94,50 @@ func (p *Provider) RegionCatalog(ctx context.Context, countryISO, level string) 
 	if err != nil {
 		return nil, fmt.Errorf("下载 geoBoundaries 行政区目录几何: %w", err)
 	}
-	return DecodeRegionCollection(geometryResponse.Body, countryISO, level)
+	regions, err := DecodeRegionCollection(geometryResponse.Body, countryISO, level)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(geometryResponse.Body)
+	digestHex := hex.EncodeToString(digest[:])
+	references := []string{metadataURL, downloadURL}
+	for index := range regions {
+		regions[index].BoundaryYear = value.BoundaryYear
+		regions[index].Source = value.Source
+		regions[index].License = value.License
+		regions[index].Reference = downloadURL
+		regions[index].Digest = digestHex
+		regions[index].CollectedAt = geometryResponse.FetchedAt.UTC().Truncate(time.Microsecond)
+		regions[index].InputReferences = append([]string(nil), references...)
+	}
+	return regions, nil
+}
+
+// BoundaryForRegion 返回目录中指定省市要素的版本化边界。
+func (p *Provider) BoundaryForRegion(ctx context.Context, regionCode string) (exposurecollection.AdministrativeBoundary, error) {
+	if strings.TrimSpace(regionCode) == "" {
+		return exposurecollection.AdministrativeBoundary{}, fmt.Errorf("%w: 行政区代码为空", domain.ErrInvalidInput)
+	}
+	level := "ADM1"
+	if strings.Count(regionCode, "-") > 1 {
+		level = "ADM2"
+	}
+	regions, err := p.RegionCatalog(ctx, "CHN", level)
+	if err != nil {
+		return exposurecollection.AdministrativeBoundary{}, err
+	}
+	for _, region := range regions {
+		if region.Code != regionCode {
+			continue
+		}
+		return exposurecollection.AdministrativeBoundary{
+			BoundaryID: region.BoundaryID, RegionCode: region.Code, BoundaryType: region.Level,
+			BoundaryYear: region.BoundaryYear, Source: region.Source, License: region.License,
+			Digest: region.Digest, Reference: region.Reference, Geometry: region.Geometry,
+			CollectedAt: region.CollectedAt, InputReferences: append([]string(nil), region.InputReferences...),
+		}, nil
+	}
+	return exposurecollection.AdministrativeBoundary{}, domain.ErrNotFound
 }
 
 func regionMetadataURL(countryISO, level string) (string, error) {

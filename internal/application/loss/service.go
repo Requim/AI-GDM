@@ -171,6 +171,11 @@ type LossInputProjectionReader interface {
 	ReadLossInput(context.Context, string, time.Time, RiskProjectionLimits) (LossInputProjection, error)
 }
 
+// RegionalLossInputProjectionReader 按指定行政区读取已完成的权威暴露投影。
+type RegionalLossInputProjectionReader interface {
+	ReadLossInputForRegion(context.Context, string, string, time.Time, RiskProjectionLimits) (LossInputProjection, error)
+}
+
 // CostBaselineRequirement 描述一次评估实际需要的资产与计量单位。
 type CostBaselineRequirement struct {
 	AssetType lossdomain.AssetType
@@ -273,7 +278,7 @@ func (s *Service) Estimate(ctx context.Context, input EstimateInput) (lossdomain
 		return lossdomain.Assessment{}, fmt.Errorf("%w: 损失评估时间为空", domain.ErrInvalidInput)
 	}
 	limits := DefaultRiskProjectionLimits()
-	projection, err := s.inputs.ReadLossInput(ctx, input.SnapshotID, now, limits)
+	projection, err := s.readProjection(ctx, input, now, limits)
 	if err != nil {
 		return lossdomain.Assessment{}, projectionReadError(err)
 	}
@@ -324,12 +329,25 @@ func (s *Service) estimateDerived(ctx context.Context, input authoritativeInput,
 	return value, nil
 }
 
+func (s *Service) readProjection(ctx context.Context, input EstimateInput, now time.Time,
+	limits RiskProjectionLimits,
+) (LossInputProjection, error) {
+	if input.RegionCode == "" || input.RegionCode == "CN" {
+		return s.inputs.ReadLossInput(ctx, input.SnapshotID, now, limits)
+	}
+	reader, ok := s.inputs.(RegionalLossInputProjectionReader)
+	if !ok {
+		return LossInputProjection{}, fmt.Errorf("%w: 行政区暴露投影尚未配置", domain.ErrInsufficientData)
+	}
+	return reader.ReadLossInputForRegion(ctx, input.SnapshotID, input.RegionCode, now, limits)
+}
+
 func validateInput(input EstimateInput) error {
 	if strings.TrimSpace(input.SnapshotID) == "" || input.SnapshotID != strings.TrimSpace(input.SnapshotID) || len(input.SnapshotID) > 128 {
 		return fmt.Errorf("%w: 损失评估快照标识无效", domain.ErrInvalidInput)
 	}
-	if input.RegionCode != "" && input.RegionCode != "CN" {
-		return fmt.Errorf("%w: 损失评估行政区尚未接入", domain.ErrInvalidInput)
+	if input.RegionCode != "" && !validRegionCode(input.RegionCode) {
+		return fmt.Errorf("%w: 损失评估行政区代码无效", domain.ErrInvalidInput)
 	}
 	return nil
 }
@@ -505,9 +523,9 @@ func validateAuthoritativeProjection(value LossSpatialProjection, snapshot hazar
 	zones []LossRiskZone, now time.Time,
 ) (bool, error) {
 	if value.SnapshotID != snapshot.ID || !validProjectionIdentifier(value.ID) || !validProjectionIdentifier(value.Version) ||
-		value.RegionCode != "CN" || value.Status != spatialdomain.AnalysisAvailable ||
+		!validRegionCode(value.RegionCode) || value.Status != spatialdomain.AnalysisAvailable ||
 		!validDigest(value.Digest) ||
-		!strings.HasPrefix(value.AdminBoundaryID, "CHN-ADM0-") || !validDigest(value.AdminBoundaryDigest) ||
+		!validRegionalBoundaryID(value.AdminBoundaryID) || !validDigest(value.AdminBoundaryDigest) ||
 		!validProjectionStrings([]string{value.AdminBoundaryReference}, true) {
 		return false, insufficient("校验去重空间投影身份", domain.ErrInsufficientData)
 	}
@@ -1321,6 +1339,36 @@ func validProjectionStrings(values []string, required bool) bool {
 
 func validProjectionIdentifier(value string) bool {
 	return value != "" && len(value) <= 128 && strings.TrimSpace(value) == value && !unsafeText(value)
+}
+
+func validRegionCode(value string) bool {
+	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for index := range value {
+		character := value[index]
+		if !(isRegionASCIIAlpha(character) || isRegionASCIIDigit(character) ||
+			character == '.' || character == '_' || character == ':' || character == '-') ||
+			(index == 0 && !(isRegionASCIIAlpha(character) || isRegionASCIIDigit(character))) {
+			return false
+		}
+	}
+	return true
+}
+
+func isRegionASCIIAlpha(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
+}
+
+func isRegionASCIIDigit(value byte) bool {
+	return value >= '0' && value <= '9'
+}
+
+func validRegionalBoundaryID(value string) bool {
+	parts := strings.SplitN(value, "-", 3)
+	return len(parts) == 3 && parts[0] == "CHN" &&
+		(parts[1] == "ADM0" || parts[1] == "ADM1" || parts[1] == "ADM2") &&
+		validRegionCode(parts[2])
 }
 
 func unsafeText(value string) bool {

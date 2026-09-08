@@ -21,6 +21,7 @@ import (
 	spatialpg "github.com/Requim/AI-GDM/internal/adapters/spatial/postgis"
 	"github.com/Requim/AI-GDM/internal/adapters/storage/postgres"
 	"github.com/Requim/AI-GDM/internal/application/collection"
+	"github.com/Requim/AI-GDM/internal/application/exposurecollection"
 	hazardapp "github.com/Requim/AI-GDM/internal/application/hazard"
 	spatialapp "github.com/Requim/AI-GDM/internal/application/spatialanalysis"
 	"github.com/Requim/AI-GDM/internal/domain"
@@ -34,13 +35,17 @@ import (
 )
 
 type hazardRuntime struct {
-	service         hazardapp.RiskService
-	landslide       *hazardapp.HazardProvider
-	latestRisk      ports.LatestRiskReader
-	riskDetail      ports.RiskDetailReader
-	spatialAnalysis ports.SpatialAnalysisReader
-	hazardAuthority ports.HazardAuthorityReader
-	database        *pgxpool.Pool
+	service           hazardapp.RiskService
+	landslide         *hazardapp.HazardProvider
+	latestRisk        ports.LatestRiskReader
+	riskDetail        ports.RiskDetailReader
+	spatialAnalysis   ports.SpatialAnalysisReader
+	hazardAuthority   ports.HazardAuthorityReader
+	exposures         exposureCollector
+	regionalExposures interface {
+		CollectRegion(context.Context, string, string, string) (exposurecollection.ExposureProjection, error)
+	}
+	database *pgxpool.Pool
 }
 
 func newHazardRuntime(cfg config.Config, dependencies *resources.Resources,
@@ -75,7 +80,8 @@ func newHazardRuntime(cfg config.Config, dependencies *resources.Resources,
 	}
 	return &hazardRuntime{service: service, landslide: provider, latestRisk: repository,
 		riskDetail: repository, spatialAnalysis: spatialpg.New(dependencies.Database),
-		hazardAuthority: repository, database: dependencies.Database}, nil
+		hazardAuthority: repository, exposures: exposures, regionalExposures: exposures,
+		database: dependencies.Database}, nil
 }
 
 func newLHASACollector(cfg config.Config, dependencies *resources.Resources,
