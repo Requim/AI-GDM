@@ -83,6 +83,9 @@ type WeatherConfig struct {
 // LHASAConfig 保存 NASA 风险制品和 GDAL 处理配置。
 type LHASAConfig struct {
 	ServiceURL   string
+	PortalURL    string
+	Interval     time.Duration
+	Timeout      time.Duration
 	DataDir      string
 	StaleAfter   time.Duration
 	GDALBinary   string
@@ -239,9 +242,22 @@ func loadLHASA() (LHASAConfig, error) {
 	if err != nil {
 		return LHASAConfig{}, err
 	}
+	interval, err := durationEnv("LHASA_REFRESH_INTERVAL", 2*time.Hour)
+	if err != nil {
+		return LHASAConfig{}, err
+	}
+	timeout, err := durationEnv("LHASA_REFRESH_TIMEOUT", 70*time.Minute)
+	if err != nil {
+		return LHASAConfig{}, err
+	}
+	if timeout >= interval || timeout > 2*time.Hour {
+		return LHASAConfig{}, configError("LHASA_REFRESH_TIMEOUT 必须小于 LHASA_REFRESH_INTERVAL 且不超过 2h")
+	}
 	return LHASAConfig{
 		ServiceURL: stringEnv("LHASA_EARTHDATA_URL", defaultLHASAServiceURL),
-		DataDir:    stringEnv("LHASA_DATA_DIR", defaultLHASADataDir), StaleAfter: staleAfter,
+		PortalURL:  stringEnv("LHASA_PORTAL_URL", "https://portal.nccs.nasa.gov/datashare/landslides/nrt/hazard/tif/"),
+		Interval:   interval, Timeout: timeout,
+		DataDir: stringEnv("LHASA_DATA_DIR", defaultLHASADataDir), StaleAfter: staleAfter,
 		GDALBinary: stringEnv("GDAL_BINARY", defaultGDALBinary), TemporaryDir: os.Getenv("GDAL_TEMP_DIR"),
 	}, nil
 }

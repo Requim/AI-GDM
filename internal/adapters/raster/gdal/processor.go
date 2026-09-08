@@ -33,7 +33,12 @@ var _ ports.RasterProcessor = (*Processor)(nil)
 func (p *Processor) ModelName() string { return ModelName }
 
 // Version 返回当前 GDAL 处理算法和固定参数版本。
-func (p *Processor) Version() string { return TransformVersion }
+func (p *Processor) Version() string {
+	if p.config.NormalizeNCCS {
+		return PortalTransformVersion
+	}
+	return TransformVersion
+}
 
 // New 创建 GDAL 栅格处理适配器。
 func New(config Config) (*Processor, error) {
@@ -139,21 +144,14 @@ func (p *Processor) runPipeline(ctx context.Context, input string,
 func (p *Processor) prepareClassifiedRaster(ctx context.Context, input string,
 	paths pipelinePaths,
 ) error {
-	info, err := p.run(ctx, paths.clipped, infoArguments(input))
-	if err != nil {
-		return fmt.Errorf("检查原始 LHASA 栅格: %w", err)
-	}
-	if err = validateSourceRasterInfo(info, p.config.BBox); err != nil {
+	if err := p.prepareClippedRaster(ctx, input, paths); err != nil {
 		return err
 	}
-	if _, err = p.run(ctx, paths.clipped, clipArguments(input, paths.clipped, p.config.BBox)); err != nil {
-		return fmt.Errorf("裁剪中国外包范围栅格: %w", err)
-	}
-	info, err = p.run(ctx, paths.clipped, infoArguments(paths.clipped))
+	info, err := p.run(ctx, paths.clipped, infoArguments(paths.clipped))
 	if err != nil {
 		return fmt.Errorf("检查裁剪后栅格: %w", err)
 	}
-	if err = validateSourceRasterInfo(info, p.config.BBox); err != nil {
+	if err = validateRasterInfo(info, p.config.BBox, p.config.NormalizeNCCS); err != nil {
 		return err
 	}
 	if _, err = p.run(ctx, paths.clipped, classifyArguments(paths.clipped, paths.classified)); err != nil {
@@ -317,7 +315,7 @@ func (p *Processor) snapshot(artifact provenance.Artifact,
 ) hazard.Snapshot {
 	checkedAt := p.now()
 	source := artifact.Provenance
-	source.TransformVersion = TransformVersion
+	source.TransformVersion = p.Version()
 	source.BBox = p.config.BBox
 	status := hazard.SnapshotAvailable
 	if source.IsStale(checkedAt) {
@@ -327,13 +325,13 @@ func (p *Processor) snapshot(artifact provenance.Artifact,
 		ID: p.snapshotID(artifact, boundary), HazardType: hazard.TypeLandslide, ModelName: p.ModelName(),
 		ModelVersion: source.DatasetVersion, RunAt: checkedAt, ValidFrom: source.ValidFrom, ValidTo: source.ValidTo,
 		RasterReference:      artifact.Reference + "#sha256=" + source.SHA256,
-		ProbabilitySemantics: "固定 30 弧秒目标网格最近邻导出的日尺度滑坡发生概率模型估计；等级按严格大于阈值派生，边界均值按像元相交比例加权，最小和最大值取相交的同等级像元",
+		ProbabilitySemantics: p.probabilitySemantics(),
 		Thresholds:           defaultThresholds(), Status: status, Source: source,
 		Coverage: &boundary.Coverage,
 		Limitations: []string{
 			"辅助研判结果，不是中国官方预警",
 			"RunAt 表示 AI-GDM 本地确定性处理时刻，NASA 精确模型运行时刻未知",
-			"数据先按 WGS84 中国外接矩形下载，再按版本化 CHN ADM0 行政边界精确裁剪",
+			p.rasterCoverageLimitation(),
 			"国界处亚像元风险区的均值按几何相交比例加权，最小和最大值取所有相交的同等级像元",
 			"geoBoundaries 公开数据仅用于风险计算范围约束，不作为中国法定国界或官方地图依据",
 			boundaryCountLimitation(stats),
@@ -384,7 +382,7 @@ func (p *Processor) snapshotID(artifact provenance.Artifact,
 	boundary hazard.ProcessingBoundary,
 ) string {
 	payload := artifact.Provenance.SHA256 + "|" + artifact.Provenance.SourceRevision + "|" +
-		TransformVersion + "|" + bboxValue(p.config.BBox) + "|" + boundary.Coverage.Identity()
+		p.Version() + "|" + bboxValue(p.config.BBox) + "|" + boundary.Coverage.Identity()
 	digest := sha256.Sum256([]byte(payload))
 	return "lhasa-" + hex.EncodeToString(digest[:8])
 }

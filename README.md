@@ -12,11 +12,11 @@ AI-GDM 是面向地质灾害监控中心的浏览器 Web 应用 MVP。系统使�
 - 就绪探针：`GET /readyz`
 - Prometheus 指标：受管理员令牌保护的 `GET /metrics`
 
-`/readyz` 只表示应用已进入服务期，不代表 Earthdata、高德、博查或 LLM 当前可用。
+`/readyz` 只表示应用已进入服务期，不代表 NASA NCCS、高德、博查或 LLM 当前可用。
 
 ## 已实现能力
 
-- 滑坡风险预警：采集 NASA Earthdata GIS 的 LHASA 近实时栅格，先按 WGS84 中国外接矩形下载，再按版本化 CHN ADM0 边界精确裁剪，经 GDAL 分级和矢量化后展示风险区、时效、处理范围与来源。
+- 滑坡风险预警：从 NASA NCCS Portal 断点下载完整 LHASA 近实时栅格，在本地规范化缺失值和行方向，再按版本化 CHN ADM0 边界裁剪、分级与矢量化。新快照成功提交后清理旧快照；详见 [采集与保留策略](docs/nccs-risk-ingestion.md)。既有发行包需重新构建部署才包含此变更。
 - 疏散调度：调用高德 Web 服务搜索候选避险设施并规划驾车、步行或公交路线，再由服务端排除穿越风险区的路线并排序。
 - 损失评估：优先从权威空间暴露投影和已批准基线生成可解释人民币区间；正式基线缺失时，可对最高风险局部窗口中的道路暴露生成明确标记的研究参考区间。
 - 生还评估：只对公开历史案例和合成匿名场景执行确定性回放，输出概率区间、搜救优先级、因素与人工复核要求。
@@ -98,7 +98,7 @@ AI-GDM 是面向地质灾害监控中心的浏览器 Web 应用 MVP。系统使�
   -> Go HTTP / 模板 / 少量 JavaScript
   -> 应用用例与确定性领域规则
   -> PostgreSQL + PostGIS / Redis / GDAL
-  -> Earthdata / Open-Meteo / geoBoundaries / WorldPop / Overpass
+  -> NASA NCCS Portal / Open-Meteo / geoBoundaries / WorldPop / Overpass
   -> 高德 Web 服务 / 博查搜索 / OpenAI 兼容 LLM
 ```
 
@@ -111,7 +111,7 @@ AI-GDM 是面向地质灾害监控中心的浏览器 Web 应用 MVP。系统使�
 - Docker Engine 和 Docker Compose v2，或 Windows Docker Desktop 的 Linux containers 模式。
 - 建议至少 4 GiB 内存，并为发布归档、三张原始镜像和持久卷预留足够磁盘空间。
 - 对外开放选定的 HTTP 端口，默认 TCP `8080`；云服务器还需配置安全组。
-- 能访问互联网供应商。离线包只消除镜像仓库依赖，实时业务仍需要访问 Earthdata、Open-Meteo、WorldPop、Overpass、geoBoundaries、高德、博查或 LLM。
+- 能访问互联网供应商。离线包只消除镜像仓库依赖，实时业务仍需要访问 NASA NCCS Portal、Open-Meteo、WorldPop、Overpass、geoBoundaries、高德、博查或 LLM。
 - Linux 部署需要 `sha256sum`、`curl`、`docker` 和 Compose v2。
 
 PostgreSQL 和 Redis 只连接内部 Docker 网络，不映射宿主机端口。
@@ -311,8 +311,10 @@ PowerShell 脚本会对新运行配置收紧当前用户 ACL。Linux 空镜像�
 | `OPEN_METEO_MAX_POINTS_PER_REQUEST` | `25` | 单次请求最大点数，代码上限为 25。 |
 | `OPEN_METEO_BASE_URL` | `https://api.open-meteo.com/v1/forecast` | Open-Meteo HTTPS 端点。 |
 | `OPEN_METEO_API_KEY` | 空 | 默认免费端点无需 Key；仅在所选端点要求时填写。 |
-| `LHASA_STALE_AFTER` | `12h` | LHASA 组合修订超过该时间后标记过期。 |
-| `LHASA_EARTHDATA_URL` | NASA Earthdata GIS `LHASA_Hazard_Today` | LHASA ArcGIS ImageServer 地址，通常不修改。 |
+| `LHASA_STALE_AFTER` | `12h` | NCCS 文件发布时间对应的本系统使用期限，不代表模型覆盖期。 |
+| `LHASA_PORTAL_URL` | NASA NCCS Portal 近实时 TIFF 目录 | 当前风险数据入口。 |
+| `LHASA_REFRESH_INTERVAL` | `2h` | 风险刷新独立间隔。 |
+| `LHASA_REFRESH_TIMEOUT` | `70m` | 风险采集整轮时限，独立于天气刷新。 |
 
 geoBoundaries、WorldPop 和 Overpass 使用服务内置的受控公开端点，不需要 API Key。其网络失败会被记录为数据不足或降级，不会用测试数据替代。
 

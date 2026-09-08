@@ -31,6 +31,7 @@ type Config struct {
 	MaxInputBytes   int64
 	MaxGeoJSON      int64
 	MaxZoneCount    int
+	NormalizeNCCS   bool
 }
 
 func applyDefaults(config Config) Config {

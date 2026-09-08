@@ -23,6 +23,11 @@ type ArtifactFetcher interface {
 	Fetch(ctx context.Context, artifact provenance.Artifact) (provenance.Artifact, error)
 }
 
+// ArtifactRetainer 在新分析提交后保留其原始制品；失败可在下一次成功刷新时重试。
+type ArtifactRetainer interface {
+	RetainArtifact(ctx context.Context, source provenance.Provenance) error
+}
+
 // HazardBoundaryProvider 返回风险处理使用的版本化行政边界。
 type HazardBoundaryProvider interface {
 	// RiskBoundary 返回已校验、可绑定快照身份的固定边界输入。

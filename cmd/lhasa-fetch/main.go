@@ -7,11 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Requim/AI-GDM/internal/adapters/provider/artifactstore"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/httpclient"
-	"github.com/Requim/AI-GDM/internal/adapters/provider/lhasa"
+	"github.com/Requim/AI-GDM/internal/adapters/provider/nccs"
 	"github.com/Requim/AI-GDM/internal/adapters/raster/gdal"
 	"github.com/Requim/AI-GDM/internal/application/collection"
 )
@@ -28,24 +29,19 @@ func run() error {
 	client := httpclient.New(httpclient.Options{
 		HTTPClient: &http.Client{Timeout: 3 * time.Minute}, Logger: logger,
 	})
-	provider, err := lhasa.New(client, lhasa.Config{ServiceURL: os.Getenv("LHASA_EARTHDATA_URL")})
+	provider, err := nccs.New(client, os.Getenv("LHASA_PORTAL_URL"), 12*time.Hour)
 	if err != nil {
-		return fmt.Errorf("创建 Earthdata LHASA 发现适配器: %w", err)
+		return fmt.Errorf("创建 NCCS LHASA 发现适配器: %w", err)
 	}
 	store := artifactstore.New(dataDirectory(), 512<<20)
-	mosaicker, err := gdal.NewMosaicker(gdal.MosaicConfig{Binary: gdalBinary()})
-	if err != nil {
-		return fmt.Errorf("创建 LHASA 栅格拼接器: %w", err)
-	}
-	downloader, err := lhasa.NewTiledFetcher(client, provider, mosaicker, store, lhasa.FetcherConfig{
-		TemporaryDir: os.Getenv("GDAL_TEMP_DIR"), MaxPartBytes: 32 << 20,
-		MaxBytes: 512 << 20, Logger: logger,
+	downloader, err := nccs.NewFetcher(client, provider, store, nccs.FetchConfig{
+		Directory: filepath.Join(dataDirectory(), ".nccs-downloads"), Logger: logger,
 	})
 	if err != nil {
-		return fmt.Errorf("创建 Earthdata LHASA 分片获取器: %w", err)
+		return fmt.Errorf("创建 NCCS LHASA 完整文件获取器: %w", err)
 	}
 	collector := collection.NewArtifactCollector(provider, downloader)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	artifact, err := collector.CollectLatest(ctx)
 	if err != nil {

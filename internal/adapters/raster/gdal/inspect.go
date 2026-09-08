@@ -45,6 +45,10 @@ type rasterInfo struct {
 }
 
 func validateSourceRasterInfo(payload []byte, bbox [4]float64) error {
+	return validateRasterInfo(payload, bbox, false)
+}
+
+func validateRasterInfo(payload []byte, bbox [4]float64, native bool) error {
 	info, err := decodeRasterInfo(payload)
 	if err != nil {
 		return err
@@ -56,7 +60,7 @@ func validateSourceRasterInfo(payload []byte, bbox [4]float64) error {
 		return fmt.Errorf("%w: LHASA 栅格 CRS 或 NoData 无效", domain.ErrInvalidInput)
 	}
 	transform, size := transformAndSize(info)
-	if !validGrid(transform, size) || !coversBBox(transform, size, bbox) {
+	if !validGridShape(transform, size) || (!native && !alignedOrigin(transform)) || !coversBBox(transform, size, bbox) {
 		return fmt.Errorf("%w: LHASA 栅格分辨率、网格或覆盖范围无效", domain.ErrInvalidInput)
 	}
 	minimum, maximum := probabilityRange(info.Bands[0])
@@ -116,13 +120,22 @@ func probabilityRange(band rasterBand) (*float64, *float64) {
 }
 
 func validGrid(transform []float64, size []int) bool {
+	return validGridShape(transform, size) && alignedOrigin(transform)
+}
+
+func validGridShape(transform []float64, size []int) bool {
 	if len(transform) != 6 || len(size) != 2 || size[0] < 1 || size[1] < 1 || int64(size[0])*int64(size[1]) > 1_000_000_000 {
 		return false
 	}
 	if math.Abs(transform[1]-lhasaResolution) > 1e-8 || math.Abs(transform[5]+lhasaResolution) > 1e-8 {
 		return false
 	}
-	return math.Abs(transform[2]) < 1e-12 && math.Abs(transform[4]) < 1e-12 && alignedOrigin(transform)
+	for _, value := range transform {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return false
+		}
+	}
+	return math.Abs(transform[2]) < 1e-12 && math.Abs(transform[4]) < 1e-12
 }
 
 func alignedOrigin(transform []float64) bool {

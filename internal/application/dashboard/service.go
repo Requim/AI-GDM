@@ -72,13 +72,16 @@ func (s *Service) Overview(ctx context.Context) Overview {
 }
 
 func (s *Service) riskStatus(ctx context.Context, now time.Time, observed componentObservation) SourceStatus {
-	base := SourceStatus{ID: "lhasa", Name: "滑坡风险分析", Provider: "NASA Earthdata LHASA", Category: "风险"}
+	base := SourceStatus{ID: "lhasa", Name: "滑坡风险分析", Provider: "NASA LHASA", Category: "风险"}
 	if !s.capabilities.Database || s.risk == nil {
 		return applyDataObservation(unavailable(base, "PostGIS 未配置，无法读取最后成功风险分析"), observed)
 	}
 	snapshot, zones, err := s.risk.LatestRisk(ctx, hazard.TypeLandslide)
 	if err != nil {
 		return applyDataObservation(readFailure(base, err, "尚无已持久化的完整风险分析"), observed)
+	}
+	if snapshot.Source.Provider != "" {
+		base.Provider = snapshot.Source.Provider
 	}
 	base.UpdatedAt = latestTime(snapshot.RunAt, sourceTime(snapshot.Source))
 	base.ValidTo = latestTime(snapshot.ValidTo, snapshot.Source.ValidTo)

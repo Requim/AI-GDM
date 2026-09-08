@@ -36,6 +36,12 @@ func (r *HazardRepository) SaveSnapshot(ctx context.Context, value hazard.Snapsh
 func (r *HazardRepository) SaveAnalysis(ctx context.Context, snapshot hazard.Snapshot,
 	zones []hazard.RiskZone,
 ) error {
+	return r.saveAnalysis(ctx, snapshot, zones, false)
+}
+
+func (r *HazardRepository) saveAnalysis(ctx context.Context, snapshot hazard.Snapshot,
+	zones []hazard.RiskZone, retainLatest bool,
+) error {
 	if err := validateCompleteAnalysis(snapshot, zones); err != nil {
 		return err
 	}
@@ -44,11 +50,21 @@ func (r *HazardRepository) SaveAnalysis(ctx context.Context, snapshot hazard.Sna
 		return fmt.Errorf("开始保存灾害分析事务: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if retainLatest {
+		if err = lockRetention(ctx, tx, snapshot); err != nil {
+			return err
+		}
+	}
 	if err = saveSnapshot(ctx, tx, snapshot, true); err != nil {
 		return err
 	}
 	if err = replaceZones(ctx, tx, snapshot.ID, zones); err != nil {
 		return err
+	}
+	if retainLatest {
+		if err = retirePrevious(ctx, tx, snapshot); err != nil {
+			return err
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("提交灾害分析事务: %w", err)

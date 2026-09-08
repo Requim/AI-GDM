@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -15,7 +16,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/adapters/provider/artifactstore"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/geoboundaries"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/httpclient"
-	"github.com/Requim/AI-GDM/internal/adapters/provider/lhasa"
+	"github.com/Requim/AI-GDM/internal/adapters/provider/nccs"
 	"github.com/Requim/AI-GDM/internal/adapters/raster/gdal"
 	spatialpg "github.com/Requim/AI-GDM/internal/adapters/spatial/postgis"
 	"github.com/Requim/AI-GDM/internal/adapters/storage/postgres"
@@ -81,12 +82,9 @@ func newLHASACollector(cfg config.Config, dependencies *resources.Resources,
 	logger *slog.Logger, repository *postgres.HazardRepository,
 ) (*collection.LHASACollector, error) {
 	clients := newLHASAClients(dependencies, logger)
-	provider, err := lhasa.New(clients.discovery, lhasa.Config{
-		ServiceURL: cfg.LHASA.ServiceURL, StaleAfter: cfg.LHASA.StaleAfter,
-		MaxPartBytes: maxLHASAPartBytes, MaxBytes: maxLHASAArtifactBytes,
-	})
+	provider, err := nccs.New(clients.discovery, cfg.LHASA.PortalURL, cfg.LHASA.StaleAfter)
 	if err != nil {
-		return nil, fmt.Errorf("创建 Earthdata LHASA 发现适配器: %w", err)
+		return nil, fmt.Errorf("创建 NCCS LHASA 发现适配器: %w", err)
 	}
 	downloader, err := newLHASADownloader(cfg, logger, clients.download, provider)
 	if err != nil {
@@ -94,7 +92,8 @@ func newLHASACollector(cfg config.Config, dependencies *resources.Resources,
 	}
 	processor, err := gdal.New(gdal.Config{
 		Binary: cfg.LHASA.GDALBinary, ArtifactRoot: cfg.LHASA.DataDir,
-		TemporaryDir: cfg.LHASA.TemporaryDir,
+		TemporaryDir:  cfg.LHASA.TemporaryDir,
+		NormalizeNCCS: true, BBox: [4]float64{73, 3, 136, 54},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 LHASA 栅格处理器: %w", err)
@@ -105,12 +104,13 @@ func newLHASACollector(cfg config.Config, dependencies *resources.Resources,
 	if err != nil {
 		return nil, fmt.Errorf("创建 LHASA 中国边界适配器: %w", err)
 	}
+	writer := postgres.NewLatestHazardWriter(repository)
 	collector, err := collection.NewLHASACollector(provider, downloader, boundary, processor,
-		repository, repository, repository, utcClock{}, cfg.LHASA.StaleAfter)
+		writer, repository, writer, utcClock{}, cfg.LHASA.StaleAfter)
 	if err != nil {
 		return nil, fmt.Errorf("创建 LHASA 采集用例: %w", err)
 	}
-	return collector, nil
+	return collector.WithSource(nccs.ProviderName, nccs.DatasetName).WithRetention(downloader, logger), nil
 }
 
 type lhasaClients struct {
@@ -133,20 +133,13 @@ func newLHASAClients(dependencies *resources.Resources, logger *slog.Logger) lha
 }
 
 func newLHASADownloader(cfg config.Config, logger *slog.Logger, client *httpclient.Client,
-	provider *lhasa.Provider,
-) (*lhasa.TiledFetcher, error) {
+	provider *nccs.Provider,
+) (*nccs.Fetcher, error) {
 	store := artifactstore.New(cfg.LHASA.DataDir, maxLHASAArtifactBytes)
-	mosaicker, err := gdal.NewMosaicker(gdal.MosaicConfig{Binary: cfg.LHASA.GDALBinary})
+	downloader, err := nccs.NewFetcher(client, provider, store,
+		nccs.FetchConfig{Directory: filepath.Join(cfg.LHASA.DataDir, ".nccs-downloads"), Logger: logger})
 	if err != nil {
-		return nil, fmt.Errorf("创建 LHASA 栅格拼接器: %w", err)
-	}
-	downloader, err := lhasa.NewTiledFetcher(client, provider, mosaicker, store,
-		lhasa.FetcherConfig{
-			TemporaryDir: cfg.LHASA.TemporaryDir,
-			MaxPartBytes: maxLHASAPartBytes, MaxBytes: maxLHASAArtifactBytes, Logger: logger,
-		})
-	if err != nil {
-		return nil, fmt.Errorf("创建 Earthdata LHASA 分片获取器: %w", err)
+		return nil, fmt.Errorf("创建 NCCS LHASA 完整文件获取器: %w", err)
 	}
 	return downloader, nil
 }
@@ -156,7 +149,7 @@ func newLandslideProvider(dependencies *resources.Resources, logger *slog.Logger
 	exposures exposureCollector,
 ) (*hazardapp.HazardProvider, error) {
 	engine, err := risk.NewEngine(risk.ModelCapability{
-		HazardType: hazard.TypeLandslide, ModelName: gdal.ModelName, Dataset: lhasa.DatasetName,
+		HazardType: hazard.TypeLandslide, ModelName: gdal.ModelName, Dataset: nccs.DatasetName,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建滑坡风险引擎: %w", err)

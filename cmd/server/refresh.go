@@ -28,7 +28,7 @@ const (
 	maxLHASAArtifactBytes    = 512 << 20
 	maxLHASAPartBytes        = 32 << 20
 	lhasaDiscoveryTimeout    = 30 * time.Second
-	lhasaDownloadTimeout     = 3 * time.Minute
+	lhasaDownloadTimeout     = 90 * time.Second
 	lhasaMaxAttempts         = 2
 	lhasaProviderRequestRate = time.Second
 )
@@ -104,7 +104,14 @@ func newLHASARunnerWithObservations(cfg config.Config, refresher ports.HazardRef
 	if refresher == nil {
 		return nil, fmt.Errorf("%w: LHASA 刷新器为空", config.ErrInvalidConfig)
 	}
-	return scheduler.New(cfg.Refresh.Interval, cfg.Refresh.Timeout, logger,
+	interval, timeout := cfg.LHASA.Interval, cfg.LHASA.Timeout
+	if interval == 0 {
+		interval = 2 * time.Hour
+	}
+	if timeout == 0 {
+		timeout = 70 * time.Minute
+	}
+	return scheduler.New(interval, timeout, logger,
 		lhasaRefreshTaskWithObservations(refresher, logger, recorder))
 }
 
