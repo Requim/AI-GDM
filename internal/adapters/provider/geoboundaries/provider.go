@@ -63,17 +63,38 @@ type Options struct {
 	MetadataURL string
 }
 
+type regionCatalogSnapshot struct {
+	countryISO   string
+	level        string
+	boundaryYear string
+	source       string
+	license      string
+	references   []string
+	digest       string
+	collectedAt  time.Time
+	payload      []byte
+	regions      []exposurecollection.AdministrativeRegion
+}
+
 // RegionCatalog 获取指定国家 ADM1 或 ADM2 的真实多要素边界目录。
 func (p *Provider) RegionCatalog(ctx context.Context, countryISO, level string) ([]exposurecollection.AdministrativeRegion, error) {
-	metadataURL, err := regionMetadataURL(countryISO, level)
+	snapshot, err := p.fetchRegionCatalog(ctx, countryISO, level)
 	if err != nil {
 		return nil, err
+	}
+	return snapshot.regions, nil
+}
+
+func (p *Provider) fetchRegionCatalog(ctx context.Context, countryISO, level string) (regionCatalogSnapshot, error) {
+	metadataURL, err := regionMetadataURL(countryISO, level)
+	if err != nil {
+		return regionCatalogSnapshot{}, err
 	}
 	metadataResponse, err := p.client.Do(ctx, httpclient.Request{Method: http.MethodGet,
 		URL: metadataURL, MaxBodyBytes: maxMetadataBytes,
 		RedirectPolicy: httpclient.RedirectSameOriginHTTPS})
 	if err != nil {
-		return nil, fmt.Errorf("读取 geoBoundaries 行政区目录元数据: %w", err)
+		return regionCatalogSnapshot{}, fmt.Errorf("读取 geoBoundaries 行政区目录元数据: %w", err)
 	}
 	var value struct {
 		SimplifiedGeometry string `json:"simplifiedGeometryGeoJSON"`
@@ -81,22 +102,23 @@ func (p *Provider) RegionCatalog(ctx context.Context, countryISO, level string) 
 		Source             string `json:"boundarySource"`
 		License            string `json:"boundaryLicense"`
 	}
-	if err = json.Unmarshal(metadataResponse.Body, &value); err != nil || value.SimplifiedGeometry == "" {
-		return nil, providerError("geoBoundaries 行政区目录元数据无效")
+	if err = json.Unmarshal(metadataResponse.Body, &value); err != nil ||
+		!validRegionMetadata(value, countryISO, level) {
+		return regionCatalogSnapshot{}, providerError("geoBoundaries 行政区目录元数据无效")
 	}
 	downloadURL, err := regionMediaURL(value.SimplifiedGeometry, countryISO, level)
 	if err != nil {
-		return nil, err
+		return regionCatalogSnapshot{}, err
 	}
 	geometryResponse, err := p.client.Do(ctx, httpclient.Request{Method: http.MethodGet,
 		URL: downloadURL, MaxBodyBytes: maxRegionGeometryBytes,
 		RedirectPolicy: httpclient.RedirectDeny})
 	if err != nil {
-		return nil, fmt.Errorf("下载 geoBoundaries 行政区目录几何: %w", err)
+		return regionCatalogSnapshot{}, fmt.Errorf("下载 geoBoundaries 行政区目录几何: %w", err)
 	}
 	regions, err := DecodeRegionCollection(geometryResponse.Body, countryISO, level)
 	if err != nil {
-		return nil, err
+		return regionCatalogSnapshot{}, err
 	}
 	digest := sha256.Sum256(geometryResponse.Body)
 	digestHex := hex.EncodeToString(digest[:])
@@ -110,7 +132,12 @@ func (p *Provider) RegionCatalog(ctx context.Context, countryISO, level string) 
 		regions[index].CollectedAt = geometryResponse.FetchedAt.UTC().Truncate(time.Microsecond)
 		regions[index].InputReferences = append([]string(nil), references...)
 	}
-	return regions, nil
+	return regionCatalogSnapshot{
+		countryISO: countryISO, level: level, boundaryYear: value.BoundaryYear,
+		source: value.Source, license: value.License, references: references,
+		digest: digestHex, collectedAt: geometryResponse.FetchedAt.UTC().Truncate(time.Microsecond),
+		payload: append([]byte(nil), geometryResponse.Body...), regions: regions,
+	}, nil
 }
 
 // BoundaryForRegion 返回目录中指定省市要素的版本化边界。
@@ -130,14 +157,18 @@ func (p *Provider) BoundaryForRegion(ctx context.Context, regionCode string) (ex
 		if region.Code != regionCode {
 			continue
 		}
-		return exposurecollection.AdministrativeBoundary{
-			BoundaryID: region.BoundaryID, RegionCode: region.Code, BoundaryType: region.Level,
-			BoundaryYear: region.BoundaryYear, Source: region.Source, License: region.License,
-			Digest: region.Digest, Reference: region.Reference, Geometry: region.Geometry,
-			CollectedAt: region.CollectedAt, InputReferences: append([]string(nil), region.InputReferences...),
-		}, nil
+		return boundaryFromRegion(region), nil
 	}
 	return exposurecollection.AdministrativeBoundary{}, domain.ErrNotFound
+}
+
+func boundaryFromRegion(region exposurecollection.AdministrativeRegion) exposurecollection.AdministrativeBoundary {
+	return exposurecollection.AdministrativeBoundary{
+		BoundaryID: region.BoundaryID, RegionCode: region.Code, BoundaryType: region.Level,
+		BoundaryYear: region.BoundaryYear, Source: region.Source, License: region.License,
+		Digest: region.Digest, Reference: region.Reference, Geometry: region.Geometry,
+		CollectedAt: region.CollectedAt, InputReferences: append([]string(nil), region.InputReferences...),
+	}
 }
 
 func regionMetadataURL(countryISO, level string) (string, error) {
@@ -163,6 +194,17 @@ func regionMediaURL(raw, countryISO, level string) (string, error) {
 
 func validCountryISO(value string) bool {
 	return regexp.MustCompile(`^[A-Z]{3}$`).MatchString(strings.TrimSpace(value))
+}
+
+func validRegionMetadata(value struct {
+	SimplifiedGeometry string `json:"simplifiedGeometryGeoJSON"`
+	BoundaryYear       string `json:"boundaryYearRepresented"`
+	Source             string `json:"boundarySource"`
+	License            string `json:"boundaryLicense"`
+}, countryISO, level string) bool {
+	return value.SimplifiedGeometry != "" && validBoundaryYear(value.BoundaryYear) &&
+		value.Source == expectedSource && value.License == expectedLicense &&
+		validCountryISO(countryISO) && (level == "ADM1" || level == "ADM2")
 }
 
 // Provider 下载并校验版本化中国 ADM0 简化几何。

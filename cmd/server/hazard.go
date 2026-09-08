@@ -45,7 +45,8 @@ type hazardRuntime struct {
 	regionalExposures interface {
 		CollectRegion(context.Context, string, string, string) (exposurecollection.ExposureProjection, error)
 	}
-	database *pgxpool.Pool
+	regionCatalog exposurecollection.AdministrativeRegionCatalogProvider
+	database      *pgxpool.Pool
 }
 
 func newHazardRuntime(cfg config.Config, dependencies *resources.Resources,
@@ -58,7 +59,11 @@ func newHazardRuntime(cfg config.Config, dependencies *resources.Resources,
 		return nil, nil
 	}
 	repository := postgres.NewHazardRepository(dependencies.Database)
-	exposures, err := newExposureCollector(dependencies, logger, repository)
+	regionCatalog, err := newRegionalBoundaryCatalog(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	exposures, err := newExposureCollector(dependencies, logger, repository, regionCatalog)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +86,7 @@ func newHazardRuntime(cfg config.Config, dependencies *resources.Resources,
 	return &hazardRuntime{service: service, landslide: provider, latestRisk: repository,
 		riskDetail: repository, spatialAnalysis: spatialpg.New(dependencies.Database),
 		hazardAuthority: repository, exposures: exposures, regionalExposures: exposures,
-		database: dependencies.Database}, nil
+		regionCatalog: regionCatalog, database: dependencies.Database}, nil
 }
 
 func newLHASACollector(cfg config.Config, dependencies *resources.Resources,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -16,6 +17,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/adapters/storage/postgres"
 	"github.com/Requim/AI-GDM/internal/application/exposurecollection"
 	"github.com/Requim/AI-GDM/internal/domain"
+	"github.com/Requim/AI-GDM/internal/platform/config"
 	"github.com/Requim/AI-GDM/internal/platform/resources"
 	"github.com/Requim/AI-GDM/internal/ports"
 )
@@ -56,11 +58,12 @@ type exposureCollectorRuntime struct {
 
 func newExposureCollector(dependencies *resources.Resources, logger *slog.Logger,
 	repository *postgres.HazardRepository,
+	regionalBoundary ...exposurecollection.AdministrativeBoundaryProvider,
 ) (*exposurecollection.Collector, error) {
 	if dependencies == nil || dependencies.Database == nil || logger == nil || repository == nil {
 		return nil, fmt.Errorf("%w: 真实暴露采集组合根依赖为空", domain.ErrInvalidInput)
 	}
-	providers, err := newExposureProviders(newExposureHTTPClients(logger))
+	providers, err := newExposureProviders(newExposureHTTPClients(logger), regionalBoundary...)
 	if err != nil {
 		return nil, err
 	}
@@ -68,11 +71,20 @@ func newExposureCollector(dependencies *resources.Resources, logger *slog.Logger
 		administrator: repository, projector: repository, writer: repository, clock: utcClock{}}, providers)
 }
 
-func newExposureProviders(clients exposureHTTPClients) (exposureProviderSet, error) {
-	boundary, err := geoboundaries.New(geoboundaries.Options{Client: clients.boundary})
-	if err != nil {
-		return exposureProviderSet{}, fmt.Errorf("创建 geoBoundaries provider: %w", err)
+func newExposureProviders(clients exposureHTTPClients,
+	regionalBoundary ...exposurecollection.AdministrativeBoundaryProvider,
+) (exposureProviderSet, error) {
+	var boundary exposurecollection.AdministrativeBoundaryProvider
+	if len(regionalBoundary) > 0 && regionalBoundary[0] != nil {
+		boundary = regionalBoundary[0]
+	} else {
+		var err error
+		boundary, err = geoboundaries.New(geoboundaries.Options{Client: clients.boundary})
+		if err != nil {
+			return exposureProviderSet{}, fmt.Errorf("创建 geoBoundaries provider: %w", err)
+		}
 	}
+	var err error
 	population, err := worldpop.New(worldpop.Options{Client: clients.population})
 	if err != nil {
 		return exposureProviderSet{}, fmt.Errorf("创建 WorldPop provider: %w", err)
@@ -82,6 +94,31 @@ func newExposureProviders(clients exposureHTTPClients) (exposureProviderSet, err
 		return exposureProviderSet{}, fmt.Errorf("创建 Overpass provider: %w", err)
 	}
 	return exposureProviderSet{boundary: boundary, population: population, infrastructure: infrastructure}, nil
+}
+
+func newRegionalBoundaryCatalog(cfg config.Config, logger *slog.Logger) (
+	*geoboundaries.CachedRegionCatalog, error,
+) {
+	live, err := geoboundaries.New(geoboundaries.Options{
+		Client: newExposureHTTPClient(logger, defaultExposureHTTPPolicies().boundary),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("创建行政区目录刷新 provider: %w", err)
+	}
+	cachePath := filepath.Join(cfg.LHASA.DataDir, "geoboundaries", "region-catalog-v1.json")
+	cache, err := geoboundaries.NewCachedRegionCatalog(live, cachePath)
+	if err != nil {
+		return nil, err
+	}
+	refreshContext, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err = cache.Refresh(refreshContext); err != nil {
+		if cacheErr := cache.Validate(context.Background()); cacheErr != nil {
+			return nil, fmt.Errorf("初始化行政区目录缓存失败且无可用旧缓存: %w", err)
+		}
+		logger.Warn("geoBoundaries 行政区目录刷新失败，继续使用旧缓存", "error", err)
+	}
+	return cache, nil
 }
 
 func buildExposureCollector(runtime exposureCollectorRuntime,
