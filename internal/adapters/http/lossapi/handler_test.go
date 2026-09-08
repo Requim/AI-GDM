@@ -93,6 +93,31 @@ func TestAssessmentLifecycleUsesSnapshotOnlyAndSafeMoneyWire(t *testing.T) {
 	assertEvidenceWire(t, loadedValue)
 }
 
+func TestRegionCapabilitiesExposeAvailableAndUnavailableScopes(t *testing.T) {
+	api, _, _ := newTestAPI(t, validHTTPAssessment(t), nil)
+	response := performJSON(t, api, http.MethodGet, "/api/v1/loss/regions", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET regions 状态=%d body=%s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Version string `json:"version"`
+			Regions []struct {
+				Code   string `json:"code"`
+				Status string `json:"status"`
+			} `json:"regions"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Data.Version != "loss-region-capability-v1" || len(envelope.Data.Regions) != 2 ||
+		envelope.Data.Regions[0].Code != "CN" || envelope.Data.Regions[0].Status != "available" ||
+		envelope.Data.Regions[1].Code != "*" || envelope.Data.Regions[1].Status != "unavailable" {
+		t.Fatalf("区域能力=%+v", envelope.Data)
+	}
+}
+
 func TestEstimateRequestRejectsUnsupportedAdministrativeRegion(t *testing.T) {
 	_, err := (estimateRequest{SnapshotID: "snapshot-1", RegionCode: "CN-31"}).input()
 	if !errors.Is(err, domain.ErrInvalidInput) || !strings.Contains(err.Error(), "省市行政区边界尚未接入") {
