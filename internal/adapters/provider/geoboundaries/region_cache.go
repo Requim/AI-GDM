@@ -85,6 +85,18 @@ func (c *CachedRegionCatalog) Validate(ctx context.Context) error {
 	return err
 }
 
+// IsFresh 判断完整本地缓存是否仍在刷新周期内。
+func (c *CachedRegionCatalog) IsFresh(ctx context.Context, maxAge time.Duration) (bool, error) {
+	if maxAge <= 0 {
+		return false, fmt.Errorf("%w: 行政区缓存刷新周期无效", domain.ErrInvalidInput)
+	}
+	cache, err := c.load(ctx)
+	if err != nil {
+		return false, err
+	}
+	return time.Since(cache.GeneratedAt.UTC()) <= maxAge, nil
+}
+
 // RegionCatalog 从本地缓存读取行政区目录，不触发网络请求。
 func (c *CachedRegionCatalog) RegionCatalog(ctx context.Context, countryISO, level string) ([]exposurecollection.AdministrativeRegion, error) {
 	cache, err := c.load(ctx)

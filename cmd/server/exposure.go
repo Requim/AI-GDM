@@ -30,6 +30,7 @@ const (
 	worldPopInterval      = 500 * time.Millisecond
 	overpassInterval      = 2 * time.Second
 	geoBoundariesAttempts = 2
+	regionCatalogMaxAge   = 7 * 24 * time.Hour
 	worldPopAttempts      = 3
 	overpassAttempts      = 2
 )
@@ -109,6 +110,9 @@ func newRegionalBoundaryCatalog(cfg config.Config, logger *slog.Logger) (
 	cache, err := geoboundaries.NewCachedRegionCatalog(live, cachePath)
 	if err != nil {
 		return nil, err
+	}
+	if fresh, cacheErr := cache.IsFresh(context.Background(), regionCatalogMaxAge); cacheErr == nil && fresh {
+		return cache, nil
 	}
 	refreshContext, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
