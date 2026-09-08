@@ -440,7 +440,7 @@ func TestHandlerClassifiesStoredIntegrityAsServerErrorAndPreservesCause(t *testi
 }
 
 func TestResponseAndReferenceBudgetsFailClosed(t *testing.T) {
-	references := make([]string, maxResponseItems)
+	references := make([]string, maxSourceReferences)
 	for index := range references {
 		references[index] = fmt.Sprintf("https://example.test/%04d", index)
 	}

@@ -37,6 +37,10 @@ func TestCachedRegionCatalogRefreshAndReadAvoidsNetworkOnPageRequest(t *testing.
 	if err != nil || boundary.RegionCode != "CHN-ADM2-2" {
 		t.Fatalf("BoundaryForRegion()=%+v error=%v", boundary, err)
 	}
+	boundary, err = cache.BoundaryForRegion(context.Background(), "CHN-ADM1-1")
+	if err != nil || boundary.RegionCode != "CHN-ADM1-1" {
+		t.Fatalf("ADM1 BoundaryForRegion()=%+v error=%v", boundary, err)
+	}
 	if requests.Load() != refreshRequests {
 		t.Fatalf("本地缓存读取触发网络请求: before=%d after=%d", refreshRequests, requests.Load())
 	}

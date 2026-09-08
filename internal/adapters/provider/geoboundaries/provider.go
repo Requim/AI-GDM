@@ -204,10 +204,7 @@ func (p *Provider) BoundaryForRegion(ctx context.Context, regionCode string) (ex
 	if strings.TrimSpace(regionCode) == "" {
 		return exposurecollection.AdministrativeBoundary{}, fmt.Errorf("%w: 行政区代码为空", domain.ErrInvalidInput)
 	}
-	level := "ADM1"
-	if strings.Count(regionCode, "-") > 1 {
-		level = "ADM2"
-	}
+	level := regionLevel(regionCode)
 	regions, err := p.RegionCatalog(ctx, "CHN", level)
 	if err != nil {
 		return exposurecollection.AdministrativeBoundary{}, err
@@ -228,6 +225,19 @@ func boundaryFromRegion(region exposurecollection.AdministrativeRegion) exposure
 		Digest: region.Digest, Reference: region.Reference, Geometry: region.Geometry,
 		CollectedAt: region.CollectedAt, InputReferences: append([]string(nil), region.InputReferences...),
 	}
+}
+
+func regionLevel(regionCode string) string {
+	if strings.Contains(regionCode, "-ADM1-") {
+		return "ADM1"
+	}
+	if strings.Contains(regionCode, "-ADM2-") {
+		return "ADM2"
+	}
+	if strings.Count(regionCode, "-") > 1 {
+		return "ADM2"
+	}
+	return "ADM1"
 }
 
 func regionMetadataURL(countryISO, level string) (string, error) {

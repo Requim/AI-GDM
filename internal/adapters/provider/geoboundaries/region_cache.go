@@ -118,10 +118,7 @@ func (c *CachedRegionCatalog) BoundaryForRegion(ctx context.Context, regionCode 
 	if strings.TrimSpace(regionCode) == "" {
 		return exposurecollection.AdministrativeBoundary{}, fmt.Errorf("%w: 行政区代码为空", domain.ErrInvalidInput)
 	}
-	level := "ADM1"
-	if strings.Count(regionCode, "-") > 1 {
-		level = "ADM2"
-	}
+	level := regionLevel(regionCode)
 	regions, err := c.RegionCatalog(ctx, "CHN", level)
 	if err != nil {
 		return exposurecollection.AdministrativeBoundary{}, err

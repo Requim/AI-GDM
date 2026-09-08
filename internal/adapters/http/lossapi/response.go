@@ -25,7 +25,8 @@ import (
 const (
 	maxResponseBytes       = 1 << 20
 	maxRequestIDBytes      = 128
-	maxResponseItems       = 1000
+	maxResponseItems       = 3000
+	maxSourceReferences    = 1000
 	maxResponseStringBytes = 4096
 	maxResponseTotalItems  = 5000
 	maxResponseTotalChars  = 512 << 10
@@ -488,8 +489,8 @@ func sanitizeProvenance(value provenance.Provenance) (provenance.Provenance, err
 }
 
 func sanitizeReferences(values []string) ([]string, error) {
-	if len(values) > maxResponseItems {
-		return nil, fmt.Errorf("来源引用超过 %d 条", maxResponseItems)
+	if len(values) > maxSourceReferences {
+		return nil, fmt.Errorf("来源引用超过 %d 条", maxSourceReferences)
 	}
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
