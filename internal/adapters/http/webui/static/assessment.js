@@ -66,6 +66,7 @@
       panels: Array.from(root.querySelectorAll("[data-assessment-panel]")),
       lossForm: document.getElementById("loss-assessment-form"),
       lossInput: document.getElementById("loss-snapshot-id"),
+      regionSelect: document.getElementById("loss-region-code"),
       lossButton: document.getElementById("loss-assessment-run"),
       lossStatus: document.getElementById("loss-assessment-status"),
       lossID: document.getElementById("loss-assessment-id"),
@@ -158,7 +159,30 @@
     document.addEventListener(RISK_SNAPSHOT_EVENT, function (event) {
       bindRiskSnapshot(event && event.detail);
     });
+    loadRegionCapabilities();
     syncRiskSnapshot();
+  }
+
+  async function loadRegionCapabilities() {
+    if (!elements.regionSelect) return;
+    try {
+      const response = await fetch("/api/v1/loss/regions", { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error("区域能力读取失败");
+      const envelope = await response.json();
+      const regions = envelope.data && Array.isArray(envelope.data.regions) ? envelope.data.regions : [];
+      elements.regionSelect.replaceChildren();
+      regions.forEach(function (region) {
+        const option = new Option(region.name + (region.status === "available" ? "" : "（暂不可用）"),
+          region.code === "*" ? "" : region.code);
+        option.disabled = region.status !== "available";
+        option.title = region.note || "";
+        elements.regionSelect.append(option);
+      });
+      elements.regionSelect.disabled = regions.every(function (region) { return region.status !== "available"; });
+    } catch (_) {
+      elements.regionSelect.replaceChildren(new Option("区域能力暂不可用", ""));
+      elements.regionSelect.disabled = true;
+    }
   }
 
   async function runLoss() {
@@ -262,7 +286,8 @@
 
   async function createLossAssessment(snapshotID) {
     const response = await requestJSON(root.dataset.lossEndpoint, {
-      method: "POST", body: { snapshotId: snapshotID }, maxResponseBytes: responseLimit(),
+      method: "POST", body: { snapshotId: snapshotID,
+        regionCode: elements.regionSelect ? elements.regionSelect.value : "" }, maxResponseBytes: responseLimit(),
       includeResponseMetadata: true
     });
     if (!response || response.status !== 201) throw new Error("损失评估创建状态无效");
