@@ -847,9 +847,9 @@ func assertAPIError(t *testing.T, response *httptest.ResponseRecorder, status in
 
 func assertAggregateBudgets(t *testing.T) {
 	t.Helper()
-	itemHeavy := make([][]string, 6)
+	itemHeavy := make([][]string, 7)
 	for index := range itemHeavy {
-		itemHeavy[index] = make([]string, 900)
+		itemHeavy[index] = make([]string, 3000)
 	}
 	if err := validateResponseBounds(itemHeavy); err == nil {
 		t.Fatal("响应总项数预算未生效")
