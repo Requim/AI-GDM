@@ -66,17 +66,7 @@
 
   function createMap() {
     const value = window.L.map(elements.map, { preferCanvas: true }).setView([35.5, 104.5], 4);
-    const tiles = window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 18, attribution: "&copy; OpenStreetMap contributors"
-    }).addTo(value);
-    const watchdog = window.setTimeout(function () {
-      document.getElementById("evacuation-basemap-status").hidden = false;
-    }, 12000);
-    tiles.on("tileerror", function () { document.getElementById("evacuation-basemap-status").hidden = false; });
-    tiles.on("tileload", function () {
-      window.clearTimeout(watchdog);
-      document.getElementById("evacuation-basemap-status").hidden = true;
-    });
+    window.AIGDMBasemap.attach(value, document.getElementById("evacuation-basemap-status"));
     return value;
   }
 

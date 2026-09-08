@@ -5,7 +5,7 @@ const FIXED_NOW = new Date("2026-08-28T00:00:00Z");
 const SNAPSHOT_ID = "snapshot-browser";
 
 test.beforeEach(async ({ page }) => {
-  await page.route(/^https:\/\/[a-z]\.tile\.openstreetmap\.org\//, async (route) => {
+  await page.route(/^https:\/\/backup\.opentopomap\.org\//, async (route) => {
     await route.fulfill({ status: 204, body: "" });
   });
 });

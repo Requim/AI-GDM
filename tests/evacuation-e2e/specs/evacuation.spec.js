@@ -21,7 +21,7 @@ const INVALID_SNAPSHOT_SCENARIOS = [
 ];
 
 test.beforeEach(async ({ page }) => {
-  await page.route(/^https:\/\/[a-z]\.tile\.openstreetmap\.org\//, async (route) => {
+  await page.route(/^https:\/\/backup\.opentopomap\.org\//, async (route) => {
     await route.fulfill({ status: 200, contentType: "image/png", body: TILE });
   });
 });

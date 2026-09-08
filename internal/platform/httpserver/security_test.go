@@ -14,6 +14,17 @@ import (
 
 const securityTestAdminToken = "0123456789abcdef0123456789abcdef"
 
+func TestBasemapCSPAllowsOnlyImageSource(t *testing.T) {
+	response := serveRequest(newTestServer(t).Handler(), httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	policy := response.Header().Get("Content-Security-Policy")
+	for _, required := range []string{"img-src 'self' data: https://backup.opentopomap.org;",
+		"script-src 'self';", "connect-src 'self';"} {
+		if !strings.Contains(policy, required) {
+			t.Fatalf("底图来源不得扩大脚本或网络权限: %s", policy)
+		}
+	}
+}
+
 func TestSecurityHeadersCoverSuccessAndTLS(t *testing.T) {
 	server := newTestServer(t)
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)

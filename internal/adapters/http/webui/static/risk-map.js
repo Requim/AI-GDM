@@ -57,17 +57,8 @@
       throw new Error("Leaflet unavailable");
     }
     const value = window.L.map(container, { preferCanvas: true, zoomControl: true }).setView([35.5, 104.5], 4);
-    const tiles = window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 18, attribution: "&copy; OpenStreetMap contributors"
-    }).addTo(value);
-    const watchdog = window.setTimeout(function () {
-      document.getElementById("risk-basemap-status").hidden = false;
-    }, 12000);
-    tiles.on("tileerror", function () { document.getElementById("risk-basemap-status").hidden = false; });
-    tiles.on("tileload", function () {
-      window.clearTimeout(watchdog);
-      document.getElementById("risk-basemap-status").hidden = true;
-    });
+    const tiles = window.AIGDMBasemap.attach(value, document.getElementById("risk-basemap-status"));
+    elements.refresh.addEventListener("click", function () { tiles.redraw(); });
     return value;
   }
 
