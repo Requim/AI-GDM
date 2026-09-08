@@ -63,6 +63,7 @@ func New(estimator applicationloss.AssessmentService, writer ports.LossAssessmen
 
 type estimateRequest struct {
 	SnapshotID string `json:"snapshotId"`
+	RegionCode string `json:"regionCode"`
 }
 
 func (h *Handler) createAssessment(w http.ResponseWriter, r *http.Request) {
@@ -168,6 +169,10 @@ func storedAssessmentError(err error) error {
 func (r estimateRequest) input() (applicationloss.EstimateInput, error) {
 	if strings.TrimSpace(r.SnapshotID) == "" || r.SnapshotID != strings.TrimSpace(r.SnapshotID) {
 		return applicationloss.EstimateInput{}, fmt.Errorf("%w: 风险快照标识无效", domain.ErrInvalidInput)
+	}
+	region := strings.TrimSpace(r.RegionCode)
+	if region != "" && region != "CN" {
+		return applicationloss.EstimateInput{}, fmt.Errorf("%w: 当前仅支持中国全国范围，省市行政区边界尚未接入", domain.ErrInvalidInput)
 	}
 	return applicationloss.EstimateInput{SnapshotID: r.SnapshotID}, nil
 }
