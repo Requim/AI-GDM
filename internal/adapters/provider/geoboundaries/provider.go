@@ -64,7 +64,7 @@ type Options struct {
 }
 
 // RegionCatalog 获取指定国家 ADM1 或 ADM2 的真实多要素边界目录。
-func (p *Provider) RegionCatalog(ctx context.Context, countryISO, level string) ([]RegionRecord, error) {
+func (p *Provider) RegionCatalog(ctx context.Context, countryISO, level string) ([]exposurecollection.AdministrativeRegion, error) {
 	metadataURL, err := regionMetadataURL(countryISO, level)
 	if err != nil {
 		return nil, err

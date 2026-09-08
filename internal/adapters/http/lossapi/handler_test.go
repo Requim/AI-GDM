@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/Requim/AI-GDM/internal/application/exposurecollection"
 	applicationloss "github.com/Requim/AI-GDM/internal/application/loss"
 	"github.com/Requim/AI-GDM/internal/domain"
 	hazarddomain "github.com/Requim/AI-GDM/internal/domain/hazard"
@@ -30,6 +31,14 @@ type estimatorStub struct {
 	value  lossdomain.Assessment
 	err    error
 	inputs []applicationloss.EstimateInput
+}
+
+type regionCatalogStub struct {
+	regions []exposurecollection.AdministrativeRegion
+}
+
+func (s regionCatalogStub) RegionCatalog(context.Context, string, string) ([]exposurecollection.AdministrativeRegion, error) {
+	return s.regions, nil
 }
 
 func (s *estimatorStub) Estimate(_ context.Context, input applicationloss.EstimateInput) (lossdomain.Assessment, error) {
@@ -115,6 +124,23 @@ func TestRegionCapabilitiesExposeAvailableAndUnavailableScopes(t *testing.T) {
 		envelope.Data.Regions[0].Code != "CN" || envelope.Data.Regions[0].Status != "available" ||
 		envelope.Data.Regions[1].Code != "*" || envelope.Data.Regions[1].Status != "unavailable" {
 		t.Fatalf("区域能力=%+v", envelope.Data)
+	}
+}
+
+func TestRegionCapabilitiesCanReadAdministrativeCatalog(t *testing.T) {
+	value := validHTTPAssessment(t)
+	catalog := regionCatalogStub{regions: []exposurecollection.AdministrativeRegion{
+		{Code: "CN-31", Name: "上海市", Level: "ADM1"},
+	}}
+	api, err := NewWithRegionCatalog(&estimatorStub{value: value}, &assessmentStoreStub{value: value},
+		&assessmentStoreStub{value: value}, "/api/v1/loss", testLogger(), catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := performJSON(t, api, http.MethodGet, "/api/v1/loss/regions?level=ADM1", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "上海市") ||
+		!strings.Contains(response.Body.String(), `"status":"catalog_only"`) {
+		t.Fatalf("区域目录响应=%d %s", response.Code, response.Body.String())
 	}
 }
 

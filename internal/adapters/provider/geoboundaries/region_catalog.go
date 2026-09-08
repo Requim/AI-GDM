@@ -6,16 +6,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Requim/AI-GDM/internal/application/exposurecollection"
 	"github.com/Requim/AI-GDM/internal/domain"
 )
-
-// RegionRecord 是多要素行政边界目录中的单个真实区域。
-type RegionRecord struct {
-	Code     string
-	Name     string
-	Level    string
-	Geometry json.RawMessage
-}
 
 type regionCollection struct {
 	Type     string          `json:"type"`
@@ -37,7 +30,7 @@ type regionProperties struct {
 }
 
 // DecodeRegionCollection 解析并校验真实 ADM1/ADM2 多要素边界集合。
-func DecodeRegionCollection(payload []byte, countryISO, level string) ([]RegionRecord, error) {
+func DecodeRegionCollection(payload []byte, countryISO, level string) ([]exposurecollection.AdministrativeRegion, error) {
 	countryISO = strings.TrimSpace(countryISO)
 	level = strings.TrimSpace(level)
 	if len(payload) == 0 || countryISO == "" || level == "" {
@@ -48,7 +41,7 @@ func DecodeRegionCollection(payload []byte, countryISO, level string) ([]RegionR
 		len(collection.Features) == 0 {
 		return nil, fmt.Errorf("%w: 行政区目录不是有效多要素集合", domain.ErrProviderUnavailable)
 	}
-	records := make([]RegionRecord, 0, len(collection.Features))
+	records := make([]exposurecollection.AdministrativeRegion, 0, len(collection.Features))
 	seen := make(map[string]struct{}, len(collection.Features))
 	for _, feature := range collection.Features {
 		record, err := normalizeRegion(feature, countryISO, level)
@@ -64,17 +57,17 @@ func DecodeRegionCollection(payload []byte, countryISO, level string) ([]RegionR
 	return records, nil
 }
 
-func normalizeRegion(feature regionFeature, countryISO, level string) (RegionRecord, error) {
+func normalizeRegion(feature regionFeature, countryISO, level string) (exposurecollection.AdministrativeRegion, error) {
 	if feature.Type != "Feature" || len(bytes.TrimSpace(feature.Geometry)) == 0 ||
 		bytes.Equal(bytes.TrimSpace(feature.Geometry), []byte("null")) {
-		return RegionRecord{}, fmt.Errorf("%w: 行政区要素几何缺失", domain.ErrProviderUnavailable)
+		return exposurecollection.AdministrativeRegion{}, fmt.Errorf("%w: 行政区要素几何缺失", domain.ErrProviderUnavailable)
 	}
 	var geometry struct {
 		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(feature.Geometry, &geometry); err != nil ||
 		(geometry.Type != "Polygon" && geometry.Type != "MultiPolygon") {
-		return RegionRecord{}, fmt.Errorf("%w: 行政区要素不是面状几何", domain.ErrProviderUnavailable)
+		return exposurecollection.AdministrativeRegion{}, fmt.Errorf("%w: 行政区要素不是面状几何", domain.ErrProviderUnavailable)
 	}
 	value := feature.Properties
 	code := strings.TrimSpace(value.ShapeISO)
@@ -83,8 +76,8 @@ func normalizeRegion(feature regionFeature, countryISO, level string) (RegionRec
 	}
 	if code == "" || strings.TrimSpace(value.ShapeName) == "" ||
 		value.ShapeGroup != countryISO || value.ShapeType != level {
-		return RegionRecord{}, fmt.Errorf("%w: 行政区属性不匹配", domain.ErrProviderUnavailable)
+		return exposurecollection.AdministrativeRegion{}, fmt.Errorf("%w: 行政区属性不匹配", domain.ErrProviderUnavailable)
 	}
-	return RegionRecord{Code: code, Name: strings.TrimSpace(value.ShapeName),
+	return exposurecollection.AdministrativeRegion{Code: code, Name: strings.TrimSpace(value.ShapeName),
 		Level: level, Geometry: append(json.RawMessage(nil), feature.Geometry...)}, nil
 }

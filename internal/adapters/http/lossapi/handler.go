@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Requim/AI-GDM/internal/application/exposurecollection"
 	applicationloss "github.com/Requim/AI-GDM/internal/application/loss"
 	"github.com/Requim/AI-GDM/internal/domain"
 	lossdomain "github.com/Requim/AI-GDM/internal/domain/loss"
@@ -39,11 +40,25 @@ type Handler struct {
 	reader         ports.LossAssessmentReader
 	logger         *slog.Logger
 	publicBasePath string
+	regions        exposurecollection.AdministrativeRegionCatalogProvider
 }
 
 // New 创建相对于 BasePath 挂载的损失评估路由。
 func New(estimator applicationloss.AssessmentService, writer ports.LossAssessmentWriter,
 	reader ports.LossAssessmentReader, publicBasePath string, logger *slog.Logger) (http.Handler, error) {
+	return newHandler(estimator, writer, reader, publicBasePath, logger, nil)
+}
+
+// NewWithRegionCatalog 创建带真实行政区目录的损失评估 HTTP 服务。
+func NewWithRegionCatalog(estimator applicationloss.AssessmentService, writer ports.LossAssessmentWriter,
+	reader ports.LossAssessmentReader, publicBasePath string, logger *slog.Logger,
+	regions exposurecollection.AdministrativeRegionCatalogProvider) (http.Handler, error) {
+	return newHandler(estimator, writer, reader, publicBasePath, logger, regions)
+}
+
+func newHandler(estimator applicationloss.AssessmentService, writer ports.LossAssessmentWriter,
+	reader ports.LossAssessmentReader, publicBasePath string, logger *slog.Logger,
+	regions exposurecollection.AdministrativeRegionCatalogProvider) (http.Handler, error) {
 	if estimator == nil || writer == nil || reader == nil || logger == nil {
 		return nil, fmt.Errorf("损失评估 HTTP 服务、仓储或日志器不能为空")
 	}
@@ -51,7 +66,8 @@ func New(estimator applicationloss.AssessmentService, writer ports.LossAssessmen
 	if err != nil {
 		return nil, err
 	}
-	handler := &Handler{estimator: estimator, writer: writer, reader: reader, logger: logger, publicBasePath: publicBasePath}
+	handler := &Handler{estimator: estimator, writer: writer, reader: reader, logger: logger,
+		publicBasePath: publicBasePath, regions: regions}
 	router := chi.NewRouter()
 	router.Post("/assessments", handler.createAssessment)
 	router.Get("/regions", handler.listRegions)
@@ -72,6 +88,11 @@ type regionCapability struct {
 }
 
 func (h *Handler) listRegions(w http.ResponseWriter, r *http.Request) {
+	level := r.URL.Query().Get("level")
+	if level == "ADM1" || level == "ADM2" {
+		h.listRegionLevel(w, r, level)
+		return
+	}
 	h.writeJSON(w, r, http.StatusOK, successResponse{Data: struct {
 		Version string             `json:"version"`
 		Regions []regionCapability `json:"regions"`
@@ -86,6 +107,28 @@ func (h *Handler) listRegions(w http.ResponseWriter, r *http.Request) {
 			Supports: []string{}, Note: "省市行政边界目录和按区裁剪尚未接入",
 		}},
 	}, RequestID: requestID(r)})
+}
+
+func (h *Handler) listRegionLevel(w http.ResponseWriter, r *http.Request, level string) {
+	if h.regions == nil {
+		h.writeError(w, r, fmt.Errorf("%w: 省市行政区目录尚未配置", domain.ErrInsufficientData))
+		return
+	}
+	values, err := h.regions.RegionCatalog(r.Context(), "CHN", level)
+	if err != nil {
+		h.writeError(w, r, fmt.Errorf("读取 %s 行政区目录: %w", level, err))
+		return
+	}
+	regions := make([]regionCapability, 0, len(values))
+	for _, value := range values {
+		regions = append(regions, regionCapability{Code: value.Code, Name: value.Name,
+			Level: value.Level, Status: "catalog_only",
+			Note: "已读取行政区目录；按区域裁剪和道路损失尚未接入"})
+	}
+	h.writeJSON(w, r, http.StatusOK, successResponse{Data: struct {
+		Version string             `json:"version"`
+		Regions []regionCapability `json:"regions"`
+	}{Version: "loss-region-capability-v1", Regions: regions}, RequestID: requestID(r)})
 }
 
 type estimateRequest struct {
