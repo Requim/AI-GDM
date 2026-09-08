@@ -43,6 +43,21 @@ func TestDecodeRegionCollectionReturnsValidatedRegions(t *testing.T) {
 	}
 }
 
+func TestDecodeRegionCollectionUsesShapeIDWhenCountryISOIsNotUnique(t *testing.T) {
+	payload := []byte(`{"type":"FeatureCollection","features":[
+		{"type":"Feature","properties":{"shapeID":"43563684B32591653033375","shapeName":"上海市","shapeISO":"CHN","shapeGroup":"CHN","shapeType":"ADM1"},"geometry":{"type":"Polygon","coordinates":[]}},
+		{"type":"Feature","properties":{"shapeID":"43563684B17418114845297","shapeName":"北京市","shapeISO":"CHN","shapeGroup":"CHN","shapeType":"ADM1"},"geometry":{"type":"Polygon","coordinates":[]}}
+	]}`)
+	values, err := DecodeRegionCollection(payload, "CHN", "ADM1")
+	if err != nil || len(values) != 2 ||
+		values[0].Code != "CHN-ADM1-43563684B32591653033375" ||
+		values[1].Code != "CHN-ADM1-43563684B17418114845297" ||
+		values[0].BoundaryID != "CHN-ADM1-43563684B32591653033375" ||
+		values[1].BoundaryID != "CHN-ADM1-43563684B17418114845297" {
+		t.Fatalf("区域目录=%+v error=%v", values, err)
+	}
+}
+
 func TestDecodeRegionCollectionRejectsDuplicateCode(t *testing.T) {
 	payload := []byte(`{"type":"FeatureCollection","features":[
 		{"type":"Feature","properties":{"shapeID":"CHN-1","shapeName":"区域一","shapeISO":"CN-1","shapeGroup":"CHN","shapeType":"ADM1"},"geometry":{"type":"Polygon","coordinates":[]}},
