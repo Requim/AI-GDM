@@ -54,11 +54,38 @@ func New(estimator applicationloss.AssessmentService, writer ports.LossAssessmen
 	handler := &Handler{estimator: estimator, writer: writer, reader: reader, logger: logger, publicBasePath: publicBasePath}
 	router := chi.NewRouter()
 	router.Post("/assessments", handler.createAssessment)
+	router.Get("/regions", handler.listRegions)
 	router.Get("/assessments/{assessmentID}", handler.getAssessment)
 	router.Get("/assessments/{assessmentID}/sources", handler.getSources)
 	router.NotFound(handler.notFound)
 	router.MethodNotAllowed(handler.methodNotAllowed)
 	return router, nil
+}
+
+type regionCapability struct {
+	Code     string `json:"code"`
+	Name     string `json:"name"`
+	Level    string `json:"level"`
+	Status   string `json:"status"`
+	Supports []string `json:"supports"`
+	Note     string `json:"note"`
+}
+
+func (h *Handler) listRegions(w http.ResponseWriter, r *http.Request) {
+	h.writeJSON(w, r, http.StatusOK, successResponse{Data: struct {
+		Version string              `json:"version"`
+		Regions []regionCapability `json:"regions"`
+	}{
+		Version: "loss-region-capability-v1",
+		Regions: []regionCapability{{
+			Code: "CN", Name: "中国全国", Level: "ADM0", Status: "available",
+			Supports: []string{"risk", "road_loss", "impact_range"},
+			Note: "当前风险与暴露投影按中国全国边界生成",
+		}, {
+			Code: "*", Name: "省、市行政区", Level: "ADM1/ADM2", Status: "unavailable",
+			Supports: []string{}, Note: "省市行政边界目录和按区裁剪尚未接入",
+		}},
+	}, RequestID: requestID(r)})
 }
 
 type estimateRequest struct {
