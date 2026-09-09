@@ -396,7 +396,7 @@
       if (request !== state.lossRequest) return;
       clearLossValues();
       removeReference("loss_assessment");
-      setAssessmentState(elements.lossStatus, "error", errorMessage(error));
+      setAssessmentState(elements.lossStatus, "error", lossRequestErrorMessage(error));
       showRegionalImpact();
     } finally {
       if (request === state.lossRequest) {
@@ -574,6 +574,19 @@
     empty.textContent = "完成估算后，这里会列出风险数据、空间分析和基线来源。";
     elements.lossSources.replaceChildren(empty);
     renderTextList(elements.lossLimitations, [], "当前金额只计算道路和风险区内设施的直接物理损失。");
+  }
+
+  function lossRequestErrorMessage(error) {
+    if (error && (error.status === 401 || error.code === "admin_authorization_required")) {
+      return "区域估算需要管理员授权，请点击页面右上角授权后重试。";
+    }
+    if (error && (error.status === 404 || error.code === "route_not_found")) {
+      return "当前运行版本未部署区域估算接口，请刷新页面；仍失败时需要重新部署后端服务。";
+    }
+    if (error && error.status === 405) {
+      return "区域估算接口请求方法不匹配，请刷新页面后重试。";
+    }
+    return errorMessage(error);
   }
 
   function validateLossPayload(payload, snapshotID) {

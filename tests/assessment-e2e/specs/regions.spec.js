@@ -83,6 +83,17 @@ test("道路供应商失败时保留独立计算的区域影响面积", async ({
   await expect(page.locator("#loss-explain-result")).toBeDisabled();
 });
 
+test("区域估算未授权时明确提示授权，不显示接口不存在", async ({ page }) => {
+  await page.route("**/regions/CN-130000/projection", route => route.fulfill({
+    status: 401, json: { error: { code: "admin_authorization_required", message: "需要管理员授权" } }
+  }));
+  await page.locator("#loss-assessment-run").click();
+  await expect(page.locator("#loss-assessment-status")).toHaveText(
+    "区域估算需要管理员授权，请点击页面右上角授权后重试。"
+  );
+  await expect(page.locator("#loss-assessment-status")).not.toContainText("接口不存在");
+});
+
 test("风险快照撤销时清除区域面积和地图，拒绝迟到响应", async ({ page }) => {
   await page.evaluate(snapshotID => {
     document.getElementById("loss-snapshot-id").value = "";
