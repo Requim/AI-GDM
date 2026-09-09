@@ -4,22 +4,48 @@ package exposurecollection
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	applicationloss "github.com/Requim/AI-GDM/internal/application/loss"
 	"github.com/Requim/AI-GDM/internal/domain/hazard"
 )
 
+// CollectionStageError 标识采集失败阶段，公开提示不得包含供应商地址或凭据。
+type CollectionStageError struct {
+	Stage string
+	Cause error
+}
+
+func (e *CollectionStageError) Error() string { return fmt.Sprintf("%s: %v", e.Stage, e.Cause) }
+func (e *CollectionStageError) Unwrap() error { return e.Cause }
+
+// PublicMessage 返回可供界面展示的阶段说明，不将缺失数据当成零值。
+func (e *CollectionStageError) PublicMessage() string {
+	switch e.Stage {
+	case "region_geometry":
+		return "所选行政区的完整暴露范围暂未就绪或超过单次处理预算；不会改用全国热点。影响范围可单独查看"
+	case "population":
+		return "区域人口数据读取失败，本次联合估算未完成；已计算的影响范围仍可查看"
+	case "infrastructure":
+		return "区域道路和设施数据读取失败，未生成损失金额；已计算的影响范围仍可查看"
+	default:
+		return "区域数据处理未完成，请稍后重试"
+	}
+}
+
 const (
 	MaxRiskZones          = 500
 	MaxScopedRiskZones    = 10
 	MaxUnionGeometryBytes = 1 << 20
+	MaxAdministrativeBoundaryBytes = 4 << 20
 	MaxInfrastructure     = 900
 	MaxProviderReferences = 64
 	MaxFeatureGeometry    = 256 << 10
 	MaxFeaturePoints      = 10_000
 	MaxTotalFeaturePoints = 250_000
 	ExposureScopePolicy   = "highest-risk-window-v1"
+	RegionalScopePolicy   = "administrative-boundary-v1"
 	ExposureScopeDegrees  = 0.05
 )
 
@@ -42,6 +68,7 @@ type GeometryStats struct {
 // ExposureScope 描述一次局部热点暴露投影的确定性选择范围。
 type ExposureScope struct {
 	Policy                   string
+	RegionCode               string
 	ID                       string
 	SeedZoneID               string
 	Window                   Bounds
@@ -82,6 +109,7 @@ type AdministrativeBoundary struct {
 // AdministrativeRegion 是多要素行政区目录中的可选区域。
 type AdministrativeRegion struct {
 	Code            string
+	ParentCode      string
 	Name            string
 	Level           string
 	BoundaryID      string
@@ -174,6 +202,29 @@ type ExposureProjection struct {
 // GeometryInputReader 在物化联合几何前执行数量和字节预检。
 type GeometryInputReader interface {
 	ReadExposureGeometry(context.Context, string, string) (GeometryInput, error)
+}
+
+// RegionalGeometryInputReader 在选定行政区内读取完整风险输入，禁止退回全国热点。
+type RegionalGeometryInputReader interface {
+	ReadExposureGeometryForRegion(context.Context, string, string, AdministrativeBoundary) (GeometryInput, error)
+}
+
+// RegionalImpact 保存按选定行政区精确求交的风险覆盖面积，不依赖人口或道路供应商。
+type RegionalImpact struct {
+	SnapshotID       string          `json:"snapshotId"`
+	RegionCode       string          `json:"regionCode"`
+	BoundaryID       string          `json:"boundaryId"`
+	BoundaryDigest   string          `json:"boundaryDigest"`
+	ZoneCount        int             `json:"zoneCount"`
+	AreaSquareMeters float64         `json:"areaSquareMeters"`
+	Geometry         json.RawMessage `json:"geometry"`
+	ValidFrom        time.Time       `json:"validFrom"`
+	ValidTo          time.Time       `json:"validTo"`
+}
+
+// RegionalImpactReader 读取行政区风险交集及面积，空交集是真实零值而非数据缺失。
+type RegionalImpactReader interface {
+	ReadRegionalImpact(context.Context, string, string, AdministrativeBoundary) (RegionalImpact, error)
 }
 
 // AdministrativeBoundaryProvider 返回带版本和校验和的真实行政边界。

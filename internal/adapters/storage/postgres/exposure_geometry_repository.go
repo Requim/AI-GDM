@@ -252,7 +252,7 @@ func validateAdministrativeRequest(r *HazardRepository, input exposurecollection
 		(boundary.BoundaryType != "ADM0" && boundary.BoundaryType != "ADM1" && boundary.BoundaryType != "ADM2") ||
 		!validExposureBoundaryID(boundary.BoundaryID) || boundary.Digest == "" ||
 		len(boundary.Geometry) == 0 || len(input.UnionGeometry) == 0 || len(input.Zones) == 0 ||
-		len(input.Zones) > exposurecollection.MaxScopedRiskZones || limits.MaxPointsPerItem <= 0 ||
+		len(input.Zones) > administrativeZoneLimit(input) || limits.MaxPointsPerItem <= 0 ||
 		limits.MaxTotalPoints <= 0 {
 		return fmt.Errorf("%w: 行政边界投影参数无效", domain.ErrInvalidInput)
 	}
@@ -273,7 +273,7 @@ func preflightAdministrativeProjection(ctx context.Context, tx pgx.Tx,
 	if err != nil {
 		return fmt.Errorf("预检行政边界投影: %w", err)
 	}
-	if !boundaryValid || !scopeValid || zones <= 0 || zones > exposurecollection.MaxScopedRiskZones ||
+	if !boundaryValid || !scopeValid || zones <= 0 || zones > int64(administrativeZoneLimit(input)) ||
 		maxPoints <= 0 || maxPoints > limits.MaxPointsPerItem || totalPoints < maxPoints ||
 		totalPoints > limits.MaxTotalPoints || !validAdministrativeUnionBudget(exposureUnionBudget{
 		points: unionPoints, memoryBytes: unionMemoryBytes, area: unionArea, valid: unionValid,
@@ -281,6 +281,14 @@ func preflightAdministrativeProjection(ctx context.Context, tx pgx.Tx,
 		return fmt.Errorf("%w: 行政边界裁剪结果超过预算或为空", domain.ErrInsufficientData)
 	}
 	return nil
+}
+
+func administrativeZoneLimit(input exposurecollection.GeometryInput) int {
+	if input.Scope.Policy == exposurecollection.RegionalScopePolicy &&
+		exposurecollection.ValidateExposureScopeIdentity(input.Scope, input.Zones) == nil {
+		return exposurecollection.MaxRiskZones
+	}
+	return exposurecollection.MaxScopedRiskZones
 }
 
 func validAdministrativeUnionBudget(value exposureUnionBudget,

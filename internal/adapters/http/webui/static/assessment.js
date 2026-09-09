@@ -47,9 +47,12 @@
   const elements = collectElements();
   const STRICT_UTC_RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
   const state = { caseRequest: 0, replayRequest: 0, aiRequest: 0, lossRequest: 0,
+    regionRequest: 0, impactRequest: 0, regionalImpact: null,
     lossPending: false, lossAutoSnapshotID: "", lossAutoSnapshotState: "",
     caseDetail: null, caseBindings: new Map(), modelCard: null, modelCardState: "loading",
     modelCardError: "", references: new Map() };
+  let regionalMap = null;
+  let regionalLayer = null;
 
   bindTabs();
   activateTab("loss");
@@ -67,6 +70,7 @@
       lossForm: document.getElementById("loss-assessment-form"),
       lossInput: document.getElementById("loss-snapshot-id"),
       regionSelect: document.getElementById("loss-region-code"),
+      provinceSelect: document.getElementById("loss-province-code"),
       regionLoad: document.getElementById("loss-region-load"),
       lossButton: document.getElementById("loss-assessment-run"),
       lossStatus: document.getElementById("loss-assessment-status"),
@@ -133,6 +137,9 @@
       tab.tabIndex = active ? 0 : -1;
     });
     elements.panels.forEach(function (panel) { panel.hidden = panel.dataset.assessmentPanel !== name; });
+    if (name === "loss" && regionalMap) {
+      window.requestAnimationFrame(function () { regionalMap.invalidateSize({ pan: false }); });
+    }
   }
 
   function bindSurvival() {
@@ -156,16 +163,20 @@
       state.lossAutoSnapshotID = "";
       state.lossAutoSnapshotState = "";
       clearLossResult("风险快照引用已改变，旧损失评估已清除。");
+      loadRegionalImpact();
     });
     document.addEventListener(RISK_SNAPSHOT_EVENT, function (event) {
       bindRiskSnapshot(event && event.detail);
     });
     loadRegionCapabilities();
     if (elements.regionLoad) elements.regionLoad.addEventListener("click", loadAdministrativeRegions);
+    if (elements.provinceSelect) elements.provinceSelect.addEventListener("change", loadRegionCities);
+    if (elements.regionSelect) elements.regionSelect.addEventListener("change", regionalSelectionChanged);
     syncRiskSnapshot();
   }
 
   async function loadRegionCapabilities() {
+    if (elements.provinceSelect) return loadAdministrativeRegions();
     if (!elements.regionSelect) return;
     try {
       const response = await fetch("/api/v1/loss/regions", { headers: { Accept: "application/json" } });
@@ -189,25 +200,33 @@
 
   async function loadAdministrativeRegions() {
     if (!elements.regionSelect || !elements.regionLoad) return;
+    const target = elements.provinceSelect || elements.regionSelect;
+    const request = ++state.regionRequest;
+    const selected = target.value;
+    const selectedCity = elements.regionSelect.value;
     elements.regionLoad.disabled = true;
     elements.regionLoad.textContent = "正在读取...";
     try {
-      const response = await fetch("/api/v1/loss/regions?level=ADM1", { headers: { Accept: "application/json" } });
-      if (!response.ok) throw new Error("省市目录读取失败");
-      const envelope = await response.json();
-      const regions = envelope.data && Array.isArray(envelope.data.regions) ? envelope.data.regions : [];
+      const envelope = await requestJSON("/api/v1/loss/regions?level=ADM1", { timeoutMs: 20000 });
+      const directory = envelope && envelope.data;
+      if (request !== state.regionRequest) return;
+      const regions = directory && Array.isArray(directory.regions) ? directory.regions : [];
       if (!regions.length) throw new Error("省市目录为空");
+      target.replaceChildren(new Option("请选择省份", ""));
       regions.forEach(function (region) {
-        const option = new Option(region.name + (region.status === "available" ? "" : "（仅目录）"),
-          region.code);
+        if (!validID(region.code) || region.level !== "ADM1") throw new Error("省份目录内容无效");
+        const option = new Option(region.name, region.code);
         option.dataset.level = region.level;
         option.disabled = region.status === "unavailable";
         option.title = region.note || "";
-        elements.regionSelect.append(option);
+        target.append(option);
       });
-      elements.regionSelect.disabled = regions.every(function (region) { return region.status === "unavailable"; });
-      elements.regionLoad.textContent = "已读取省级目录";
+      target.disabled = false;
+      target.value = regions.some(function (region) { return region.code === selected; }) ? selected : "";
+      elements.regionLoad.textContent = "重新读取目录";
+      if (elements.provinceSelect) await loadRegionCities(selectedCity);
     } catch (error) {
+      if (request !== state.regionRequest) return;
       elements.regionLoad.textContent = "读取失败，重试";
       setAssessmentState(elements.lossStatus, "warning", errorMessage(error));
     } finally {
@@ -215,8 +234,136 @@
     }
   }
 
+  async function loadRegionCities(preferredCity) {
+    const province = elements.provinceSelect.value;
+    const request = ++state.regionRequest;
+    elements.regionSelect.replaceChildren(new Option(province ? "全省范围" : "请先选择省份", province));
+    elements.regionSelect.disabled = !province;
+    regionalSelectionChanged();
+    if (!province) return;
+    try {
+      const envelope = await requestJSON("/api/v1/loss/regions?level=ADM2&parentCode=" +
+        encodeURIComponent(province), { timeoutMs: 20000 });
+      const directory = envelope && envelope.data;
+      if (request !== state.regionRequest || elements.provinceSelect.value !== province) return;
+      const regions = directory && Array.isArray(directory.regions) ? directory.regions : [];
+      regions.forEach(function (region) {
+        if (!validID(region.code) || region.parentCode !== province || region.level !== "ADM2") {
+          throw new Error("城市目录与所选省份不一致");
+        }
+        const option = new Option(region.name, region.code);
+        option.disabled = region.status !== "available";
+        elements.regionSelect.append(option);
+      });
+      if (typeof preferredCity === "string" && regions.some(function (region) {
+        return region.code === preferredCity && region.status === "available";
+      })) {
+        elements.regionSelect.value = preferredCity;
+        regionalSelectionChanged();
+      }
+    } catch (error) {
+      if (request === state.regionRequest) setAssessmentState(elements.lossStatus, "warning", errorMessage(error));
+    }
+  }
+
+  function selectedRegionName() {
+    const province = elements.provinceSelect && elements.provinceSelect.selectedOptions[0];
+    const region = elements.regionSelect && elements.regionSelect.selectedOptions[0];
+    if (!region || !elements.regionSelect.value) return "尚未选择区域";
+    return province && province.value !== elements.regionSelect.value ?
+      province.textContent + " / " + region.textContent : province ? province.textContent : region.textContent;
+  }
+
+  function regionalSelectionChanged() {
+    ++state.impactRequest;
+    state.regionalImpact = null;
+    clearLossResult("分析范围已改变，旧估算和 AI 引用已清除。");
+    const label = document.getElementById("loss-selected-region");
+    if (label) label.textContent = selectedRegionName();
+    renderRegionalGeometry(null);
+    loadRegionalImpact();
+  }
+
+  function regionalBaseEndpoint() {
+    return root.dataset.lossEndpoint.replace(/\/assessments$/, "");
+  }
+
+  async function loadRegionalImpact() {
+    const region = elements.regionSelect && elements.regionSelect.value;
+    const snapshotID = elements.lossInput.value.trim();
+    const status = document.getElementById("loss-region-impact-status");
+    if (!status) return;
+    const request = ++state.impactRequest;
+    state.regionalImpact = null;
+    renderRegionalGeometry(null);
+    updateLossButton();
+    if (!region || region === "CN" || !validID(snapshotID)) {
+      status.textContent = "请选择省市，并等待可用风险快照。";
+      return;
+    }
+    status.textContent = "正在计算所选行政区内的风险覆盖...";
+    try {
+      const envelope = await requestJSON(regionalBaseEndpoint() + "/regions/" + encodeURIComponent(region) +
+        "/impact?snapshotId=" + encodeURIComponent(snapshotID), { maxResponseBytes: 2 * MAX_RESPONSE_BYTES });
+      const value = envelope && envelope.data;
+      if (request !== state.impactRequest || elements.regionSelect.value !== region ||
+        elements.lossInput.value.trim() !== snapshotID) return;
+      if (!value || value.snapshotId !== snapshotID || value.regionCode !== region ||
+        !Number.isFinite(value.areaSquareMeters) || value.areaSquareMeters < 0 ||
+        !Number.isInteger(value.zoneCount) || value.zoneCount < 0 ||
+        !strictUTC(value.validTo, false)) {
+        throw new Error("区域风险覆盖返回了无效或不匹配的结果");
+      }
+      state.regionalImpact = value;
+      updateLossButton();
+      showRegionalImpact();
+      renderRegionalGeometry(value.geometry);
+    } catch (error) {
+      if (request === state.impactRequest) status.textContent = errorMessage(error);
+    }
+  }
+
+  function showRegionalImpact() {
+    const value = state.regionalImpact;
+    const status = document.getElementById("loss-region-impact-status");
+    if (!value || !status) return;
+    const area = (value.areaSquareMeters / 1e6).toLocaleString("zh-CN", { maximumFractionDigits: 3 });
+    elements.lossArea.textContent = area + " 平方公里";
+    status.textContent = selectedRegionName() + "：风险覆盖 " + area + " 平方公里，" + value.zoneCount +
+      " 个相交风险区。" + (Date.parse(value.validTo) <= Date.now() ? "快照已过期，仅供历史参考。" : "") +
+      " 道路损失需另行核验道路数据。";
+    if (value.zoneCount === 0) {
+      status.textContent += " 当前快照未发现相交风险区，不代表该地区实际没有灾害风险。";
+    }
+  }
+
+  function renderRegionalGeometry(geometry) {
+    const canvas = document.getElementById("loss-region-map");
+    if (!canvas || !window.L) return;
+    if (!regionalMap) {
+      regionalMap = window.L.map(canvas, { preferCanvas: true }).setView([35.5, 104.5], 4);
+      const status = document.getElementById("loss-region-basemap-status");
+      if (window.AIGDMBasemap && status) window.AIGDMBasemap.attach(regionalMap, status);
+      document.addEventListener("ai-gdm:workspace-visible", function () {
+        window.requestAnimationFrame(function () { regionalMap.invalidateSize({ pan: false }); });
+      });
+    }
+    if (regionalLayer) regionalMap.removeLayer(regionalLayer);
+    regionalLayer = null;
+    if (!geometry) return;
+    regionalLayer = window.L.geoJSON(geometry, { style: { color: "#b45309", weight: 1, fillOpacity: 0.3 } });
+    regionalLayer.addTo(regionalMap);
+    if (regionalLayer.getBounds().isValid()) regionalMap.fitBounds(regionalLayer.getBounds(), { padding: [12, 12], maxZoom: 12 });
+    window.requestAnimationFrame(function () { regionalMap.invalidateSize({ pan: false }); });
+  }
+
   async function runLoss() {
     const snapshotID = elements.lossInput.value.trim();
+    const regionCode = elements.regionSelect ? elements.regionSelect.value : "";
+    if (elements.provinceSelect && !validID(regionCode)) {
+      clearLossResult("请先选择要估算的省或城市。", "warning");
+      return;
+    }
     if (snapshotID === "") {
       clearLossResult("请等待风险地图加载有效数据；仅在排障时手动输入已知快照编号。", "warning");
       return;
@@ -234,21 +381,23 @@
     removeReference("loss_assessment");
     setAssessmentState(elements.lossStatus, "loading", "正在读取风险区、道路、设施和已批准基线，并计算直接损失范围...");
     try {
-      const regionCode = elements.regionSelect ? elements.regionSelect.value : "";
       if (regionCode && regionCode !== "CN") {
         setAssessmentState(elements.lossStatus, "loading", "正在准备所选行政区的真实边界、人口、道路和设施数据...");
         await ensureRegionalProjection(snapshotID, regionCode);
       }
-      const created = await createLossAssessment(snapshotID);
+      if (request !== state.lossRequest || (elements.regionSelect && elements.regionSelect.value !== regionCode)) return;
+      const created = await createLossAssessment(snapshotID, regionCode);
       if (request !== state.lossRequest || elements.lossInput.value.trim() !== snapshotID) return;
       const loaded = await readCreatedLossAssessment(created, snapshotID);
       if (request !== state.lossRequest || elements.lossInput.value.trim() !== snapshotID) return;
       renderLossResult(loaded.result, loaded.audit);
+      showRegionalImpact();
     } catch (error) {
       if (request !== state.lossRequest) return;
       clearLossValues();
       removeReference("loss_assessment");
       setAssessmentState(elements.lossStatus, "error", errorMessage(error));
+      showRegionalImpact();
     } finally {
       if (request === state.lossRequest) {
         state.lossPending = false;
@@ -295,6 +444,7 @@
     clearLossResult(message);
     state.lossAutoSnapshotID = detail.snapshotId;
     state.lossAutoSnapshotState = detail.state;
+    loadRegionalImpact();
   }
 
   function clearAutoBoundSnapshot(message) {
@@ -311,33 +461,38 @@
     }
     elements.lossInput.value = "";
     clearLossResult(message, "warning");
+    loadRegionalImpact();
   }
 
   function updateLossButton() {
     const snapshotID = elements.lossInput.value.trim();
     document.getElementById("loss-snapshot-summary").textContent = snapshotID || "暂无有效风险快照";
-    elements.lossButton.disabled = state.lossPending || !validID(snapshotID) || !elements.lossInput.checkValidity();
+    elements.lossButton.disabled = state.lossPending || !validID(snapshotID) || !elements.lossInput.checkValidity() ||
+      (elements.provinceSelect && !validID(elements.regionSelect.value)) ||
+      Boolean(state.regionalImpact && state.regionalImpact.zoneCount === 0);
   }
 
-  async function createLossAssessment(snapshotID) {
+  async function createLossAssessment(snapshotID, regionCode) {
     const response = await requestJSON(root.dataset.lossEndpoint, {
       method: "POST", body: { snapshotId: snapshotID,
-        regionCode: elements.regionSelect ? elements.regionSelect.value : "" }, maxResponseBytes: responseLimit(),
+        regionCode: regionCode }, maxResponseBytes: responseLimit(),
       includeResponseMetadata: true
     });
     if (!response || response.status !== 201) throw new Error("损失评估创建状态无效");
     const result = validateLossPayload(response.payload, snapshotID);
+    if (regionCode && result.regionCode !== regionCode) throw new Error("损失结果不属于所选行政区");
     return { result: result, location: validateLossLocation(response.location, result.id) };
   }
 
   async function ensureRegionalProjection(snapshotID, regionCode) {
-    const endpoint = root.dataset.lossEndpoint + "/regions/" + encodeURIComponent(regionCode) + "/projection";
+    const endpoint = regionalBaseEndpoint() + "/regions/" + encodeURIComponent(regionCode) + "/projection";
     const response = await requestJSON(endpoint, {
       method: "POST", body: { snapshotId: snapshotID }, maxResponseBytes: responseLimit(),
       includeResponseMetadata: true
     });
-    if (!response || response.status !== 201 || !response.payload ||
-      response.payload.regionCode !== regionCode || response.payload.status !== "available") {
+    const value = response && response.payload && response.payload.data;
+    if (!response || response.status !== 201 || !value ||
+      value.regionCode !== regionCode || value.snapshotId !== snapshotID || value.status !== "available") {
       throw new Error("所选行政区暴露投影未就绪");
     }
   }

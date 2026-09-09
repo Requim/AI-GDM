@@ -150,7 +150,7 @@ func TestBuildExposureCollectorInvokesInjectedPorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCalls := []string{"geometry", "boundary", "administrator", "population", "infrastructure", "projector", "writer"}
+	wantCalls := []string{"boundary", "geometry", "administrator", "population", "infrastructure", "projector", "writer"}
 	if !slices.Equal(probe.calls, wantCalls) || probe.saved.Input.Analysis.ProjectionID == "" ||
 		value.Input.Analysis.ProjectionID != probe.saved.Input.Analysis.ProjectionID {
 		t.Fatalf("组合根调用=%v, saved=%+v", probe.calls, probe.saved.Input.Analysis)

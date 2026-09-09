@@ -307,17 +307,20 @@
             <div id="loss-assessment-form" class="assessment-control-column" role="group" aria-labelledby="assessment-tab-loss">
               <div class="assessment-panel-heading">
                 <span>01</span>
-                <div><strong>当前风险数据</strong><small>当前版本暂按风险热点绑定，行政区选择待接入</small></div>
+                <div><strong>选择分析区域</strong><small>仅计算所选区域内的风险与道路暴露</small></div>
               </div>
               <p id="loss-snapshot-summary" class="snapshot-reference">暂无有效风险快照</p>
-              <div class="scope-notice" role="note">当前估算只覆盖风险快照中的局部热点和相交道路，不代表整个中国、整个省份或整个城市。</div>
-              <label for="loss-region-code">分析范围
+              <div class="scope-notice" role="note">影响范围是所选行政区与风险区的交集，不表示行政区内每处都已发生灾害。边界为公开地图数据，不代替法定界线。</div>
+              <label for="loss-province-code">省、自治区或直辖市
+                <select id="loss-province-code" disabled><option value="">正在读取省市目录...</option></select>
+              </label>
+              <label for="loss-region-code">城市或全省范围
                 <select id="loss-region-code" disabled>
-                  <option value="">正在读取区域能力...</option>
+                  <option value="">请先选择省份</option>
                 </select>
               </label>
               <div class="region-directory-actions">
-                <button id="loss-region-load" class="secondary-command" type="button">读取省市目录</button>
+                <button id="loss-region-load" class="secondary-command" type="button">重新读取目录</button>
               </div>
               <details id="loss-advanced-options" class="advanced-options"><summary>高级选项</summary>
               <label>风险数据快照（通常无需手动填写）
@@ -329,6 +332,10 @@
             </div>
 
             <div class="assessment-result-column" aria-label="损失评估结果">
+              <p id="loss-selected-region" class="snapshot-reference">尚未选择区域</p>
+              <div id="loss-region-impact-status" class="assessment-state" role="status" aria-live="polite">选择省市后显示该范围内的风险覆盖。</div>
+              <div id="loss-region-map" style="height:260px;min-width:0;margin-bottom:20px" role="img" aria-label="所选区域内的风险覆盖地图"></div>
+              <p id="loss-region-basemap-status" class="muted" role="status" hidden></p>
               <div class="assessment-panel-heading">
                 <span>02</span>
                 <div><strong>直接损失范围</strong><small id="loss-assessment-id">尚未生成估算</small></div>
@@ -359,7 +366,7 @@
               <details class="assessment-audit-details"><summary>展开数据来源与审计</summary>
               <div id="loss-source-list" class="assessment-source-list"><p>尚无数据来源记录。</p></div>
               </details>
-              <ul id="loss-limitation-list" class="assessment-limitations"><li>当前仅估算道路条件损失；行政区选择、建筑和设施计价尚未接入。</li></ul>
+              <ul id="loss-limitation-list" class="assessment-limitations"><li>当前仅估算所选区域内的道路条件损失；建筑和设施计价未纳入。</li></ul>
             </aside>
           </section>
 

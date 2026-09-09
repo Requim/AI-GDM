@@ -540,9 +540,6 @@ const lossProjectionFeaturesSQL = `SELECT f.feature_id,f.feature_kind,
 const lossProjectionBudgetSQL = `WITH target_analysis AS (
     SELECT sa.* FROM spatial_analyses sa WHERE sa.snapshot_id=$1
         AND ($2='' OR sa.id=$2)
-        AND EXISTS (SELECT 1 FROM spatial_exposure_projections available_ep
-            WHERE available_ep.analysis_id=sa.id AND available_ep.region_code=$3
-                AND available_ep.complete=TRUE)
     ORDER BY sa.calculated_at DESC,sa.id DESC LIMIT 1
 ), selected AS (
     SELECT sa.id,sa.snapshot_id,sa.algorithm_version,ep.projection_status AS status,

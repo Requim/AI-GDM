@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/Requim/AI-GDM/internal/adapters/provider/geoboundaries"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/httpclient"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/overpass"
+	"github.com/Requim/AI-GDM/internal/adapters/provider/regioncache"
 	"github.com/Requim/AI-GDM/internal/adapters/provider/worldpop"
 	"github.com/Requim/AI-GDM/internal/adapters/storage/postgres"
 	"github.com/Requim/AI-GDM/internal/application/exposurecollection"
@@ -97,14 +100,24 @@ func newExposureProviders(clients exposureHTTPClients,
 	return exposureProviderSet{boundary: boundary, population: population, infrastructure: infrastructure}, nil
 }
 
-func newRegionalBoundaryCatalog(cfg config.Config, logger *slog.Logger) (
-	*geoboundaries.CachedRegionCatalog, error,
-) {
+type administrativeCatalog interface {
+	exposurecollection.AdministrativeRegionCatalogProvider
+	exposurecollection.AdministrativeBoundaryProvider
+	exposurecollection.RegionalBoundaryProvider
+}
+
+func newRegionalBoundaryCatalog(cfg config.Config, logger *slog.Logger) (administrativeCatalog, error) {
 	live, err := geoboundaries.New(geoboundaries.Options{
 		Client: newExposureHTTPClient(logger, defaultExposureHTTPPolicies().boundary),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建行政区目录刷新 provider: %w", err)
+	}
+	chinesePath := filepath.Join(cfg.LHASA.DataDir, "administrative", regioncache.Filename)
+	if cache, cacheErr := regioncache.Open(chinesePath, live); cacheErr == nil {
+		return cache, nil
+	} else if !errors.Is(cacheErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("中文省市缓存无效，拒绝替换分析范围: %w", cacheErr)
 	}
 	cachePath := filepath.Join(cfg.LHASA.DataDir, "geoboundaries", "region-catalog-v1.json")
 	cache, err := geoboundaries.NewCachedRegionCatalog(live, cachePath)

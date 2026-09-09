@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/Requim/AI-GDM/internal/application/exposurecollection"
 	"github.com/Requim/AI-GDM/internal/domain"
 	lossdomain "github.com/Requim/AI-GDM/internal/domain/loss"
 	"github.com/Requim/AI-GDM/internal/domain/provenance"
@@ -173,6 +174,7 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 
 func classifyError(err error) (int, string, string) {
 	var parameter parameterError
+	var stage *exposurecollection.CollectionStageError
 	switch {
 	case errors.Is(err, errStoredAssessment), errors.Is(err, ports.ErrStoredAssessmentIntegrity):
 		return http.StatusInternalServerError, "stored_assessment_invalid", "已保存的损失评估不可用"
@@ -180,6 +182,8 @@ func classifyError(err error) (int, string, string) {
 		return http.StatusGatewayTimeout, "request_timeout", "请求处理超时"
 	case errors.Is(err, context.Canceled):
 		return http.StatusRequestTimeout, "request_canceled", "请求已取消"
+	case errors.As(err, &stage):
+		return http.StatusServiceUnavailable, "regional_collection_unavailable", stage.PublicMessage()
 	case errors.Is(err, domain.ErrInsufficientData):
 		return http.StatusServiceUnavailable, "insufficient_data", "损失评估数据不足"
 	case errors.Is(err, domain.ErrProviderUnavailable):

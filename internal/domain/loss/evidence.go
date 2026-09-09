@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,9 @@ import (
 	"github.com/Requim/AI-GDM/internal/domain"
 	"github.com/Requim/AI-GDM/internal/domain/provenance"
 )
+
+var evidenceRegionCode = regexp.MustCompile(`^CN-[0-9]{6}$`)
+var evidenceBoundaryID = regexp.MustCompile(`^CHN-ADM[012]-[A-Za-z0-9._:-]{1,128}$`)
 
 const deduplicatedAreaToleranceRatio = 0.01
 
@@ -269,12 +273,13 @@ func validateSnapshotEvidence(value SnapshotEvidence) error {
 }
 
 func validateSpatialEvidence(value SpatialAnalysisEvidence) error {
-	if strings.TrimSpace(value.ID) == "" || strings.TrimSpace(value.Version) == "" || value.RegionCode != "CN" ||
+	if strings.TrimSpace(value.ID) == "" || strings.TrimSpace(value.Version) == "" ||
+		(value.RegionCode != "CN" && !evidenceRegionCode.MatchString(value.RegionCode)) ||
 		value.Status != "available" || !validSHA256(value.Digest) || !finite(value.TotalAreaSquareM) ||
 		value.TotalAreaSquareM <= 0 || !validIdentityTime(value.CalculatedAt) ||
 		value.ProjectionID != "exposure-"+value.ProjectionDigest || value.ProjectionVersion != RiskProjectionVersion ||
 		!validSHA256(value.ProjectionDigest) || !validIdentityTime(value.ProjectionCollectedAt) ||
-		!validProjectionEvidenceWindow(value) || !strings.HasPrefix(value.AdminBoundaryID, "CHN-ADM0-") ||
+		!validProjectionEvidenceWindow(value) || !evidenceBoundaryID.MatchString(value.AdminBoundaryID) ||
 		!validSHA256(value.AdminBoundaryDigest) {
 		return invalidEvidence("空间分析证据无效")
 	}

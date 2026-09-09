@@ -87,6 +87,7 @@ func newHandler(estimator applicationloss.AssessmentService, writer ports.LossAs
 	router := chi.NewRouter()
 	router.Post("/assessments", handler.createAssessment)
 	router.Get("/regions", handler.listRegions)
+	router.Get("/regions/{regionCode}/impact", handler.regionalImpact)
 	router.Post("/regions/{regionCode}/projection", handler.createRegionalProjection)
 	router.Get("/assessments/{assessmentID}", handler.getAssessment)
 	router.Get("/assessments/{assessmentID}/sources", handler.getSources)
@@ -97,6 +98,7 @@ func newHandler(estimator applicationloss.AssessmentService, writer ports.LossAs
 
 type regionCapability struct {
 	Code     string   `json:"code"`
+	ParentCode string `json:"parentCode,omitempty"`
 	Name     string   `json:"name"`
 	Level    string   `json:"level"`
 	Status   string   `json:"status"`
@@ -106,6 +108,10 @@ type regionCapability struct {
 
 func (h *Handler) listRegions(w http.ResponseWriter, r *http.Request) {
 	level := r.URL.Query().Get("level")
+	if level == "" && h.regions != nil {
+		h.listRegionLevel(w, r, "ADM1")
+		return
+	}
 	if level == "ADM1" || level == "ADM2" {
 		h.listRegionLevel(w, r, level)
 		return
@@ -139,7 +145,11 @@ func (h *Handler) listRegionLevel(w http.ResponseWriter, r *http.Request, level 
 	}
 	regions := make([]regionCapability, 0, len(values))
 	for _, value := range values {
+		if parent := r.URL.Query().Get("parentCode"); parent != "" && value.ParentCode != parent {
+			continue
+		}
 		regions = append(regions, regionCapability{Code: value.Code, Name: value.Name,
+			ParentCode: value.ParentCode,
 			Level: value.Level, Status: "available",
 			Supports: []string{"risk", "road_loss", "impact_range"},
 			Note:     "边界从服务器本地缓存读取；可生成该区域的风险裁剪与道路损失投影"})
@@ -171,6 +181,10 @@ func (h *Handler) createRegionalProjection(w http.ResponseWriter, r *http.Reques
 	value, err := h.projector.CollectRegion(r.Context(), request.SnapshotID, regionCode)
 	if err != nil {
 		h.writeError(w, r, fmt.Errorf("生成 %s 区域暴露投影: %w", regionCode, err))
+		return
+	}
+	if value.Input.Analysis.RegionCode != regionCode || value.Input.Analysis.SnapshotID != request.SnapshotID {
+		h.writeError(w, r, fmt.Errorf("%w: 区域投影返回了其他区域或快照", domain.ErrInsufficientData))
 		return
 	}
 	h.writeJSON(w, r, http.StatusCreated, successResponse{Data: struct {

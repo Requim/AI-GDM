@@ -185,7 +185,8 @@ func TestEstimateRequestPreservesAdministrativeRegionForApplicationLayer(t *test
 
 func TestRegionalProjectionRoutePreservesSelection(t *testing.T) {
 	value := exposurecollection.ExposureProjection{Input: applicationloss.LossInputProjection{
-		Analysis: applicationloss.LossSpatialProjection{RegionCode: "CN-31", ProjectionID: "exposure-test"},
+		Analysis: applicationloss.LossSpatialProjection{SnapshotID: "snapshot-1",
+			RegionCode: "CN-31", ProjectionID: "exposure-test"},
 	}, ValidFrom: time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC),
 		ValidTo: time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)}
 	projector := &regionProjectionStub{value: value}

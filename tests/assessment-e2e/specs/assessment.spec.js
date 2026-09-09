@@ -69,14 +69,14 @@ test("风险地图不可用且快照输入为空时损失按钮禁用且不得�
   await expectFixtureCall(request, "loss_post", 0);
 });
 
-test("损失评估仅提交 snapshotId，并跟随 Location 与 sources 审计", async ({ page, request }) => {
+test("损失评估提交快照和所选地区，并跟随 Location 与 sources 审计", async ({ page, request }) => {
   await setScenario(request, "success");
   await openAssessment(page);
   const pending = page.waitForRequest((value) => value.url().endsWith(LOSS_PATH));
 
   await submitLoss(page);
 
-  expect((await pending).postDataJSON()).toEqual({ snapshotId: LOSS_SNAPSHOT_ID });
+  expect((await pending).postDataJSON()).toEqual({ snapshotId: LOSS_SNAPSHOT_ID, regionCode: "CN-130000" });
   await expect(page.locator("#loss-assessment-status")).toHaveClass(/assessment-state-current/);
   const assessmentID = await currentLossAssessmentID(page);
   await expect(page.locator("#loss-low-amount")).toContainText("30.00");
@@ -91,7 +91,7 @@ test("损失评估仅提交 snapshotId，并跟随 Location 与 sources 审计",
   await expect(page.locator("#loss-source-list")).toContainText("spatial-analysis-e2e-v1");
   await expect(page.locator("#loss-source-list")).toContainText("暴露投影 exposure-");
   await expect(page.locator("#loss-source-list")).toContainText("ai-gdm-loss-risk-projection-v1");
-  await expect(page.locator("#loss-source-list")).toContainText("行政边界 CHN-ADM0-2026");
+  await expect(page.locator("#loss-source-list")).toContainText("行政边界 CHN-ADM1-fixture");
   await expect(page.locator("#loss-source-list")).toContainText("摘要 eeeeeeeeeeee...");
   await expect(page.locator("#loss-source-list")).not.toContainText("secret");
   await expectLossSourceGroup(page, "来源审计引用", "/spatial/input");
@@ -114,8 +114,8 @@ test("损失评估仅提交 snapshotId，并跟随 Location 与 sources 审计",
   expect(projection.projectionId).toMatch(/^exposure-[0-9a-f]{64}$/);
   expect(projection.projectionVersion).toBe("ai-gdm-loss-risk-projection-v1");
   expect(projection.projectionDigest).toMatch(/^[0-9a-f]{64}$/);
-  expect(projection.regionCode).toBe("CN");
-  expect(projection.adminBoundaryId).toBe("CHN-ADM0-2026");
+  expect(projection.regionCode).toBe("CN-130000");
+  expect(projection.adminBoundaryId).toBe("CHN-ADM1-fixture");
   expect(projection.adminBoundaryDigest).toMatch(/^[0-9a-f]{64}$/);
   expect(Date.parse(projection.projectionValidFrom)).toBeLessThanOrEqual(Date.parse(projection.projectionCollectedAt));
   expect(Date.parse(projection.projectionValidTo)).toBeGreaterThan(Date.parse(FIXED_NOW));
@@ -1194,6 +1194,7 @@ async function setScenario(request, name) {
 async function openAssessment(page) {
   await page.goto("/#assessment");
   await expect(page.locator("#assessment")).toBeVisible();
+  await page.locator("#loss-province-code").selectOption("CN-130000");
   await page.locator("#loss-advanced-options > summary").click();
   await expect(page.locator("#survival-case-select option")).toHaveCount(4);
 }
@@ -1205,6 +1206,9 @@ async function selectTab(page, name) {
 
 async function submitLoss(page) {
   await selectTab(page, "loss");
+  if (!await page.locator("#loss-province-code").inputValue()) {
+    await page.locator("#loss-province-code").selectOption("CN-130000");
+  }
   await page.locator("#loss-snapshot-id").fill(LOSS_SNAPSHOT_ID);
   expect(await page.locator("#loss-snapshot-id").evaluate((input) => input.checkValidity())).toBe(true);
   await page.locator("#loss-assessment-run").click();

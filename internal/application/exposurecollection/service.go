@@ -66,7 +66,11 @@ func (c *Collector) CollectRegion(ctx context.Context, snapshotID, analysisID, r
 		return c.Collect(ctx, snapshotID, analysisID)
 	}
 	return c.collect(ctx, snapshotID, analysisID, func(ctx context.Context) (AdministrativeBoundary, error) {
-		return provider.BoundaryForRegion(ctx, regionCode)
+		boundary, err := provider.BoundaryForRegion(ctx, regionCode)
+		if err == nil && boundary.RegionCode != regionCode {
+			return AdministrativeBoundary{}, fmt.Errorf("%w: 边界不属于所选行政区", domain.ErrInsufficientData)
+		}
+		return boundary, err
 	})
 }
 
@@ -76,22 +80,28 @@ func (c *Collector) collect(ctx context.Context, snapshotID, analysisID string,
 	if err := validateCollectionIdentity(snapshotID, analysisID); err != nil {
 		return ExposureProjection{}, err
 	}
-	input, err := c.geometries.ReadExposureGeometry(ctx, snapshotID, analysisID)
+	boundary, err := boundaryReader(ctx)
 	if err != nil {
-		return ExposureProjection{}, fmt.Errorf("读取暴露采集空间输入: %w", err)
+		return ExposureProjection{}, fmt.Errorf("读取行政区边界: %w", err)
+	}
+	input, err := c.readGeometry(ctx, snapshotID, analysisID, boundary)
+	if err != nil {
+		return ExposureProjection{}, &CollectionStageError{Stage: "region_geometry", Cause: err}
 	}
 	canonicalizeGeometryInput(&input)
 	if err = validateGeometryInput(input, snapshotID, analysisID); err != nil {
 		return ExposureProjection{}, err
 	}
-	boundary, err := boundaryReader(ctx)
-	if err != nil {
-		return ExposureProjection{}, fmt.Errorf("采集 geoBoundaries 行政边界: %w", err)
-	}
 	boundary.CollectedAt = canonicalTime(boundary.CollectedAt)
 	if err = validateSnapshotBoundary(input, boundary); err != nil {
 		return ExposureProjection{}, err
 	}
+	return c.collectPrepared(ctx, input, boundary)
+}
+
+func (c *Collector) collectPrepared(ctx context.Context, input GeometryInput,
+	boundary AdministrativeBoundary,
+) (ExposureProjection, error) {
 	providerNow, err := collectionNow(c.clock)
 	if err != nil {
 		return ExposureProjection{}, err
@@ -108,12 +118,12 @@ func (c *Collector) collect(ctx context.Context, snapshotID, analysisID string,
 	population, err := c.population.Population(ctx, PopulationQuery{Geometry: administration.UnionGeometry,
 		ExpectedAreaSquareMeter: administration.TotalAreaSquareMeters, Year: year})
 	if err != nil {
-		return ExposureProjection{}, fmt.Errorf("采集 WorldPop 人口: %w", err)
+		return ExposureProjection{}, &CollectionStageError{Stage: "population", Cause: err}
 	}
 	canonicalizePopulation(&population)
 	infrastructure, err := c.infrastructure.Infrastructure(ctx, InfrastructureQuery{Bounds: administration.Bounds})
 	if err != nil {
-		return ExposureProjection{}, fmt.Errorf("采集 OSM 道路和设施: %w", err)
+		return ExposureProjection{}, &CollectionStageError{Stage: "infrastructure", Cause: err}
 	}
 	canonicalizeInfrastructure(&infrastructure)
 	now, err := collectionNow(c.clock)
@@ -129,6 +139,26 @@ func (c *Collector) collect(ctx context.Context, snapshotID, analysisID string,
 	}
 	if err = c.writer.SaveExposureProjection(ctx, value); err != nil {
 		return ExposureProjection{}, fmt.Errorf("保存真实暴露投影: %w", err)
+	}
+	return value, nil
+}
+
+func (c *Collector) readGeometry(ctx context.Context, snapshotID, analysisID string,
+	boundary AdministrativeBoundary,
+) (GeometryInput, error) {
+	if boundary.RegionCode == "CN" {
+		return c.geometries.ReadExposureGeometry(ctx, snapshotID, analysisID)
+	}
+	reader, ok := c.geometries.(RegionalGeometryInputReader)
+	if !ok {
+		return GeometryInput{}, fmt.Errorf("%w: 指定行政区的空间读取尚未配置", domain.ErrInsufficientData)
+	}
+	value, err := reader.ReadExposureGeometryForRegion(ctx, snapshotID, analysisID, boundary)
+	if err != nil {
+		return GeometryInput{}, err
+	}
+	if value.Scope.Policy != RegionalScopePolicy || value.Scope.RegionCode != boundary.RegionCode {
+		return GeometryInput{}, fmt.Errorf("%w: 返回空间输入不属于所选行政区", domain.ErrInsufficientData)
 	}
 	return value, nil
 }
@@ -396,7 +426,7 @@ func validateSnapshotBoundary(input GeometryInput, boundary AdministrativeBounda
 		coverage.SHA256 == boundary.Digest && coverage.GeometrySHA256 == geometryDigest &&
 		coverage.Reference == boundary.Reference
 	childOfNationalCoverage := coverage.RegionCode == "CN" && coverage.BoundaryType == "ADM0" &&
-		strings.HasPrefix(boundary.RegionCode, "CN-") &&
+		(strings.HasPrefix(boundary.RegionCode, "CN-") || strings.HasPrefix(boundary.RegionCode, "CHN-")) &&
 		(boundary.BoundaryType == "ADM1" || boundary.BoundaryType == "ADM2")
 	if !exact && !childOfNationalCoverage {
 		return fmt.Errorf("%w: 风险快照与暴露采集行政边界版本不一致", domain.ErrInsufficientData)
@@ -405,6 +435,9 @@ func validateSnapshotBoundary(input GeometryInput, boundary AdministrativeBounda
 }
 
 func validExposureScope(value ExposureScope, zones []applicationloss.LossRiskZone) bool {
+	if value.Policy == RegionalScopePolicy {
+		return validRegionalScope(value, zones)
+	}
 	if value.Policy != ExposureScopePolicy || !validCollectionID(value.SeedZoneID) ||
 		value.SelectedZoneCount != len(zones) || len(zones) == 0 || len(zones) > MaxScopedRiskZones ||
 		value.TotalZoneCount < value.SelectedZoneCount || !validBounds(value.Window) ||
@@ -423,6 +456,22 @@ func validExposureScope(value ExposureScope, zones []applicationloss.LossRiskZon
 	return false
 }
 
+func validRegionalScope(value ExposureScope, zones []applicationloss.LossRiskZone) bool {
+	if !validCollectionID(value.RegionCode) || value.RegionCode == "CN" ||
+		value.SelectedZoneCount != len(zones) || len(zones) == 0 || len(zones) > MaxRiskZones ||
+		value.TotalZoneCount != len(zones) || !validBounds(value.Window) ||
+		!finitePositive(value.SelectedAreaSquareMeters) ||
+		math.Abs(value.SelectedAreaSquareMeters-value.TotalAreaSquareMeters) > 1e-6 {
+		return false
+	}
+	for _, zone := range zones {
+		if zone.ID == value.SeedZoneID {
+			return true
+		}
+	}
+	return false
+}
+
 func scopeIdentityPayload(value ExposureScope, zoneIDs []string) string {
 	parts := []string{value.Policy, value.SeedZoneID, formatScopeFloat(value.Window.South),
 		formatScopeFloat(value.Window.West), formatScopeFloat(value.Window.North),
@@ -430,6 +479,9 @@ func scopeIdentityPayload(value ExposureScope, zoneIDs []string) string {
 		strconv.Itoa(value.TotalZoneCount), formatScopeFloat(value.SelectedAreaSquareMeters),
 		formatScopeFloat(value.TotalAreaSquareMeters), formatScopeFloat(value.AreaCoverageRatio),
 		strconv.FormatBool(value.CompleteCoverage)}
+	if value.Policy == RegionalScopePolicy {
+		parts = append(parts, value.RegionCode)
+	}
 	return strings.Join(append(parts, zoneIDs...), "\n")
 }
 
@@ -442,6 +494,10 @@ func exposureScopeAudit(value ExposureScope) (string, string, string) {
 	dataset := "urn:ai-gdm:exposure-scope-policy:" + value.Policy
 	limitation := fmt.Sprintf("暴露范围采用 %s 局部热点窗口，仅覆盖 %d/%d 个风险区，面积覆盖率 %.6f；不得解释为全国完整暴露",
 		value.Policy, value.SelectedZoneCount, value.TotalZoneCount, value.AreaCoverageRatio)
+	if value.Policy == RegionalScopePolicy {
+		limitation = fmt.Sprintf("本次覆盖行政区 %s 内全部 %d 个相交风险区，不代表区域内每处均已发生灾害",
+			value.RegionCode, value.SelectedZoneCount)
+	}
 	return reference, dataset, limitation
 }
 

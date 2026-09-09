@@ -58,10 +58,17 @@ func (e *fixtureLossEstimator) Estimate(ctx context.Context,
 ) (lossdomain.Assessment, error) {
 	name, now := e.scenarios.currentScenario(), fixtureServiceNow()
 	projection, err := fixtureLossProjection(now, name)
+	if err == nil {
+		projection, err = bindFixtureRegion(projection, input.RegionCode)
+	}
 	if err != nil {
 		return lossdomain.Assessment{}, err
 	}
-	var baselines applicationloss.BaselineSetReader = fixtureBaselineReader{value: fixtureBaselineSet(now, name)}
+	baseline := fixtureBaselineSet(now, name)
+	if input.RegionCode != "" && input.RegionCode != "CN" {
+		bindFixtureBaselineRegion(&baseline, input.RegionCode)
+	}
+	var baselines applicationloss.BaselineSetReader = fixtureBaselineReader{value: baseline}
 	if staleLossScenario(name) {
 		baselines = lossreference.NewFallback(baselines)
 	} else if strings.HasPrefix(name, "loss_reference_") {
@@ -115,7 +122,8 @@ func newLossHandler(scenarios *scenarioStore, logger *slog.Logger) (
 	http.Handler, *fixtureLossStore, error,
 ) {
 	store := newFixtureLossStore()
-	handler, err := lossapi.New(&fixtureLossEstimator{scenarios: scenarios}, store, store, "/api/v1/loss", logger)
+	handler, err := lossapi.NewWithRegionCatalogAndProjector(&fixtureLossEstimator{scenarios: scenarios},
+		store, store, "/api/v1/loss", logger, fixtureRegions{}, fixtureRegions{})
 	if err != nil {
 		return nil, nil, fmt.Errorf("创建真实损失评估 HTTP fixture: %w", err)
 	}
@@ -135,6 +143,10 @@ func (s *scenarioStore) currentScenario() string {
 }
 
 func (s *scenarioStore) serveLoss(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/regions") {
+		s.lossHandler.ServeHTTP(w, r)
+		return
+	}
 	operation := lossOperation(r)
 	name, call := s.next(operation)
 	if operation == "loss_post" {
